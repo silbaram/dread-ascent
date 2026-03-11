@@ -1,0 +1,209 @@
+:root {
+    color-scheme: dark;
+    --hud-bg: rgba(9, 12, 18, 0.82);
+    --hud-bg-strong: rgba(14, 18, 28, 0.94);
+    --hud-border: rgba(246, 173, 85, 0.28);
+    --hud-text: #f8f1df;
+    --hud-muted: #c8b58d;
+    --hud-accent: #f6ad55;
+    --hud-danger: #f87171;
+    --hud-item: #6ee7b7;
+    --hud-travel: #7dd3fc;
+    --hud-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    overflow: hidden;
+    background:
+        radial-gradient(circle at top, rgba(73, 29, 17, 0.48), transparent 38%),
+        linear-gradient(180deg, #130d0b 0%, #050608 100%);
+    color: var(--hud-text);
+    font-family: "Trebuchet MS", "Gill Sans", sans-serif;
+}
+
+#app-shell {
+    position: relative;
+    min-height: 100vh;
+}
+
+#game-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+}
+
+#game-container canvas {
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.5);
+}
+
+#hud-root {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    pointer-events: none;
+}
+
+.game-hud {
+    display: flex;
+    min-height: 100vh;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 16px;
+}
+
+.game-hud__top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.game-hud__brand,
+.game-hud__log-shell,
+.game-hud__card {
+    border: 1px solid var(--hud-border);
+    background: var(--hud-bg);
+    backdrop-filter: blur(14px);
+    box-shadow: var(--hud-shadow);
+}
+
+.game-hud__brand {
+    min-width: 172px;
+    padding: 14px 16px;
+    border-radius: 18px;
+}
+
+.game-hud__stats {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 10px;
+    width: min(900px, calc(100vw - 220px));
+}
+
+.game-hud__card {
+    border-radius: 16px;
+    padding: 12px 14px;
+}
+
+.game-hud__card--state {
+    background: linear-gradient(135deg, rgba(74, 19, 14, 0.92), var(--hud-bg-strong));
+}
+
+.game-hud__eyebrow,
+.game-hud__label {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--hud-muted);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.game-hud__title {
+    display: block;
+    font-size: 20px;
+    line-height: 1.1;
+}
+
+.game-hud__value {
+    display: block;
+    font-size: 18px;
+    line-height: 1.15;
+}
+
+.game-hud__bottom {
+    display: flex;
+    justify-content: flex-start;
+}
+
+.game-hud__log-shell {
+    width: min(680px, 100%);
+    padding: 14px 16px 10px;
+    border-radius: 22px;
+    background:
+        linear-gradient(180deg, rgba(23, 28, 38, 0.96), rgba(10, 12, 18, 0.94));
+}
+
+.game-hud__log-header {
+    margin-bottom: 10px;
+}
+
+.game-hud__log-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 8px;
+}
+
+.game-hud__log-entry {
+    display: grid;
+    grid-template-columns: 10px 1fr;
+    gap: 10px;
+    align-items: start;
+    padding: 9px 10px;
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--hud-text);
+    font-size: 14px;
+    line-height: 1.35;
+}
+
+.game-hud__log-dot {
+    width: 10px;
+    height: 10px;
+    margin-top: 5px;
+    border-radius: 999px;
+    background: var(--hud-accent);
+    box-shadow: 0 0 0 3px rgba(246, 173, 85, 0.12);
+}
+
+.game-hud__log-entry--combat .game-hud__log-dot {
+    background: var(--hud-accent);
+}
+
+.game-hud__log-entry--danger .game-hud__log-dot {
+    background: var(--hud-danger);
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12);
+}
+
+.game-hud__log-entry--item .game-hud__log-dot {
+    background: var(--hud-item);
+    box-shadow: 0 0 0 3px rgba(110, 231, 183, 0.12);
+}
+
+.game-hud__log-entry--travel .game-hud__log-dot {
+    background: var(--hud-travel);
+    box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.12);
+}
+
+#hud-root[data-state="game-over"] .game-hud__card--state {
+    border-color: rgba(248, 113, 113, 0.4);
+    background: linear-gradient(135deg, rgba(96, 22, 22, 0.94), rgba(38, 12, 16, 0.94));
+}
+
+@media (max-width: 960px) {
+    .game-hud {
+        padding: 12px;
+    }
+
+    .game-hud__top {
+        flex-direction: column;
+    }
+
+    .game-hud__stats {
+        width: 100%;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .game-hud__log-shell {
+        width: 100%;
+    }
+}
