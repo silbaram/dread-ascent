@@ -42,8 +42,11 @@ class ReplayFieldOfViewCalculator implements FieldOfViewCalculator {
     }
 }
 
-function createEnemy(position: Position = { x: 1, y: 1 }) {
-    return new Enemy('enemy-1', 'Enemy 1', { ...position }, { ...DEFAULT_STATS }, 25);
+function createEnemy(
+    position: Position = { x: 1, y: 1 },
+    kind: 'normal' | 'boss' = 'normal',
+) {
+    return new Enemy('enemy-1', 'Enemy 1', { ...position }, { ...DEFAULT_STATS }, 25, kind);
 }
 
 describe('EnemyAiService', () => {
@@ -132,5 +135,25 @@ describe('EnemyAiService', () => {
             reason: 'searching',
         });
         expect(enemy.lastKnownPlayerPosition).toBeUndefined();
+    });
+
+    it('lets the boss track the player without vision and attack from two tiles away', () => {
+        // Arrange
+        const boss = createEnemy({ x: 1, y: 1 }, 'boss');
+        const service = new EnemyAiService(
+            new ReplayPathFinder([[{ x: 2, y: 1 }, { x: 3, y: 1 }]]),
+            new ReplayFieldOfViewCalculator([[]]),
+            8,
+        );
+
+        // Act
+        const action = service.decide(boss, { x: 3, y: 1 });
+
+        // Assert
+        expect(action).toEqual({
+            type: 'attack',
+            target: { x: 3, y: 1 },
+        });
+        expect(boss.lastKnownPlayerPosition).toEqual({ x: 3, y: 1 });
     });
 });

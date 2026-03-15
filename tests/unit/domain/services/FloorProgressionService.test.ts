@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    BOSS_FLOOR_NUMBER,
     DEFAULT_SAFE_FLOOR_CHANCE,
     FloorProgressionService,
     type RandomSource,
@@ -49,6 +50,51 @@ describe('FloorProgressionService', () => {
 
         // Assert
         expect(snapshot).toEqual({ number: 2, type: 'normal' });
+    });
+
+    it('resets the run back to floor 1 normal', () => {
+        // Arrange
+        const service = new FloorProgressionService(new FixedRandomSource(0));
+        service.advance();
+        service.advance();
+
+        // Act
+        const snapshot = service.reset();
+
+        // Assert
+        expect(snapshot).toEqual({ number: 1, type: 'normal' });
+    });
+
+    it('forces floor 100 to become the boss floor', () => {
+        // Arrange
+        const service = new FloorProgressionService(new FixedRandomSource(0));
+        let snapshot = service.getSnapshot();
+
+        // Act
+        for (let step = 2; step <= BOSS_FLOOR_NUMBER; step += 1) {
+            snapshot = service.advance();
+        }
+
+        // Assert
+        expect(snapshot).toEqual({ number: BOSS_FLOOR_NUMBER, type: 'boss' });
+    });
+
+    it('restores a saved floor snapshot for continue flow', () => {
+        // Arrange
+        const service = new FloorProgressionService(new FixedRandomSource(0));
+
+        // Act
+        const snapshot = service.restore({
+            number: 12,
+            type: 'safe',
+        });
+
+        // Assert
+        expect(snapshot).toEqual({
+            number: 12,
+            type: 'safe',
+        });
+        expect(service.getSnapshot()).toEqual(snapshot);
     });
 
     it('rejects invalid safe-floor probabilities', () => {

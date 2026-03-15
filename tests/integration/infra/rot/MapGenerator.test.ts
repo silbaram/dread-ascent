@@ -36,4 +36,23 @@ describe('MapGenerator', () => {
         expect(map.tiles[map.stairsPosition.y][map.stairsPosition.x]).toBe(WORLD_TILE.STAIRS);
         expect(map.stairsPosition).not.toEqual(map.playerSpawn);
     });
+
+    it('builds boss floors as a dedicated arena with a boss spawn point', () => {
+        // Arrange
+        const width = 40;
+        const height = 30;
+
+        // Act
+        const map = MapGenerator.generate(width, height, { floorType: 'boss' });
+
+        // Assert
+        expect(map.floorType).toBe('boss');
+        expect(map.rooms).toHaveLength(1);
+        expect(map.restPoints).toEqual([]);
+        expect(map.bossSpawn).toBeDefined();
+        expect(map.playerSpawn).not.toEqual(map.bossSpawn);
+        expect(map.tiles[map.playerSpawn.y][map.playerSpawn.x]).toBe(WORLD_TILE.FLOOR);
+        expect(map.tiles[map.bossSpawn!.y][map.bossSpawn!.x]).toBe(WORLD_TILE.FLOOR);
+        expect(map.tiles[map.stairsPosition.y][map.stairsPosition.x]).toBe(WORLD_TILE.FLOOR);
+    });
 });

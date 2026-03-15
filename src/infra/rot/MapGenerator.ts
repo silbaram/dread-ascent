@@ -18,6 +18,7 @@ export interface MapData {
     rooms: RoomData[];
     playerSpawn: Position;
     stairsPosition: Position;
+    bossSpawn?: Position;
     restPoints: Position[];
     floorType: FloorType;
 }
@@ -32,12 +33,16 @@ export class MapGenerator {
             return this.generateSafeFloor(width, height);
         }
 
+        if (options.floorType === 'boss') {
+            return this.generateBossFloor(width, height);
+        }
+
         return this.generateNormalFloor(width, height);
     }
 
     private static generateNormalFloor(width: number, height: number): MapData {
-        const tiles: number[][] = Array.from({ length: height }, () => 
-            Array.from({ length: width }, () => WORLD_TILE.WALL)
+        const tiles: number[][] = Array.from({ length: height }, () =>
+            Array.from({ length: width }, () => WORLD_TILE.WALL),
         );
         const digger = new ROT.Map.Digger(width, height);
         const rooms: RoomData[] = [];
@@ -47,14 +52,14 @@ export class MapGenerator {
         });
 
         const rotRooms = digger.getRooms();
-        rotRooms.forEach(room => {
+        rotRooms.forEach((room) => {
             const center = room.getCenter();
             rooms.push({
                 center: [center[0], center[1]],
                 left: room.getLeft(),
                 right: room.getRight(),
                 top: room.getTop(),
-                bottom: room.getBottom()
+                bottom: room.getBottom(),
             });
         });
 
@@ -121,6 +126,50 @@ export class MapGenerator {
             stairsPosition,
             restPoints: [restPoint],
             floorType: 'safe',
+        };
+    }
+
+    private static generateBossFloor(width: number, height: number): MapData {
+        const tiles: number[][] = Array.from({ length: height }, () =>
+            Array.from({ length: width }, () => WORLD_TILE.WALL),
+        );
+        const margin = 2;
+        const room: RoomData = {
+            center: [Math.floor(width / 2), Math.floor(height / 2)],
+            left: margin,
+            right: width - margin - 1,
+            top: margin,
+            bottom: height - margin - 1,
+        };
+
+        for (let y = room.top; y <= room.bottom; y += 1) {
+            for (let x = room.left; x <= room.right; x += 1) {
+                tiles[y][x] = WORLD_TILE.FLOOR;
+            }
+        }
+
+        const center = this.toPosition(room.center);
+        const playerSpawn = {
+            x: center.x,
+            y: Math.min(room.bottom - 2, center.y + 6),
+        };
+        const bossSpawn = {
+            x: center.x,
+            y: Math.max(room.top + 2, center.y - 6),
+        };
+        // Boss floors have no usable exit, so keep the logical stairs position on the spawn tile.
+        const stairsPosition = { ...playerSpawn };
+
+        return {
+            width,
+            height,
+            tiles,
+            rooms: [room],
+            playerSpawn,
+            stairsPosition,
+            bossSpawn,
+            restPoints: [],
+            floorType: 'boss',
         };
     }
 

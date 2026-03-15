@@ -8,7 +8,7 @@
 
 ## 현재 상태
 
-**Sprint 002 완료** (v0.2.0) — 턴제 전투 루프, 층 이동, 적 AI, DOM HUD 구현 완료
+**Sprint 003 완료** (v0.3.0) — 아이템 시스템, 인벤토리 UI, 게임 오버 루프, 영구 성장(Meta-Shop) 구현 완료
 
 | 기능 | 상태 |
 |------|:----:|
@@ -22,7 +22,9 @@
 | 적 추적 AI + 공격 선택 | ✅ |
 | 기초 전투 (범프 공격/데미지/EXP) | ✅ |
 | DOM HUD + 메시지 로그 | ✅ |
-| 아이템/인벤토리 | 🔜 |
+| 아이템/인벤토리 및 장착 시스템 | ✅ |
+| 게임 오버 및 결과 화면 | ✅ |
+| 영구 성장 시스템 (Meta-Shop) | ✅ |
 | 클라우드 저장 (Firebase) | 🔜 |
 
 ---
@@ -31,12 +33,12 @@
 
 | 분류 | 기술 |
 |------|------|
-| 언어 | TypeScript 5.3 |
-| 게임 엔진 | Phaser 3.80 |
+| 언어 | TypeScript 5.9 |
+| 게임 엔진 | Phaser 3.90 |
 | 로그라이크 유틸 | rot-js 2.2 |
 | 빌드 | Vite 5.1 |
 | 테스트 | Vitest 3.2 |
-| 저장소 | Firebase (Firestore) — 예정 |
+| 저장소 | LocalStorage (MVP) / Firebase (Firestore) — 예정 |
 
 ---
 
@@ -44,3 +46,5 @@
 
 - [Quick Start](./quick-start.md) — 5분 안에 로컬 실행하기
 - [Architecture](./architecture.md) — 계층 구조 및 설계 원칙
+- [API Reference](./api-reference.md) — 주요 도메인 서비스 및 인터페이스
+- [Configuration](./configuration.md) — 게임 밸런스 및 시스템 설정

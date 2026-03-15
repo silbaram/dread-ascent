@@ -5,6 +5,12 @@ export interface CombatStats {
     defense: number;
 }
 
+export interface CombatStatModifier {
+    maxHealth?: number;
+    attack?: number;
+    defense?: number;
+}
+
 export const BASE_PLAYER_STATS: CombatStats = {
     health: 100,
     maxHealth: 100,

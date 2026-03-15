@@ -40,16 +40,16 @@ npm run dev
 | `↓` / `S` | 아래로 이동 |
 | `←` / `A` | 왼쪽으로 이동 |
 | `→` / `D` | 오른쪽으로 이동 |
+| `Tab` / `I` | 인벤토리 열기/닫기 |
+| `Esc` | 메뉴 닫기 / 이전 화면 |
 
-**층 이동 타일**
+**게임 목표 및 진행**
 
-- 금색 계단 타일로 이동하면 다음 층으로 전환됩니다.
-- 초록 휴식 타일은 Safe Zone 중앙에 배치됩니다.
-- 붉은 적 타일은 현재 층의 적 엔티티입니다.
-- 적 방향으로 이동하면 이동 대신 범프 공격을 수행합니다.
-- 적이 플레이어를 시야 내에서 발견하면 추적하고, 옆 칸에 도달하면 공격 행동을 선택합니다.
-- 상단 DOM HUD에서 현재 층, HP, EXP, 활성 턴, 적 수, 게임 상태를 확인할 수 있습니다.
-- 하단 `Tower Feed` 메시지 로그에서 공격, 피격, 보상, 층 이동 이벤트를 확인할 수 있습니다.
+- **최종 목표**: 100층에 도달하여 'Final Boss'를 물리치는 것입니다.
+- **층 이동**: 금색 계단 타일로 이동하면 다음 층으로 전환됩니다. (이때 자동 저장됩니다)
+- **전투**: 적 방향으로 이동하면 범프 공격을 수행합니다. 적의 등급(일반/엘리트/보스)에 따라 난이도가 다릅니다.
+- **아이템**: 필드 위 아이템 타일로 이동하여 자동 습득하고, 인벤토리에서 장착하거나 사용할 수 있습니다.
+- **성장**: 적 처치 시 경험치를 획득하며 레벨업 시 기본 능력치가 상승합니다. 영구 강화는 'Sanctuary' 메뉴를 이용하세요.
 
 ---
 
@@ -75,16 +75,21 @@ npm run preview
 npm test
 ```
 
-도메인/인프라/UI 테스트를 실행합니다. 현재 턴 큐, FOV, 층 진행, 적 스폰, 적 AI, 전투, 맵 생성, HUD 렌더링까지 총 31개 테스트가 포함됩니다.
+도메인/인프라/UI 테스트를 실행합니다. 현재 턴 큐, FOV, 층 진행, 적 스폰, 적 AI, 전투, 맵 생성, HUD 렌더링, 인벤토리, 저장 시스템까지 모든 핵심 로직을 검증합니다.
 
 ```
+✓ tests/unit/domain/entities/Player.test.ts (2)
 ✓ tests/unit/domain/services/CombatService.test.ts (2)
-✓ tests/unit/domain/services/FloorProgressionService.test.ts (4)
 ✓ tests/unit/domain/services/EnemyAiService.test.ts (4)
-✓ tests/unit/domain/services/EnemySpawnerService.test.ts (4)
+✓ tests/unit/domain/services/EnemySpawnerService.test.ts (11)
+✓ tests/unit/domain/services/FloorProgressionService.test.ts (6)
+✓ tests/unit/domain/services/ItemService.test.ts (6)
+✓ tests/unit/domain/services/MetaProgressionService.test.ts (6)
+✓ tests/unit/domain/services/RunPersistenceService.test.ts (6)
+✓ tests/unit/domain/services/SoulShardService.test.ts (4)
 ✓ tests/unit/domain/services/TurnQueueService.test.ts (5)
-✓ tests/unit/domain/services/VisibilityService.test.ts (3)
-✓ tests/unit/ui/GameHud.test.ts (3)
+✓ tests/unit/domain/services/VisibilityService.test.ts (4)
+✓ tests/unit/ui/GameHud.test.ts (10)
 ✓ tests/integration/infra/rot/MapGenerator.test.ts (2)
 ✓ tests/integration/infra/rot/RotPathFinder.test.ts (2)
 ✓ tests/integration/infra/rot/RotTurnScheduler.test.ts (2)
@@ -100,37 +105,21 @@ src/
 ├── scenes/
 │   └── MainScene.ts               # 입력 처리 + 렌더링 담당
 ├── ui/
-│   ├── GameHud.ts                 # DOM HUD 상태/로그 렌더링
-│   └── gameHud.css                # HUD 오버레이 스타일
+│   ├── GameHud.ts                 # DOM HUD 상태/로그/오버레이 렌더링
+│   └── gameHud.css                # HUD 스타일
 ├── domain/
-│   ├── entities/
-│   │   ├── Player.ts              # 플레이어 위치 상태
-│   │   └── Enemy.ts               # 적 위치 + 전투 스탯
-│   └── services/
-│       ├── CombatService.ts
-│       ├── EnemyAiService.ts
-│       ├── EnemySpawnerService.ts
+│   ├── entities/                  # 도메인 모델 (Player, Enemy, Item, Stats)
+│   └── services/                  # 순수 게임 로직
+│       ├── CombatService.ts       # 전투 수식
+│       ├── EnemySpawnerService.ts # 적 및 보스 스폰
+│       ├── ItemService.ts         # 아이템 습득/장착/사용
+│       ├── RunPersistenceService.ts # LocalStorage 저장 관리
 │       ├── FloorProgressionService.ts
-│       └── VisibilityService.ts   # FOV + 탐험 상태 관리
-└── infra/
+│       ├── MetaProgressionService.ts
+│       └── VisibilityService.ts   # FOV + 탐험 상태
+└── infra/                         # 외부 라이브러리 어댑터
     └── rot/
-        ├── MapGenerator.ts        # rot.js Digger 맵 생성
-        ├── RotPathFinder.ts       # rot.js A* 경로 탐색 어댑터
-        └── RotFovCalculator.ts    # rot.js FOV 어댑터
-
-tests/
-├── integration/infra/rot/
-│   ├── MapGenerator.test.ts
-│   ├── RotPathFinder.test.ts
-│   └── RotTurnScheduler.test.ts
-└── unit/
-    ├── domain/services/
-    │   ├── CombatService.test.ts
-    │   ├── EnemyAiService.test.ts
-    │   ├── EnemySpawnerService.test.ts
-    │   ├── FloorProgressionService.test.ts
-    │   ├── TurnQueueService.test.ts
-    │   └── VisibilityService.test.ts
-    └── ui/
-        └── GameHud.test.ts
+        ├── MapGenerator.ts        # rot.js 맵 생성
+        ├── RotPathFinder.ts       # rot.js 경로 탐색
+        └── RotFovCalculator.ts    # rot.js FOV
 ```

@@ -9,6 +9,9 @@
     --hud-danger: #f87171;
     --hud-item: #6ee7b7;
     --hud-travel: #7dd3fc;
+    --rarity-common: #fef08a;
+    --rarity-rare: #7dd3fc;
+    --rarity-legendary: #facc15;
     --hud-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
 }
 
@@ -67,7 +70,8 @@ body {
 
 .game-hud__brand,
 .game-hud__log-shell,
-.game-hud__card {
+.game-hud__card,
+.game-hud__boss-panel {
     border: 1px solid var(--hud-border);
     background: var(--hud-bg);
     backdrop-filter: blur(14px);
@@ -84,12 +88,50 @@ body {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 10px;
-    width: min(900px, calc(100vw - 220px));
+    flex: 1;
+    min-width: 0;
 }
 
 .game-hud__card {
     border-radius: 16px;
     padding: 12px 14px;
+}
+
+.game-hud__boss-panel {
+    width: min(280px, 100%);
+    border-radius: 18px;
+    padding: 14px 16px;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-8px);
+    transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.game-hud__boss-panel[data-open="true"] {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+}
+
+.game-hud__boss-head {
+    display: grid;
+    gap: 8px;
+}
+
+.game-hud__boss-bar {
+    overflow: hidden;
+    height: 12px;
+    margin-top: 12px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.game-hud__boss-bar-fill {
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #f97316 0%, #facc15 100%);
+    box-shadow: 0 0 18px rgba(249, 115, 22, 0.35);
 }
 
 .game-hud__card--state {
@@ -123,6 +165,459 @@ body {
     justify-content: flex-start;
 }
 
+.game-hud__event-banner {
+    position: fixed;
+    left: 50%;
+    top: 14%;
+    min-width: min(420px, calc(100vw - 32px));
+    max-width: min(560px, calc(100vw - 32px));
+    border: 1px solid rgba(246, 173, 85, 0.32);
+    border-radius: 999px;
+    padding: 14px 24px;
+    background:
+        linear-gradient(180deg, rgba(20, 24, 36, 0.96), rgba(8, 10, 16, 0.92));
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+    backdrop-filter: blur(16px);
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translate(-50%, -18px) scale(0.96);
+    transition: opacity 160ms ease, transform 160ms ease;
+    text-align: center;
+}
+
+.game-hud__event-banner[data-open="true"] {
+    opacity: 1;
+    visibility: visible;
+    transform: translate(-50%, 0) scale(1);
+}
+
+.game-hud__event-banner[data-tone="danger"] {
+    border-color: rgba(248, 113, 113, 0.42);
+    box-shadow: 0 24px 60px rgba(127, 29, 29, 0.28);
+}
+
+.game-hud__event-banner[data-tone="item"] {
+    border-color: rgba(110, 231, 183, 0.42);
+    box-shadow: 0 24px 60px rgba(6, 78, 59, 0.24);
+}
+
+.game-hud__event-banner[data-tone="travel"] {
+    border-color: rgba(125, 211, 252, 0.42);
+    box-shadow: 0 24px 60px rgba(14, 116, 144, 0.24);
+}
+
+.game-hud__event-banner-text {
+    display: block;
+    font-size: clamp(18px, 2.8vw, 28px);
+    line-height: 1.1;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.game-hud__inventory-overlay {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(5, 8, 12, 0.72);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 120ms ease;
+    pointer-events: none;
+}
+
+.game-hud__title-overlay,
+.game-hud__gameover-overlay,
+.game-hud__victory-overlay {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(5, 8, 12, 0.76);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 120ms ease;
+    pointer-events: none;
+}
+
+.game-hud__inventory-overlay[data-open="true"] {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.game-hud__title-overlay[data-open="true"],
+.game-hud__gameover-overlay[data-open="true"],
+.game-hud__victory-overlay[data-open="true"] {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
+.game-hud__inventory-panel {
+    width: min(920px, 100%);
+    border: 1px solid rgba(246, 173, 85, 0.3);
+    border-radius: 28px;
+    background:
+        linear-gradient(180deg, rgba(18, 22, 31, 0.98), rgba(7, 10, 16, 0.96));
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(16px);
+    pointer-events: auto;
+}
+
+.game-hud__title-panel,
+.game-hud__gameover-panel,
+.game-hud__victory-panel {
+    width: min(720px, 100%);
+    border: 1px solid rgba(246, 173, 85, 0.32);
+    border-radius: 30px;
+    padding: 28px;
+    background:
+        linear-gradient(180deg, rgba(18, 22, 31, 0.98), rgba(7, 10, 16, 0.96));
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(16px);
+    pointer-events: auto;
+}
+
+.game-hud__title-panel {
+    text-align: center;
+}
+
+.game-hud__victory-panel {
+    text-align: center;
+    border-color: rgba(110, 231, 183, 0.34);
+    background:
+        linear-gradient(180deg, rgba(16, 30, 27, 0.98), rgba(6, 12, 16, 0.96));
+}
+
+.game-hud__title--hero {
+    font-size: clamp(34px, 5vw, 52px);
+    line-height: 0.96;
+}
+
+.game-hud__title-copy {
+    max-width: 420px;
+    margin: 16px auto 24px;
+    color: var(--hud-muted);
+    font-size: 15px;
+    line-height: 1.6;
+}
+
+.game-hud__title-stats {
+    display: grid;
+    gap: 6px;
+    justify-items: center;
+    margin-bottom: 20px;
+}
+
+.game-hud__title-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+}
+
+.game-hud__title-action {
+    border: 1px solid rgba(110, 231, 183, 0.42);
+    border-radius: 18px;
+    padding: 12px 18px;
+    background: rgba(110, 231, 183, 0.12);
+    color: var(--hud-text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.game-hud__title-action--secondary {
+    border-color: rgba(246, 173, 85, 0.32);
+    background: rgba(246, 173, 85, 0.1);
+}
+
+.game-hud__title-message {
+    min-height: 22px;
+    margin: 16px 0 0;
+    color: var(--hud-muted);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.game-hud__title-message[data-tone="danger"] {
+    color: var(--hud-danger);
+}
+
+.game-hud__title-message[data-tone="item"] {
+    color: var(--hud-item);
+}
+
+.game-hud__title-message[data-visible="false"] {
+    visibility: hidden;
+}
+
+.game-hud__title-sanctuary {
+    display: none;
+    margin-top: 18px;
+    border: 1px solid rgba(246, 173, 85, 0.18);
+    border-radius: 24px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.03);
+    text-align: left;
+}
+
+.game-hud__title-sanctuary[data-open="true"] {
+    display: grid;
+    gap: 18px;
+}
+
+.game-hud__sanctuary-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.game-hud__sanctuary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.game-hud__sanctuary-card {
+    display: grid;
+    gap: 10px;
+    border: 1px solid rgba(246, 173, 85, 0.16);
+    border-radius: 20px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.game-hud__sanctuary-copy {
+    margin: 0;
+    color: var(--hud-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.game-hud__sanctuary-stats {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+}
+
+.game-hud__sanctuary-stats div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.game-hud__sanctuary-stats dt {
+    color: var(--hud-muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.game-hud__sanctuary-stats dd {
+    margin: 0;
+    font-size: 14px;
+}
+
+.game-hud__sanctuary-buy {
+    border: 1px solid rgba(110, 231, 183, 0.35);
+    border-radius: 16px;
+    padding: 10px 14px;
+    background: rgba(110, 231, 183, 0.12);
+    color: var(--hud-text);
+    font: inherit;
+    cursor: pointer;
+}
+
+.game-hud__sanctuary-buy[disabled] {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.game-hud__gameover-stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin: 22px 0 24px;
+}
+
+.game-hud__gameover-card {
+    border: 1px solid rgba(246, 173, 85, 0.18);
+    border-radius: 18px;
+    padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.game-hud__inventory-header,
+.game-hud__inventory-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 22px;
+}
+
+.game-hud__inventory-header {
+    border-bottom: 1px solid rgba(246, 173, 85, 0.18);
+}
+
+.game-hud__inventory-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.7fr) minmax(260px, 0.9fr);
+    gap: 18px;
+    padding: 18px 22px;
+}
+
+.game-hud__inventory-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    align-content: start;
+}
+
+.game-hud__inventory-slot,
+.game-hud__inventory-close,
+.game-hud__inventory-action {
+    border: 1px solid rgba(246, 173, 85, 0.22);
+    border-radius: 18px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--hud-text);
+    font: inherit;
+}
+
+.game-hud__inventory-slot {
+    display: grid;
+    gap: 6px;
+    min-height: 110px;
+    padding: 14px 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.game-hud__inventory-slot.is-selected {
+    border-color: rgba(110, 231, 183, 0.55);
+    background: rgba(110, 231, 183, 0.12);
+    box-shadow: inset 0 0 0 1px rgba(110, 231, 183, 0.18);
+}
+
+.game-hud__inventory-slot-icon {
+    font-size: 22px;
+    color: var(--hud-accent);
+}
+
+.game-hud__inventory-slot-name {
+    font-size: 15px;
+    line-height: 1.25;
+}
+
+.game-hud__inventory-slot-name[data-rarity="COMMON"],
+.game-hud__item-name[data-rarity="COMMON"],
+.game-hud__inventory-stats dd[data-rarity="COMMON"] {
+    color: var(--rarity-common);
+}
+
+.game-hud__inventory-slot-name[data-rarity="RARE"],
+.game-hud__item-name[data-rarity="RARE"],
+.game-hud__inventory-stats dd[data-rarity="RARE"] {
+    color: var(--rarity-rare);
+}
+
+.game-hud__inventory-slot-name[data-rarity="LEGENDARY"],
+.game-hud__item-name[data-rarity="LEGENDARY"],
+.game-hud__inventory-stats dd[data-rarity="LEGENDARY"] {
+    color: var(--rarity-legendary);
+}
+
+.game-hud__inventory-slot-meta,
+.game-hud__inventory-capacity {
+    color: var(--hud-muted);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.game-hud__inventory-detail {
+    min-height: 100%;
+    border: 1px solid rgba(246, 173, 85, 0.18);
+    border-radius: 24px;
+    padding: 18px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.game-hud__inventory-description {
+    margin: 12px 0 18px;
+    color: var(--hud-text);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.game-hud__inventory-stats {
+    display: grid;
+    gap: 12px;
+    margin: 0;
+}
+
+.game-hud__inventory-stats div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.game-hud__inventory-stats dt {
+    color: var(--hud-muted);
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.game-hud__inventory-stats dd {
+    margin: 0;
+    font-size: 15px;
+}
+
+.game-hud__inventory-actions {
+    border-top: 1px solid rgba(246, 173, 85, 0.18);
+}
+
+.game-hud__inventory-close,
+.game-hud__inventory-action {
+    padding: 10px 16px;
+    cursor: pointer;
+}
+
+.game-hud__inventory-action[disabled] {
+    cursor: not-allowed;
+    opacity: 0.45;
+}
+
+.game-hud__inventory-action--accent {
+    border-color: rgba(110, 231, 183, 0.4);
+    background: rgba(110, 231, 183, 0.14);
+}
+
+.game-hud__inventory-empty {
+    display: grid;
+    gap: 6px;
+    grid-column: 1 / -1;
+    min-height: 180px;
+    place-content: center;
+    border: 1px dashed rgba(246, 173, 85, 0.22);
+    border-radius: 22px;
+    padding: 22px;
+    text-align: center;
+    color: var(--hud-muted);
+}
+
 .game-hud__log-shell {
     width: min(680px, 100%);
     padding: 14px 16px 10px;
@@ -141,6 +636,9 @@ body {
     list-style: none;
     display: grid;
     gap: 8px;
+    max-height: 292px;
+    overflow-y: auto;
+    padding-right: 4px;
 }
 
 .game-hud__log-entry {
@@ -189,6 +687,11 @@ body {
     background: linear-gradient(135deg, rgba(96, 22, 22, 0.94), rgba(38, 12, 16, 0.94));
 }
 
+#hud-root[data-state="victory"] .game-hud__card--state {
+    border-color: rgba(110, 231, 183, 0.4);
+    background: linear-gradient(135deg, rgba(10, 64, 52, 0.94), rgba(8, 28, 24, 0.94));
+}
+
 @media (max-width: 960px) {
     .game-hud {
         padding: 12px;
@@ -203,7 +706,37 @@ body {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .game-hud__boss-panel {
+        width: 100%;
+    }
+
+    .game-hud__event-banner {
+        top: 12%;
+        min-width: min(360px, calc(100vw - 24px));
+    }
+
     .game-hud__log-shell {
         width: 100%;
+    }
+
+    .game-hud__inventory-body {
+        grid-template-columns: 1fr;
+    }
+
+    .game-hud__sanctuary-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .game-hud__inventory-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .game-hud__inventory-header,
+    .game-hud__inventory-actions {
+        flex-wrap: wrap;
+    }
+
+    .game-hud__gameover-stats {
+        grid-template-columns: 1fr;
     }
 }
