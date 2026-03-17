@@ -82,6 +82,40 @@ body {
     min-width: 172px;
     padding: 14px 16px;
     border-radius: 18px;
+    pointer-events: auto;
+}
+
+.game-hud__locale-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.game-hud__locale-switch--compact {
+    margin-top: 12px;
+}
+
+.game-hud__locale-switch--full {
+    margin-bottom: 18px;
+    justify-content: center;
+}
+
+.game-hud__locale-button {
+    border: 1px solid rgba(246, 173, 85, 0.26);
+    border-radius: 999px;
+    padding: 7px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--hud-muted);
+    font: inherit;
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    cursor: pointer;
+}
+
+.game-hud__locale-button[aria-pressed="true"] {
+    border-color: rgba(110, 231, 183, 0.5);
+    background: rgba(110, 231, 183, 0.16);
+    color: var(--hud-text);
 }
 
 .game-hud__stats {

@@ -27,7 +27,23 @@ import { type TurnActor, TurnQueueService } from '../domain/services/TurnQueueSe
 import { RotTurnScheduler } from '../infra/rot/RotTurnScheduler';
 import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
 import { WORLD_TILE, isWalkableTile } from '../shared/types/WorldTiles';
+import { GameLocalization, type MovementDirection } from '../ui/GameLocalization';
 import { type HudLogTone, GameHud } from '../ui/GameHud';
+
+type TitleScreenMessage =
+    | { key: 'sanctuary-help'; tone: HudLogTone }
+    | {
+        key: 'upgrade-purchased';
+        tone: HudLogTone;
+        upgradeKey: PermanentUpgradeKey;
+        level: number;
+    }
+    | {
+        key: 'upgrade-insufficient';
+        tone: HudLogTone;
+        upgradeKey: PermanentUpgradeKey;
+        missingSoulShards: number;
+    };
 
 export class MainScene extends Phaser.Scene {
     private mapData?: MapData;
@@ -49,7 +65,7 @@ export class MainScene extends Phaser.Scene {
     private isGameOver = false;
     private isVictory = false;
     private defeatedEnemyCount = 0;
-    private titleScreenMessage?: { text: string; tone: HudLogTone };
+    private titleScreenMessage?: TitleScreenMessage;
     private readonly combatService = new CombatService();
     private readonly enemySpawner = new EnemySpawnerService();
     private readonly floorProgression = new FloorProgressionService();
@@ -58,8 +74,14 @@ export class MainScene extends Phaser.Scene {
     private readonly metaProgression = new MetaProgressionService(this.soulShardService);
     private readonly runPersistence = new RunPersistenceService();
 
-    constructor(private readonly hud: GameHud) {
+    constructor(
+        private readonly hud: GameHud,
+        private readonly localization: GameLocalization,
+    ) {
         super({ key: 'MainScene' });
+        this.localization.subscribe(() => {
+            this.handleLocaleChange();
+        });
     }
 
     preload() {
@@ -173,11 +195,11 @@ export class MainScene extends Phaser.Scene {
             isOpen: false,
             floorNumber: 100,
             defeatedEnemies: 0,
-            bossName: 'Final Boss',
+            bossName: this.getDefaultBossName(),
         });
         this.hud.updateBoss({
             isVisible: false,
-            name: 'Final Boss',
+            name: this.getDefaultBossName(),
             health: 0,
             maxHealth: 0,
         });
@@ -287,18 +309,18 @@ export class MainScene extends Phaser.Scene {
         const pickupLog = this.collectItemAtPlayerPosition();
 
         if (targetTile === WORLD_TILE.STAIRS) {
-            this.pushTurnLog('Player climbs the stairs.');
+            this.pushTurnLog(this.localization.formatPlayerClimbsStairs());
             this.advanceToNextFloor();
             return;
         }
 
         if (targetTile === WORLD_TILE.REST) {
-            this.completePlayerTurn('Player steps into the sanctuary.');
+            this.completePlayerTurn(this.localization.formatPlayerStepsIntoSanctuary());
             return;
         }
 
         this.completePlayerTurn(
-            `Player moved ${this.describeDirection(dx, dy)}.`,
+            this.localization.formatPlayerMoved(this.describeDirection(dx, dy)),
             pickupLog ? [pickupLog] : [],
         );
     }
@@ -484,7 +506,7 @@ export class MainScene extends Phaser.Scene {
             {
                 id: 'player',
                 kind: 'player',
-                label: 'Player',
+                label: this.localization.getPlayerLabel(),
             },
             this.createEnemyTurnActors(),
         );
@@ -494,7 +516,7 @@ export class MainScene extends Phaser.Scene {
         return this.enemyEntities.map((enemy) => ({
             id: enemy.id,
             kind: 'enemy' as const,
-            label: enemy.label,
+            label: this.getEnemyDisplayName(enemy),
         }));
     }
 
@@ -526,7 +548,7 @@ export class MainScene extends Phaser.Scene {
             isOpen: false,
             floorNumber: floor.number,
             defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getBossEnemy()?.label ?? 'Final Boss',
+            bossName: this.getBossName(),
         });
         this.syncInventoryOverlay();
         this.syncBossHud();
@@ -535,14 +557,16 @@ export class MainScene extends Phaser.Scene {
 
         this.pushTurnLog(arrivalLog, 'travel');
         if (floor.type === 'safe') {
-            this.pushTurnLog('A quiet sanctuary awaits on this floor.');
+            this.pushTurnLog(this.localization.formatSanctuaryAwaits());
         } else if (floor.type === 'boss') {
-            this.pushTurnLog('The summit seals itself. Only the Final Boss remains.', 'danger');
+            this.pushTurnLog(this.localization.formatBossFloorWarning(this.getBossName()), 'danger');
         }
 
         const snapshot = this.turnQueue?.getSnapshot();
         if (snapshot) {
-            this.pushTurnLog(`Round ${snapshot.round}: ${snapshot.activeActor.label} turn.`);
+            this.pushTurnLog(
+                this.localization.formatRoundActorTurn(snapshot.round, snapshot.activeActor.label),
+            );
         }
     }
 
@@ -550,7 +574,7 @@ export class MainScene extends Phaser.Scene {
         const nextFloor = this.floorProgression.advance();
         this.buildFloor(
             nextFloor,
-            `Entered floor ${nextFloor.number} (${this.formatFloorType(nextFloor.type)}).`,
+            this.localization.formatEnteredFloor(nextFloor.number, nextFloor.type),
         );
         this.persistRun('active');
     }
@@ -579,7 +603,12 @@ export class MainScene extends Phaser.Scene {
         this.updateVisibility();
         this.refreshTurnStatus();
         if (!this.isGameOver) {
-            this.pushTurnLog(`Round ${resolution.round}: ${resolution.nextActor.label} turn.`);
+            this.pushTurnLog(
+                this.localization.formatRoundActorTurn(
+                    resolution.round,
+                    resolution.nextActor.label,
+                ),
+            );
         }
     }
 
@@ -595,9 +624,16 @@ export class MainScene extends Phaser.Scene {
 
         if (pickup.status === 'inventory-full' || !pickup.inventoryItem) {
             const inventory = this.itemService.getInventorySnapshot();
+            const itemName = pickup.fieldItem
+                ? this.getItemDisplayName(pickup.fieldItem.definition)
+                : 'item';
 
             return {
-                line: `Cannot carry ${pickup.fieldItem?.definition.name ?? 'this item'} (${inventory.usedSlots}/${inventory.slotCapacity} slots full).`,
+                line: this.localization.formatInventoryFull(
+                    itemName,
+                    inventory.usedSlots,
+                    inventory.slotCapacity,
+                ),
                 tone: 'danger' as const,
             };
         }
@@ -620,11 +656,13 @@ export class MainScene extends Phaser.Scene {
             const previewStats = this.metaProgression.getRunStartStats();
             this.hud.updateStatus({
                 floorNumber: 1,
-                floorType: 'Normal',
+                floorType: this.localization.getFloorTypeLabel('normal'),
                 health: previewStats.health,
                 maxHealth: previewStats.maxHealth,
                 experience: 0,
-                activeTurn: this.isSanctuaryOpen ? 'Sanctuary' : 'Title Screen',
+                activeTurn: this.isSanctuaryOpen
+                    ? this.localization.getSanctuaryTurnLabel()
+                    : this.localization.getTitleScreenTurnLabel(),
                 enemyCount: 0,
                 isGameOver: false,
                 runState: 'playing',
@@ -638,11 +676,11 @@ export class MainScene extends Phaser.Scene {
             const floor = this.floorProgression.getSnapshot();
             this.hud.updateStatus({
                 floorNumber: floor.number,
-                floorType: this.formatFloorType(floor.type),
+                floorType: this.localization.getFloorTypeLabel(floor.type),
                 health: this.playerEntity.stats.health,
                 maxHealth: this.playerEntity.stats.maxHealth,
                 experience: this.playerEntity.experience,
-                activeTurn: 'Ending',
+                activeTurn: this.localization.getEndingTurnLabel(),
                 enemyCount: 0,
                 isGameOver: false,
                 runState: 'victory',
@@ -651,13 +689,14 @@ export class MainScene extends Phaser.Scene {
         }
 
         if (this.isGameOver) {
+            const floor = this.floorProgression.getSnapshot();
             this.hud.updateStatus({
-                floorNumber: this.floorProgression.getSnapshot().number,
-                floorType: this.formatFloorType(this.floorProgression.getSnapshot().type),
+                floorNumber: floor.number,
+                floorType: this.localization.getFloorTypeLabel(floor.type),
                 health: this.playerEntity.stats.health,
                 maxHealth: this.playerEntity.stats.maxHealth,
                 experience: this.playerEntity.experience,
-                activeTurn: 'Game Over',
+                activeTurn: this.localization.getGameOverTurnLabel(),
                 enemyCount: this.enemyEntities.length,
                 isGameOver: true,
                 runState: 'game-over',
@@ -672,13 +711,13 @@ export class MainScene extends Phaser.Scene {
 
         this.hud.updateStatus({
             floorNumber: floor.number,
-            floorType: this.formatFloorType(floor.type),
+            floorType: this.localization.getFloorTypeLabel(floor.type),
             health: this.playerEntity.stats.health,
             maxHealth: this.playerEntity.stats.maxHealth,
             experience: this.playerEntity.experience,
             activeTurn: this.isInventoryOpen
-                ? `Inventory · ${snapshot.activeActor.label}`
-                : `Round ${snapshot.round} · ${snapshot.activeActor.label}`,
+                ? this.localization.getInventoryTurnLabel(snapshot.activeActor.label)
+                : this.localization.getRoundTurnLabel(snapshot.round, snapshot.activeActor.label),
             enemyCount: snapshot.enemyCount,
             isGameOver: false,
             runState: 'playing',
@@ -691,14 +730,14 @@ export class MainScene extends Phaser.Scene {
 
     private queueFloorEventBanner(floor: FloorSnapshot) {
         this.hud.queueEventBanner(
-            `Floor ${floor.number} · ${this.formatFloorType(floor.type)}`,
+            this.localization.formatFloorBanner(floor.number, floor.type),
             'travel',
             1700,
         );
 
         if (floor.type === 'boss') {
             this.hud.queueEventBanner(
-                `${this.getBossEnemy()?.label ?? 'Final Boss'} Approaches`,
+                this.localization.formatBossApproaches(this.getBossName()),
                 'danger',
                 2400,
             );
@@ -740,7 +779,7 @@ export class MainScene extends Phaser.Scene {
         this.itemService.resetRun();
         this.buildFloor(
             floor,
-            `Resumed on floor ${floor.number} (${this.formatFloorType(floor.type)}).`,
+            this.localization.formatResumedFloor(floor.number, floor.type),
         );
         this.playerEntity?.restore(savedRun.player.stats, savedRun.player.experience);
         this.itemService.restoreInventory(savedRun.inventory);
@@ -773,7 +812,7 @@ export class MainScene extends Phaser.Scene {
         const boss = this.getBossEnemy();
         this.hud.updateBoss({
             isVisible: !!boss && !this.isTitleScreenOpen && !this.isGameOver && !this.isVictory,
-            name: boss?.label ?? 'Final Boss',
+            name: boss ? this.getEnemyDisplayName(boss) : this.getDefaultBossName(),
             health: boss?.stats.health ?? 0,
             maxHealth: boss?.stats.maxHealth ?? 0,
         });
@@ -784,9 +823,11 @@ export class MainScene extends Phaser.Scene {
 
         const enemy = this.getEnemyById(enemyTurn.id);
         if (!enemy) {
-            this.pushTurnLog(`${enemyTurn.label} is no longer present.`);
+            this.pushTurnLog(this.localization.formatActorMissing(enemyTurn.label));
             return;
         }
+
+        const enemyName = this.getEnemyDisplayName(enemy);
 
         const ai = new EnemyAiService(
             this.createEnemyPathFinder(enemy.id),
@@ -800,8 +841,8 @@ export class MainScene extends Phaser.Scene {
                 this.updateEnemySpritePosition(enemy);
                 this.pushTurnLog(
                     action.pursuit === 'player'
-                        ? `${enemy.label} advances toward the player.`
-                        : `${enemy.label} searches the last known position.`,
+                        ? this.localization.formatEnemyAdvances(enemyName)
+                        : this.localization.formatEnemySearches(enemyName),
                     'travel',
                 );
                 break;
@@ -875,15 +916,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     private describeEnemyWait(enemy: Enemy, reason: 'idle' | 'searching' | 'blocked') {
-        switch (reason) {
-            case 'searching':
-                return `${enemy.label} waits at the last known position.`;
-            case 'blocked':
-                return `${enemy.label} cannot find a path and waits.`;
-            case 'idle':
-            default:
-                return `${enemy.label} waits.`;
-        }
+        return this.localization.formatEnemyWait(this.getEnemyDisplayName(enemy), reason);
     }
 
     private spawnFloatingDamage(
@@ -934,7 +967,12 @@ export class MainScene extends Phaser.Scene {
         this.syncBossHud();
 
         this.pushTurnLog(
-            this.describeAttack('Player', enemy.label, resolution.damage, resolution.isCritical),
+            this.describeAttack(
+                this.localization.getPlayerLabel(),
+                this.getEnemyDisplayName(enemy),
+                resolution.damage,
+                resolution.isCritical,
+            ),
             'combat',
         );
 
@@ -955,7 +993,12 @@ export class MainScene extends Phaser.Scene {
         this.playerEntity.applyDamage(resolution.damage);
         this.spawnFloatingDamage(this.playerEntity.position, resolution.damage, resolution.isCritical, 'player');
         this.pushTurnLog(
-            this.describeAttack(enemy.label, 'Player', resolution.damage, resolution.isCritical),
+            this.describeAttack(
+                this.getEnemyDisplayName(enemy),
+                this.localization.getPlayerLabel(),
+                resolution.damage,
+                resolution.isCritical,
+            ),
             'danger',
         );
 
@@ -970,8 +1013,8 @@ export class MainScene extends Phaser.Scene {
         this.removeEnemy(enemy.id);
         this.defeatedEnemyCount += 1;
         const totalExp = this.playerEntity.gainExperience(enemy.experienceReward);
-        this.pushTurnLog(`${enemy.label} dies.`, 'danger');
-        this.pushTurnLog(`Player gains ${enemy.experienceReward} EXP (${totalExp} total).`, 'item');
+        this.pushTurnLog(this.localization.formatEnemyDeath(this.getEnemyDisplayName(enemy)), 'danger');
+        this.pushTurnLog(this.localization.formatExperienceGain(enemy.experienceReward, totalExp), 'item');
 
         if (enemy.isBoss()) {
             this.handleVictory(enemy);
@@ -1007,13 +1050,16 @@ export class MainScene extends Phaser.Scene {
             isOpen: false,
             floorNumber: this.floorProgression.getSnapshot().number,
             defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getBossEnemy()?.label ?? 'Final Boss',
+            bossName: this.getBossName(),
         });
         this.syncInventoryOverlay();
         this.syncBossHud();
-        this.pushTurnLog('Player dies. Combat ends.', 'danger');
+        this.pushTurnLog(this.localization.formatPlayerDeath(), 'danger');
         this.pushTurnLog(
-            `Soul Shards +${rewardSummary.earnedSoulShards} (${rewardSummary.totalSoulShards} total).`,
+            this.localization.formatSoulShardReward(
+                rewardSummary.earnedSoulShards,
+                rewardSummary.totalSoulShards,
+            ),
             'item',
         );
         this.refreshTurnStatus();
@@ -1037,11 +1083,11 @@ export class MainScene extends Phaser.Scene {
             isOpen: true,
             floorNumber: this.floorProgression.getSnapshot().number,
             defeatedEnemies: this.defeatedEnemyCount,
-            bossName: boss.label,
+            bossName: this.getEnemyDisplayName(boss),
         });
         this.syncInventoryOverlay();
         this.syncBossHud();
-        this.pushTurnLog(`${boss.label} falls. The summit is yours.`, 'item');
+        this.pushTurnLog(this.localization.formatVictory(this.getEnemyDisplayName(boss)), 'item');
         this.refreshTurnStatus();
         this.persistRun('victory');
     }
@@ -1052,7 +1098,10 @@ export class MainScene extends Phaser.Scene {
         }
         const rewardPosition = this.findRewardDropPosition(enemy.position);
         if (!rewardPosition) {
-            this.pushTurnLog(`${enemy.label} carried a relic, but it is lost in the clash.`, 'danger');
+            this.pushTurnLog(
+                this.localization.formatEliteRewardLost(this.getEnemyDisplayName(enemy)),
+                'danger',
+            );
             return;
         }
 
@@ -1064,7 +1113,11 @@ export class MainScene extends Phaser.Scene {
         this.fieldItems = this.itemService.getFieldItems();
         this.renderFieldItem(reward);
         this.pushTurnLog(
-            `${enemy.label} drops ${reward.definition.name} [${reward.definition.rarity}].`,
+            this.localization.formatEnemyDrops(
+                this.getEnemyDisplayName(enemy),
+                this.getItemDisplayName(reward.definition),
+                reward.definition.rarity,
+            ),
             'item',
         );
     }
@@ -1131,47 +1184,53 @@ export class MainScene extends Phaser.Scene {
             {
                 id: 'player',
                 kind: 'player',
-                label: 'Player',
+                label: this.localization.getPlayerLabel(),
             },
             this.createEnemyTurnActors(),
         );
     }
 
     private describeAttack(attacker: string, target: string, damage: number, isCritical: boolean) {
-        const criticalLabel = isCritical ? ' critical' : '';
-        return `${attacker} hits ${target} for ${damage}${criticalLabel} damage.`;
+        return this.localization.formatAttack(attacker, target, damage, isCritical);
     }
 
-    private describePickup(item: { icon: string; name: string; quantity: number }) {
-        const quantity = item.quantity > 1 ? ` x${item.quantity}` : '';
-        return `Get ${item.icon} ${item.name}${quantity}.`;
+    private describePickup(item: { icon: string; id: string; name: string; quantity: number }) {
+        return this.localization.formatPickup(
+            item.icon,
+            this.localization.getItemName(item.id, item.name),
+            item.quantity,
+        );
     }
 
-    private describeDrop(item: { icon: string; name: string }) {
-        return `Drop ${item.icon} ${item.name}.`;
+    private describeDrop(item: { icon: string; id: string; name: string }) {
+        return this.localization.formatDrop(
+            item.icon,
+            this.localization.getItemName(item.id, item.name),
+        );
     }
 
-    private describeUse(item: { icon: string; name: string }, healedAmount: number) {
-        if (healedAmount > 0) {
-            return `Player uses ${item.icon} ${item.name} and recovers ${healedAmount} HP.`;
-        }
-
-        return `Player uses ${item.icon} ${item.name}, but no HP is restored.`;
+    private describeUse(item: { icon: string; id: string; name: string }, healedAmount: number) {
+        return this.localization.formatUse(
+            item.icon,
+            this.localization.getItemName(item.id, item.name),
+            healedAmount,
+        );
     }
 
     private describeEquip(
-        item: { icon: string; name: string },
+        item: { icon: string; id: string; name: string },
         state: 'equip' | 'unequip',
         statModifier?: { maxHealth?: number; attack?: number; defense?: number },
     ) {
         const summary = this.formatStatModifierSummary(
             state === 'unequip' ? this.invertModifierForDisplay(statModifier) : statModifier,
         );
-        const prefix = state === 'equip' ? 'Player equips' : 'Player unequips';
-
-        return summary
-            ? `${prefix} ${item.icon} ${item.name} (${summary}).`
-            : `${prefix} ${item.icon} ${item.name}.`;
+        return this.localization.formatEquip(
+            item.icon,
+            this.localization.getItemName(item.id, item.name),
+            state,
+            summary,
+        );
     }
 
     private formatStatModifierSummary(modifier?: { maxHealth?: number; attack?: number; defense?: number }) {
@@ -1200,23 +1259,11 @@ export class MainScene extends Phaser.Scene {
         };
     }
 
-    private describeDirection(dx: number, dy: number) {
+    private describeDirection(dx: number, dy: number): MovementDirection {
         if (dx < 0) return 'west';
         if (dx > 0) return 'east';
         if (dy < 0) return 'north';
         return 'south';
-    }
-
-    private formatFloorType(type: FloorSnapshot['type']) {
-        if (type === 'safe') {
-            return 'Safe Zone';
-        }
-
-        if (type === 'boss') {
-            return 'Boss Lair';
-        }
-
-        return 'Normal';
     }
 
     private toggleInventoryOpen() {
@@ -1260,7 +1307,7 @@ export class MainScene extends Phaser.Scene {
             totalSoulShards: snapshot.totalSoulShards,
             canContinueRun: this.runPersistence.hasActiveRun(),
             isSanctuaryOpen: this.isSanctuaryOpen,
-            sanctuaryMessage: this.titleScreenMessage?.text,
+            sanctuaryMessage: this.getTitleScreenMessageText(),
             sanctuaryMessageTone: this.titleScreenMessage?.tone ?? 'system',
             upgrades: snapshot.upgrades,
         });
@@ -1277,12 +1324,12 @@ export class MainScene extends Phaser.Scene {
         }
 
         if (drop.status === 'equipped-item') {
-            this.pushTurnLog('Unequip an item before dropping it.', 'danger');
+            this.pushTurnLog(this.localization.formatUnequipBeforeDrop(), 'danger');
             return;
         }
 
         if (drop.status === 'tile-occupied' || !drop.fieldItem) {
-            this.pushTurnLog('Cannot drop an item onto an occupied tile.', 'danger');
+            this.pushTurnLog(this.localization.formatOccupiedDrop(), 'danger');
             return;
         }
 
@@ -1337,7 +1384,12 @@ export class MainScene extends Phaser.Scene {
                 );
                 break;
             case 'not-usable':
-                this.pushTurnLog(`${selectedItem.name} cannot be used right now.`, 'danger');
+                this.pushTurnLog(
+                    this.localization.formatItemNotUsable(
+                        this.localization.getItemName(selectedItem.id, selectedItem.name),
+                    ),
+                    'danger',
+                );
                 break;
         }
 
@@ -1365,7 +1417,7 @@ export class MainScene extends Phaser.Scene {
             isOpen: false,
             floorNumber: this.floorProgression.getSnapshot().number,
             defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getBossEnemy()?.label ?? 'Final Boss',
+            bossName: this.getBossName(),
         });
         this.syncTitleOverlay();
         this.syncInventoryOverlay();
@@ -1380,7 +1432,7 @@ export class MainScene extends Phaser.Scene {
 
         this.isSanctuaryOpen = true;
         this.titleScreenMessage = {
-            text: 'Spend Soul Shards to strengthen your next descent.',
+            key: 'sanctuary-help',
             tone: 'system',
         };
         this.syncTitleOverlay();
@@ -1405,13 +1457,17 @@ export class MainScene extends Phaser.Scene {
         const purchase = this.metaProgression.purchaseUpgrade(key);
         if (purchase.status === 'purchased') {
             this.titleScreenMessage = {
-                text: `${purchase.upgrade.label} advanced to Lv.${purchase.upgrade.level}.`,
+                key: 'upgrade-purchased',
                 tone: 'item',
+                upgradeKey: key,
+                level: purchase.upgrade.level,
             };
         } else {
             this.titleScreenMessage = {
-                text: `Need ${purchase.missingSoulShards} more Soul Shards for ${purchase.upgrade.label}.`,
+                key: 'upgrade-insufficient',
                 tone: 'danger',
+                upgradeKey: key,
+                missingSoulShards: purchase.missingSoulShards ?? 0,
             };
         }
 
@@ -1436,7 +1492,7 @@ export class MainScene extends Phaser.Scene {
         this.hud.clearLogs();
         this.buildFloor(
             firstFloor,
-            'Entered floor 1 (Normal).',
+            this.localization.formatEnteredFloor(firstFloor.number, firstFloor.type),
         );
         this.persistRun('active');
     }
@@ -1445,7 +1501,7 @@ export class MainScene extends Phaser.Scene {
         const label = this.add.text(
             (item.position.x * this.tileSize) + (this.tileSize / 2),
             (item.position.y * this.tileSize) + (this.tileSize / 2),
-            `${item.definition.icon}\n${item.definition.name}`,
+            `${item.definition.icon}\n${this.getItemDisplayName(item.definition)}`,
             {
                 align: 'center',
                 color: this.getItemRarityColor(item.rarity),
@@ -1458,6 +1514,81 @@ export class MainScene extends Phaser.Scene {
             .setDepth(1)
             .setOrigin(0.5);
         this.itemLabels.set(item.instanceId, label);
+    }
+
+    private handleLocaleChange() {
+        if (this.turnQueue && this.shouldRefreshTurnQueueLocale()) {
+            this.refreshTurnQueueRoster();
+        }
+
+        this.refreshFieldItemLabels();
+        this.hud.updateVictory({
+            isOpen: this.isVictory,
+            floorNumber: this.floorProgression.getSnapshot().number,
+            defeatedEnemies: this.defeatedEnemyCount,
+            bossName: this.getBossName(),
+        });
+        this.syncTitleOverlay();
+        this.syncInventoryOverlay();
+        this.syncBossHud();
+        this.refreshTurnStatus();
+    }
+
+    private shouldRefreshTurnQueueLocale() {
+        if (this.isTitleScreenOpen || this.isGameOver || this.isVictory || !this.turnQueue) {
+            return false;
+        }
+
+        return this.turnQueue.getSnapshot().activeActor.kind === 'player';
+    }
+
+    private refreshFieldItemLabels() {
+        for (const item of this.fieldItems) {
+            const label = this.itemLabels.get(item.instanceId);
+            if (!label) {
+                continue;
+            }
+
+            label.setText(`${item.definition.icon}\n${this.getItemDisplayName(item.definition)}`);
+        }
+    }
+
+    private getItemDisplayName(item: { id: string; name: string }) {
+        return this.localization.getItemName(item.id, item.name);
+    }
+
+    private getEnemyDisplayName(enemy: Pick<Enemy, 'archetypeId' | 'elite'>) {
+        return this.localization.getEnemyName(enemy.archetypeId, enemy.elite);
+    }
+
+    private getDefaultBossName() {
+        return this.localization.getEnemyName('final-boss');
+    }
+
+    private getBossName() {
+        const boss = this.getBossEnemy();
+        return boss ? this.getEnemyDisplayName(boss) : this.getDefaultBossName();
+    }
+
+    private getTitleScreenMessageText() {
+        if (!this.titleScreenMessage) {
+            return undefined;
+        }
+
+        switch (this.titleScreenMessage.key) {
+            case 'sanctuary-help':
+                return this.localization.formatSanctuaryHelp();
+            case 'upgrade-purchased':
+                return this.localization.formatUpgradeAdvanced(
+                    this.titleScreenMessage.upgradeKey,
+                    this.titleScreenMessage.level,
+                );
+            case 'upgrade-insufficient':
+                return this.localization.formatUpgradeNeedMore(
+                    this.titleScreenMessage.upgradeKey,
+                    this.titleScreenMessage.missingSoulShards,
+                );
+        }
     }
 
     private getItemRarityColor(rarity: ItemEntity['rarity']) {

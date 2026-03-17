@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { GameLocalization } from '../../../src/ui/GameLocalization';
 import { GameHud } from '../../../src/ui/GameHud';
 
 const HUD_ROLES = [
@@ -67,6 +68,10 @@ class FakeElement {
 class FakeRootElement extends FakeElement {
     private readonly roles = new Map<string, FakeElement>();
 
+    override get innerHTML() {
+        return super.innerHTML;
+    }
+
     override set innerHTML(value: string) {
         super.innerHTML = value;
 
@@ -109,11 +114,11 @@ class FakeRootElement extends FakeElement {
     }
 }
 
-function createHud() {
+function createHud(localization = new GameLocalization()) {
     const root = new FakeRootElement();
-    const hud = new GameHud(root as unknown as HTMLElement);
+    const hud = new GameHud(root as unknown as HTMLElement, localization);
 
-    return { root, hud };
+    return { root, hud, localization };
 }
 
 describe('GameHud', () => {
@@ -334,9 +339,9 @@ describe('GameHud', () => {
         expect(root.htmlFor('inventory-list')).toContain('Iron Dagger');
         expect(root.htmlFor('inventory-list')).toContain('data-rarity="RARE"');
         expect(root.htmlFor('inventory-list')).toContain('is-selected');
-        expect(root.htmlFor('inventory-detail')).toContain('A light blade.');
+        expect(root.htmlFor('inventory-detail')).toContain('A light blade suited for quick strikes.');
         expect(root.htmlFor('inventory-detail')).toContain('Rare');
-        expect(root.htmlFor('inventory-detail')).toContain('WEAPON ATK +4');
+        expect(root.htmlFor('inventory-detail')).toContain('Weapon ATK +4');
         expect(root.textFor('inventory-use')).toBe('Unequip');
         expect(root.disabledFor('inventory-use')).toBe(false);
         expect(root.disabledFor('inventory-drop')).toBe(true);
@@ -431,5 +436,26 @@ describe('GameHud', () => {
 
         // Assert
         expect(root.disabledFor('title-continue')).toBe(true);
+    });
+
+    it('rerenders static UI copy when the locale changes', () => {
+        // Arrange
+        const { root, hud, localization } = createHud();
+        hud.updateInventory({
+            isOpen: true,
+            items: [],
+            usedSlots: 0,
+            slotCapacity: 12,
+        });
+
+        // Act
+        localization.setLocale('ko');
+
+        // Assert
+        expect(root.innerHTML).toContain('전장 HUD');
+        expect(root.innerHTML).toContain('메시지 로그');
+        expect(root.textFor('inventory-capacity')).toBe('0 / 12칸');
+        expect(root.textFor('inventory-use')).toBe('사용');
+        expect(root.htmlFor('inventory-list')).toContain('인벤토리가 비어 있습니다');
     });
 });

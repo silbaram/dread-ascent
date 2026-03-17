@@ -5,6 +5,7 @@ import type {
 } from '../domain/services/MetaProgressionService';
 import type { SoulShardAwardSummary } from '../domain/services/SoulShardService';
 import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
+import { GameLocalization } from './GameLocalization';
 
 export type HudLogTone = 'combat' | 'danger' | 'item' | 'travel' | 'system';
 
@@ -124,6 +125,7 @@ export class GameHud {
         sanctuaryMessageTone: 'system',
         upgrades: [],
     };
+    private statusSnapshot?: HudStatusSnapshot;
     private inventorySnapshot: InventoryOverlaySnapshot = {
         isOpen: false,
         items: [],
@@ -132,77 +134,100 @@ export class GameHud {
     };
     private inventoryHandlers?: InventoryOverlayHandlers;
     private runOverlayHandlers?: RunOverlayHandlers;
-    private readonly healthValue: HTMLElement;
-    private readonly expValue: HTMLElement;
-    private readonly floorValue: HTMLElement;
-    private readonly turnValue: HTMLElement;
-    private readonly enemyValue: HTMLElement;
-    private readonly stateValue: HTMLElement;
-    private readonly bossPanel: HTMLElement;
-    private readonly bossNameValue: HTMLElement;
-    private readonly bossHealthValue: HTMLElement;
-    private readonly bossBarValue: HTMLElement;
-    private readonly logList: HTMLElement;
-    private readonly eventBanner: HTMLElement;
-    private readonly eventBannerText: HTMLElement;
-    private readonly titleOverlay: HTMLElement;
-    private readonly titleSoulShardsValue: HTMLElement;
-    private readonly titleContinueButton: HTMLButtonElement;
-    private readonly titleMessage: HTMLElement;
-    private readonly titleSanctuary: HTMLElement;
-    private readonly gameOverOverlay: HTMLElement;
-    private readonly gameOverFloorValue: HTMLElement;
-    private readonly gameOverKillsValue: HTMLElement;
-    private readonly gameOverEarnedValue: HTMLElement;
-    private readonly gameOverTotalValue: HTMLElement;
-    private readonly victoryOverlay: HTMLElement;
-    private readonly victoryFloorValue: HTMLElement;
-    private readonly victoryKillsValue: HTMLElement;
-    private readonly victoryBossValue: HTMLElement;
-    private readonly inventoryOverlay: HTMLElement;
-    private readonly inventoryCapacityValue: HTMLElement;
-    private readonly inventoryList: HTMLElement;
-    private readonly inventoryDetail: HTMLElement;
-    private readonly inventoryUseButton: HTMLButtonElement;
-    private readonly inventoryDropButton: HTMLButtonElement;
+    private healthValue!: HTMLElement;
+    private expValue!: HTMLElement;
+    private floorValue!: HTMLElement;
+    private turnValue!: HTMLElement;
+    private enemyValue!: HTMLElement;
+    private stateValue!: HTMLElement;
+    private bossPanel!: HTMLElement;
+    private bossNameValue!: HTMLElement;
+    private bossHealthValue!: HTMLElement;
+    private bossBarValue!: HTMLElement;
+    private logList!: HTMLElement;
+    private eventBanner!: HTMLElement;
+    private eventBannerText!: HTMLElement;
+    private titleOverlay!: HTMLElement;
+    private titleSoulShardsValue!: HTMLElement;
+    private titleContinueButton!: HTMLButtonElement;
+    private titleMessage!: HTMLElement;
+    private titleSanctuary!: HTMLElement;
+    private gameOverOverlay!: HTMLElement;
+    private gameOverFloorValue!: HTMLElement;
+    private gameOverKillsValue!: HTMLElement;
+    private gameOverEarnedValue!: HTMLElement;
+    private gameOverTotalValue!: HTMLElement;
+    private victoryOverlay!: HTMLElement;
+    private victoryFloorValue!: HTMLElement;
+    private victoryKillsValue!: HTMLElement;
+    private victoryBossValue!: HTMLElement;
+    private inventoryOverlay!: HTMLElement;
+    private inventoryCapacityValue!: HTMLElement;
+    private inventoryList!: HTMLElement;
+    private inventoryDetail!: HTMLElement;
+    private inventoryUseButton!: HTMLButtonElement;
+    private inventoryDropButton!: HTMLButtonElement;
 
-    constructor(private readonly root: HTMLElement) {
+    constructor(
+        private readonly root: HTMLElement,
+        private readonly localization: GameLocalization = new GameLocalization(),
+    ) {
+        this.renderShell();
+        this.root.addEventListener('click', (event) => {
+            this.handleClick(event);
+        });
+        this.localization.subscribe(() => {
+            this.renderShell();
+            this.renderAll();
+        });
+        this.renderAll();
+    }
+
+    updateStatus(snapshot: HudStatusSnapshot) {
+        this.statusSnapshot = { ...snapshot };
+        this.renderStatus();
+    }
+
+    private renderShell() {
+        const { ui } = this.localization.getBundle();
+
         this.root.innerHTML = `
             <div class="game-hud">
                 <section class="game-hud__top">
                     <div class="game-hud__brand">
-                        <span class="game-hud__eyebrow">Dread Ascent</span>
-                        <strong class="game-hud__title">Field HUD</strong>
+                        <span class="game-hud__eyebrow">${ui.brand}</span>
+                        <strong class="game-hud__title">${ui.hudTitle}</strong>
+                        ${this.renderLanguageSwitch('compact')}
                     </div>
                     <div class="game-hud__stats">
                         <article class="game-hud__card">
-                            <span class="game-hud__label">Floor</span>
+                            <span class="game-hud__label">${ui.floorLabel}</span>
                             <strong class="game-hud__value" data-role="floor"></strong>
                         </article>
                         <article class="game-hud__card">
-                            <span class="game-hud__label">Health</span>
+                            <span class="game-hud__label">${ui.healthLabel}</span>
                             <strong class="game-hud__value" data-role="health"></strong>
                         </article>
                         <article class="game-hud__card">
-                            <span class="game-hud__label">Experience</span>
+                            <span class="game-hud__label">${ui.experienceLabel}</span>
                             <strong class="game-hud__value" data-role="exp"></strong>
                         </article>
                         <article class="game-hud__card">
-                            <span class="game-hud__label">Turn</span>
+                            <span class="game-hud__label">${ui.turnLabel}</span>
                             <strong class="game-hud__value" data-role="turn"></strong>
                         </article>
                         <article class="game-hud__card">
-                            <span class="game-hud__label">Enemies</span>
+                            <span class="game-hud__label">${ui.enemiesLabel}</span>
                             <strong class="game-hud__value" data-role="enemies"></strong>
                         </article>
                         <article class="game-hud__card game-hud__card--state">
-                            <span class="game-hud__label">State</span>
+                            <span class="game-hud__label">${ui.stateLabel}</span>
                             <strong class="game-hud__value" data-role="state"></strong>
                         </article>
                     </div>
                     <aside class="game-hud__boss-panel" data-role="boss-panel" data-open="false">
                         <div class="game-hud__boss-head">
-                            <span class="game-hud__eyebrow">Boss Presence</span>
+                            <span class="game-hud__eyebrow">${ui.bossEyebrow}</span>
                             <strong class="game-hud__title" data-role="boss-name"></strong>
                             <span class="game-hud__value" data-role="boss-health"></span>
                         </div>
@@ -214,8 +239,8 @@ export class GameHud {
                 <section class="game-hud__bottom">
                     <div class="game-hud__log-shell">
                         <div class="game-hud__log-header">
-                            <span class="game-hud__eyebrow">Message Log</span>
-                            <strong class="game-hud__title">Tower Feed</strong>
+                            <span class="game-hud__eyebrow">${ui.logEyebrow}</span>
+                            <strong class="game-hud__title">${ui.logTitle}</strong>
                         </div>
                         <ol
                             class="game-hud__log-list"
@@ -235,24 +260,25 @@ export class GameHud {
                 </div>
                 <section class="game-hud__title-overlay" data-role="title-overlay" data-open="false">
                     <div class="game-hud__title-panel">
-                        <span class="game-hud__eyebrow">Dread Ascent</span>
-                        <strong class="game-hud__title game-hud__title--hero">Title Return</strong>
+                        <span class="game-hud__eyebrow">${ui.titleEyebrow}</span>
+                        <strong class="game-hud__title game-hud__title--hero">${ui.titleHero}</strong>
                         <p class="game-hud__title-copy">
-                            Gather yourself and descend again when ready.
+                            ${ui.titleCopy}
                         </p>
+                        ${this.renderLanguageSwitch('full')}
                         <div class="game-hud__title-stats">
-                            <span class="game-hud__label">Soul Shards</span>
+                            <span class="game-hud__label">${ui.soulShardsLabel}</span>
                             <strong class="game-hud__value" data-role="title-soul-shards"></strong>
                         </div>
                         <div class="game-hud__title-actions">
                             <button class="game-hud__title-action" type="button" data-role="title-continue">
-                                Continue
+                                ${ui.continueLabel}
                             </button>
                             <button class="game-hud__title-action" type="button" data-role="title-start">
-                                New Descent
+                                ${ui.newRunLabel}
                             </button>
                             <button class="game-hud__title-action game-hud__title-action--secondary" type="button" data-role="title-open-sanctuary">
-                                Sanctuary
+                                ${ui.sanctuaryLabel}
                             </button>
                         </div>
                         <p class="game-hud__title-message" data-role="title-message"></p>
@@ -261,54 +287,54 @@ export class GameHud {
                 </section>
                 <section class="game-hud__gameover-overlay" data-role="gameover-overlay" data-open="false">
                     <div class="game-hud__gameover-panel">
-                        <span class="game-hud__eyebrow">Run Ended</span>
-                        <strong class="game-hud__title game-hud__title--hero">Game Over</strong>
+                        <span class="game-hud__eyebrow">${ui.runEndedEyebrow}</span>
+                        <strong class="game-hud__title game-hud__title--hero">${ui.gameOverTitle}</strong>
                         <div class="game-hud__gameover-stats">
                             <article class="game-hud__gameover-card">
-                                <span class="game-hud__label">Floor Reached</span>
+                                <span class="game-hud__label">${ui.floorReachedLabel}</span>
                                 <strong class="game-hud__value" data-role="gameover-floor"></strong>
                             </article>
                             <article class="game-hud__gameover-card">
-                                <span class="game-hud__label">Enemies Defeated</span>
+                                <span class="game-hud__label">${ui.enemiesDefeatedLabel}</span>
                                 <strong class="game-hud__value" data-role="gameover-kills"></strong>
                             </article>
                             <article class="game-hud__gameover-card">
-                                <span class="game-hud__label">Earned Shards</span>
+                                <span class="game-hud__label">${ui.earnedShardsLabel}</span>
                                 <strong class="game-hud__value" data-role="gameover-earned"></strong>
                             </article>
                             <article class="game-hud__gameover-card">
-                                <span class="game-hud__label">Total Shards</span>
+                                <span class="game-hud__label">${ui.totalShardsLabel}</span>
                                 <strong class="game-hud__value" data-role="gameover-total"></strong>
                             </article>
                         </div>
                         <button class="game-hud__title-action" type="button" data-role="gameover-return-title">
-                            Return to Title
+                            ${ui.returnToTitleLabel}
                         </button>
                     </div>
                 </section>
                 <section class="game-hud__victory-overlay" data-role="victory-overlay" data-open="false">
                     <div class="game-hud__victory-panel">
-                        <span class="game-hud__eyebrow">Ending</span>
-                        <strong class="game-hud__title game-hud__title--hero">The Ascent Breaks</strong>
+                        <span class="game-hud__eyebrow">${ui.endingEyebrow}</span>
+                        <strong class="game-hud__title game-hud__title--hero">${ui.victoryTitle}</strong>
                         <p class="game-hud__title-copy">
-                            The summit falls silent. The final guardian is gone.
+                            ${ui.victoryCopy}
                         </p>
                         <div class="game-hud__gameover-stats">
                             <article class="game-hud__gameover-card">
-                                <span class="game-hud__label">Floor Cleared</span>
+                                <span class="game-hud__label">${ui.floorClearedLabel}</span>
                                 <strong class="game-hud__value" data-role="victory-floor"></strong>
                             </article>
                             <article class="game-hud__gameover-card">
-                                <span class="game-hud__label">Enemies Defeated</span>
+                                <span class="game-hud__label">${ui.enemiesDefeatedLabel}</span>
                                 <strong class="game-hud__value" data-role="victory-kills"></strong>
                             </article>
                             <article class="game-hud__gameover-card">
-                                <span class="game-hud__label">Boss Defeated</span>
+                                <span class="game-hud__label">${ui.bossDefeatedLabel}</span>
                                 <strong class="game-hud__value" data-role="victory-boss"></strong>
                             </article>
                         </div>
                         <button class="game-hud__title-action" type="button" data-role="victory-return-title">
-                            Return to Title
+                            ${ui.returnToTitleLabel}
                         </button>
                     </div>
                 </section>
@@ -320,11 +346,11 @@ export class GameHud {
                                 type="button"
                                 data-role="inventory-close"
                             >
-                                Close
+                                ${ui.inventoryCloseLabel}
                             </button>
                             <div>
-                                <span class="game-hud__eyebrow">Inventory</span>
-                                <strong class="game-hud__title">Pack Ledger</strong>
+                                <span class="game-hud__eyebrow">${ui.inventoryEyebrow}</span>
+                                <strong class="game-hud__title">${ui.inventoryTitle}</strong>
                             </div>
                             <strong class="game-hud__inventory-capacity" data-role="inventory-capacity"></strong>
                         </header>
@@ -338,21 +364,24 @@ export class GameHud {
                                 type="button"
                                 data-role="inventory-use"
                             >
-                                Use
+                                ${ui.useLabel}
                             </button>
                             <button
                                 class="game-hud__inventory-action game-hud__inventory-action--accent"
                                 type="button"
                                 data-role="inventory-drop"
                             >
-                                Drop
+                                ${ui.dropLabel}
                             </button>
                         </footer>
                     </div>
                 </section>
             </div>
         `;
+        this.bindElements();
+    }
 
+    private bindElements() {
         this.healthValue = this.requireRole('health');
         this.expValue = this.requireRole('exp');
         this.floorValue = this.requireRole('floor');
@@ -386,10 +415,11 @@ export class GameHud {
         this.inventoryDetail = this.requireRole('inventory-detail');
         this.inventoryUseButton = this.requireRole<HTMLButtonElement>('inventory-use');
         this.inventoryDropButton = this.requireRole<HTMLButtonElement>('inventory-drop');
+    }
 
-        this.root.addEventListener('click', (event) => {
-            this.handleClick(event);
-        });
+    private renderAll() {
+        this.renderStatus();
+        this.renderLogs();
         this.renderTitleOverlay();
         this.renderGameOverOverlay();
         this.renderVictoryOverlay();
@@ -398,15 +428,41 @@ export class GameHud {
         this.renderEventBanner();
     }
 
-    updateStatus(snapshot: HudStatusSnapshot) {
-        const runState = snapshot.runState ?? (snapshot.isGameOver ? 'game-over' : 'playing');
-        this.floorValue.textContent = `${snapshot.floorNumber}F · ${snapshot.floorType}`;
-        this.healthValue.textContent = `${snapshot.health} / ${snapshot.maxHealth}`;
-        this.expValue.textContent = `${snapshot.experience} EXP`;
-        this.turnValue.textContent = snapshot.activeTurn;
-        this.enemyValue.textContent = `${snapshot.enemyCount}`;
-        this.stateValue.textContent = this.formatRunState(runState);
+    private renderStatus() {
+        if (!this.statusSnapshot) {
+            return;
+        }
+
+        const runState = this.statusSnapshot.runState
+            ?? (this.statusSnapshot.isGameOver ? 'game-over' : 'playing');
+        this.floorValue.textContent = this.localization.formatFloorValue(
+            this.statusSnapshot.floorNumber,
+            this.statusSnapshot.floorType,
+        );
+        this.healthValue.textContent = `${this.statusSnapshot.health} / ${this.statusSnapshot.maxHealth}`;
+        this.expValue.textContent = this.localization.formatExperience(this.statusSnapshot.experience);
+        this.turnValue.textContent = this.statusSnapshot.activeTurn;
+        this.enemyValue.textContent = `${this.statusSnapshot.enemyCount}`;
+        this.stateValue.textContent = this.localization.formatRunState(runState);
         this.root.dataset.state = runState;
+    }
+
+    private renderLanguageSwitch(variant: 'compact' | 'full') {
+        const { ui } = this.localization.getBundle();
+        return `
+            <div class="game-hud__locale-switch game-hud__locale-switch--${variant}" aria-label="${ui.languageLabel}">
+                ${this.localization.getSupportedLocales().map((locale) => `
+                    <button
+                        class="game-hud__locale-button"
+                        type="button"
+                        data-locale="${locale}"
+                        aria-pressed="${this.localization.getLocale() === locale ? 'true' : 'false'}"
+                    >
+                        ${locale.toUpperCase()}
+                    </button>
+                `).join('')}
+            </div>
+        `;
     }
 
     pushLog(message: string, tone: HudLogTone = 'system') {
@@ -539,6 +595,7 @@ export class GameHud {
     }
 
     private renderTitleOverlay() {
+        const { ui } = this.localization.getBundle();
         this.titleOverlay.dataset.open = this.titleSnapshot.isOpen ? 'true' : 'false';
         this.titleSoulShardsValue.textContent = `${this.titleSnapshot.totalSoulShards}`;
         this.titleContinueButton.disabled = !this.titleSnapshot.canContinueRun;
@@ -550,39 +607,41 @@ export class GameHud {
             ? `
                 <div class="game-hud__sanctuary-header">
                     <div>
-                        <span class="game-hud__eyebrow">Meta Shop</span>
-                        <strong class="game-hud__title">Sanctuary</strong>
+                        <span class="game-hud__eyebrow">${ui.sanctuaryEyebrow}</span>
+                        <strong class="game-hud__title">${ui.sanctuaryLabel}</strong>
                     </div>
                     <button
                         class="game-hud__title-action game-hud__title-action--secondary"
                         type="button"
                         data-role="title-close-sanctuary"
                     >
-                        Back
+                        ${ui.sanctuaryBackLabel}
                     </button>
                 </div>
                 <div class="game-hud__sanctuary-grid">
-                    ${this.titleSnapshot.upgrades.map((upgrade) => `
+                    ${this.titleSnapshot.upgrades.map((upgrade) => {
+                        const localizedUpgrade = this.localization.getUpgradeText(upgrade.key);
+                        return `
                         <article class="game-hud__sanctuary-card">
-                            <span class="game-hud__eyebrow">${this.escapeHtml(upgrade.statLabel)}</span>
-                            <strong class="game-hud__title">${this.escapeHtml(upgrade.label)}</strong>
-                            <p class="game-hud__sanctuary-copy">${this.escapeHtml(upgrade.description)}</p>
+                            <span class="game-hud__eyebrow">${this.escapeHtml(localizedUpgrade.statLabel)}</span>
+                            <strong class="game-hud__title">${this.escapeHtml(localizedUpgrade.label)}</strong>
+                            <p class="game-hud__sanctuary-copy">${this.escapeHtml(localizedUpgrade.description)}</p>
                             <dl class="game-hud__sanctuary-stats">
                                 <div>
-                                    <dt>Level</dt>
+                                    <dt>${ui.levelLabel}</dt>
                                     <dd>${upgrade.level}</dd>
                                 </div>
                                 <div>
-                                    <dt>Current</dt>
-                                    <dd>${this.escapeHtml(upgrade.statLabel)} ${upgrade.currentValue}</dd>
+                                    <dt>${ui.currentLabel}</dt>
+                                    <dd>${this.escapeHtml(localizedUpgrade.statLabel)} ${upgrade.currentValue}</dd>
                                 </div>
                                 <div>
-                                    <dt>Next</dt>
-                                    <dd>${this.escapeHtml(upgrade.statLabel)} ${upgrade.nextValue}</dd>
+                                    <dt>${ui.nextLabel}</dt>
+                                    <dd>${this.escapeHtml(localizedUpgrade.statLabel)} ${upgrade.nextValue}</dd>
                                 </div>
                                 <div>
-                                    <dt>Cost</dt>
-                                    <dd>${upgrade.cost} shards</dd>
+                                    <dt>${ui.costLabel}</dt>
+                                    <dd>${upgrade.cost} ${ui.soulShardsLabel}</dd>
                                 </div>
                             </dl>
                             <button
@@ -591,10 +650,11 @@ export class GameHud {
                                 data-upgrade-key="${upgrade.key}"
                                 ${upgrade.affordable ? '' : 'disabled'}
                             >
-                                Purchase +${upgrade.bonusPerLevel}
+                                ${ui.purchaseLabel(upgrade.bonusPerLevel)}
                             </button>
                         </article>
-                    `).join('')}
+                    `;
+                    }).join('')}
                 </div>
             `
             : '';
@@ -602,7 +662,7 @@ export class GameHud {
 
     private renderGameOverOverlay() {
         this.gameOverOverlay.dataset.open = this.gameOverSnapshot.isOpen ? 'true' : 'false';
-        this.gameOverFloorValue.textContent = `${this.gameOverSnapshot.floorNumber}F`;
+        this.gameOverFloorValue.textContent = this.localization.formatFloorNumber(this.gameOverSnapshot.floorNumber);
         this.gameOverKillsValue.textContent = `${this.gameOverSnapshot.defeatedEnemies}`;
         this.gameOverEarnedValue.textContent = `${this.gameOverSnapshot.earnedSoulShards}`;
         this.gameOverTotalValue.textContent = `${this.gameOverSnapshot.totalSoulShards}`;
@@ -621,12 +681,13 @@ export class GameHud {
 
     private renderVictoryOverlay() {
         this.victoryOverlay.dataset.open = this.victorySnapshot.isOpen ? 'true' : 'false';
-        this.victoryFloorValue.textContent = `${this.victorySnapshot.floorNumber}F`;
+        this.victoryFloorValue.textContent = this.localization.formatFloorNumber(this.victorySnapshot.floorNumber);
         this.victoryKillsValue.textContent = `${this.victorySnapshot.defeatedEnemies}`;
         this.victoryBossValue.textContent = this.victorySnapshot.bossName;
     }
 
     private renderInventory() {
+        const { ui } = this.localization.getBundle();
         const { items, selectedItemId, slotCapacity, usedSlots } = this.inventorySnapshot;
         const selectedItem = items.find((item) => item.instanceId === selectedItemId);
         const useLabel = this.getUseLabel(selectedItem);
@@ -634,7 +695,7 @@ export class GameHud {
 
         this.inventoryOverlay.dataset.open = this.inventorySnapshot.isOpen ? 'true' : 'false';
         this.root.dataset.inventory = this.inventorySnapshot.isOpen ? 'open' : 'closed';
-        this.inventoryCapacityValue.textContent = `${usedSlots} / ${slotCapacity} slots`;
+        this.inventoryCapacityValue.textContent = ui.slotCapacity(usedSlots, slotCapacity);
         this.inventoryList.innerHTML = items.length > 0
             ? items.map((item) => `
                 <button
@@ -644,54 +705,54 @@ export class GameHud {
                     data-rarity="${item.rarity}"
                 >
                     <span class="game-hud__inventory-slot-icon">${this.escapeHtml(item.icon)}</span>
-                    <span class="game-hud__inventory-slot-name" data-rarity="${item.rarity}">${this.escapeHtml(item.name)}</span>
+                    <span class="game-hud__inventory-slot-name" data-rarity="${item.rarity}">${this.escapeHtml(this.localization.getItemName(item.id, item.name))}</span>
                     <span class="game-hud__inventory-slot-meta">${this.describeInventorySlot(item)}</span>
                 </button>
             `).join('')
             : `
                 <div class="game-hud__inventory-empty">
-                    <strong>Inventory is empty</strong>
-                    <span>Collect treasure on the field to fill your pack.</span>
+                    <strong>${ui.inventoryEmptyTitle}</strong>
+                    <span>${ui.inventoryEmptyCopy}</span>
                 </div>
             `;
 
         this.inventoryDetail.innerHTML = selectedItem
             ? `
-                <span class="game-hud__eyebrow">Selected Item</span>
-                <strong class="game-hud__title game-hud__item-name" data-rarity="${selectedItem.rarity}">${this.escapeHtml(selectedItem.name)}</strong>
-                <p class="game-hud__inventory-description">${this.escapeHtml(selectedItem.description)}</p>
+                <span class="game-hud__eyebrow">${ui.selectedItemEyebrow}</span>
+                <strong class="game-hud__title game-hud__item-name" data-rarity="${selectedItem.rarity}">${this.escapeHtml(this.localization.getItemName(selectedItem.id, selectedItem.name))}</strong>
+                <p class="game-hud__inventory-description">${this.escapeHtml(this.localization.getItemDescription(selectedItem.id, selectedItem.description))}</p>
                 <dl class="game-hud__inventory-stats">
                     <div>
-                        <dt>Type</dt>
-                        <dd>${this.escapeHtml(selectedItem.type)}</dd>
+                        <dt>${ui.typeLabel}</dt>
+                        <dd>${this.escapeHtml(this.localization.getItemTypeLabel(selectedItem.type))}</dd>
                     </div>
                     <div>
-                        <dt>Quantity</dt>
+                        <dt>${ui.quantityLabel}</dt>
                         <dd>${selectedItem.quantity}</dd>
                     </div>
                     <div>
-                        <dt>Stack</dt>
-                        <dd>${selectedItem.stackable ? `${selectedItem.quantity} / ${selectedItem.maxStack}` : 'Single slot'}</dd>
+                        <dt>${ui.stackLabel}</dt>
+                        <dd>${selectedItem.stackable ? `${selectedItem.quantity} / ${selectedItem.maxStack}` : ui.singleSlotLabel}</dd>
                     </div>
                     <div>
-                        <dt>Status</dt>
-                        <dd>${selectedItem.isEquipped ? 'Equipped' : 'In Pack'}</dd>
+                        <dt>${ui.statusDetailLabel}</dt>
+                        <dd>${selectedItem.isEquipped ? ui.equippedLabel : ui.inPackLabel}</dd>
                     </div>
                     <div>
-                        <dt>Rarity</dt>
-                        <dd data-rarity="${selectedItem.rarity}">${this.escapeHtml(this.formatItemRarity(selectedItem.rarity))}</dd>
+                        <dt>${ui.rarityLabel}</dt>
+                        <dd data-rarity="${selectedItem.rarity}">${this.escapeHtml(this.localization.getRarityLabel(selectedItem.rarity))}</dd>
                     </div>
                     <div>
-                        <dt>Action</dt>
+                        <dt>${ui.actionLabel}</dt>
                         <dd>${this.escapeHtml(this.describeItemAction(selectedItem))}</dd>
                     </div>
                 </dl>
             `
             : `
-                <span class="game-hud__eyebrow">Selected Item</span>
-                <strong class="game-hud__title">Nothing selected</strong>
+                <span class="game-hud__eyebrow">${ui.selectedItemEyebrow}</span>
+                <strong class="game-hud__title">${ui.selectedItemEmptyTitle}</strong>
                 <p class="game-hud__inventory-description">
-                    Pick an item slot to inspect it and drop it back onto the floor.
+                    ${ui.selectedItemEmptyCopy}
                 </p>
             `;
 
@@ -703,6 +764,12 @@ export class GameHud {
     private handleClick(event: Event) {
         const target = event.target;
         if (!(target instanceof HTMLElement)) {
+            return;
+        }
+
+        const localeButton = target.closest<HTMLElement>('[data-locale]');
+        if (localeButton?.dataset.locale === 'en' || localeButton?.dataset.locale === 'ko') {
+            this.localization.setLocale(localeButton.dataset.locale);
             return;
         }
 
@@ -774,28 +841,35 @@ export class GameHud {
     }
 
     private getUseLabel(item?: InventoryItem) {
+        const { ui } = this.localization.getBundle();
         if (!item) {
-            return 'Use';
+            return ui.useLabel;
         }
 
         if (item.type === 'EQUIPMENT') {
-            return item.isEquipped ? 'Unequip' : 'Equip';
+            return item.isEquipped ? ui.unequipLabel : ui.equipLabel;
         }
 
-        return 'Use';
+        return ui.useLabel;
     }
 
     private describeInventorySlot(item: InventoryItem) {
+        const { ui } = this.localization.getBundle();
         if (item.isEquipped) {
-            return 'Equipped';
+            return ui.equippedLabel;
         }
 
-        return item.quantity > 1 ? `x${item.quantity}` : item.type;
+        return item.quantity > 1
+            ? `x${item.quantity}`
+            : this.localization.getItemTypeLabel(item.type);
     }
 
     private describeItemAction(item: InventoryItem) {
+        const { ui } = this.localization.getBundle();
         if (item.consumableEffect?.kind === 'heal') {
-            return `Restore ${item.consumableEffect.amount} HP`;
+            return this.localization.getLocale() === 'ko'
+                ? `HP ${item.consumableEffect.amount} 회복`
+                : `Restore ${item.consumableEffect.amount} HP`;
         }
 
         if (item.equipment) {
@@ -805,34 +879,10 @@ export class GameHud {
                 item.equipment.statModifier.defense ? `DEF ${formatSignedNumber(item.equipment.statModifier.defense)}` : undefined,
             ].filter(Boolean);
 
-            return `${item.equipment.slot} ${parts.join(' · ')}`;
+            return `${this.localization.getEquipmentSlotLabel(item.equipment.slot)} ${parts.join(' · ')}`;
         }
 
-        return 'No direct use';
-    }
-
-    private formatItemRarity(rarity: InventoryItem['rarity']) {
-        switch (rarity) {
-            case 'LEGENDARY':
-                return 'Legendary';
-            case 'RARE':
-                return 'Rare';
-            case 'COMMON':
-            default:
-                return 'Common';
-        }
-    }
-
-    private formatRunState(runState: NonNullable<HudStatusSnapshot['runState']>) {
-        switch (runState) {
-            case 'game-over':
-                return 'GAME OVER';
-            case 'victory':
-                return 'VICTORY';
-            case 'playing':
-            default:
-                return 'PLAYING';
-        }
+        return ui.noDirectUseLabel;
     }
 
     private escapeHtml(value: string) {

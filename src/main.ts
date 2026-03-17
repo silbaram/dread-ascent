@@ -1,5 +1,6 @@
 import 'phaser';
 import { MainScene } from './scenes/MainScene';
+import { GameLocalization } from './ui/GameLocalization';
 import { GameHud } from './ui/GameHud';
 import './ui/gameHud.css';
 
@@ -8,7 +9,8 @@ if (!hudRoot) {
     throw new Error('HUD root element not found.');
 }
 
-const hud = new GameHud(hudRoot);
+const localization = new GameLocalization();
+const hud = new GameHud(hudRoot, localization);
 
 const config: Phaser.Types.Core.GameConfig = {
     type: Phaser.AUTO,
@@ -16,7 +18,7 @@ const config: Phaser.Types.Core.GameConfig = {
     height: 600,
     parent: 'game-container',
     backgroundColor: '#000',
-    scene: [new MainScene(hud)],
+    scene: [new MainScene(hud, localization)],
     pixelArt: true,
     physics: {
         default: 'arcade',
