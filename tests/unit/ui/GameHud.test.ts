@@ -36,6 +36,9 @@ const HUD_ROLES = [
     'inventory-detail',
     'inventory-use',
     'inventory-drop',
+    'card-swap-overlay',
+    'card-swap-new',
+    'card-swap-list',
 ] as const;
 
 class FakeElement {
@@ -150,6 +153,16 @@ describe('GameHud', () => {
         expect(root.textFor('enemies')).toBe('0');
         expect(root.textFor('state')).toBe('PLAYING');
         expect(root.dataset.state).toBe('playing');
+    });
+
+    it('renders the message log inside the docked shell layout', () => {
+        // Arrange
+        const { root } = createHud();
+
+        // Assert
+        expect(root.innerHTML).toContain('class="game-hud__dock"');
+        expect(root.innerHTML).toContain('class="game-hud__log-shell"');
+        expect(root.innerHTML).not.toContain('class="game-hud__bottom"');
     });
 
     it('keeps only the fifty most recent log entries in the message feed', () => {

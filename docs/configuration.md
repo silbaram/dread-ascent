@@ -17,7 +17,30 @@ Dread Ascent의 게임 시스템 설정과 밸런스 값을 설명합니다. 대
 
 ---
 
-## 2. Enemy & Difficulty Scaling
+## 2. Card Battle & Deck Management
+
+카드 배틀의 덱 구성 및 적의 카드 템플릿과 관련된 설정입니다.
+
+### Deck Constants
+- **`DECK_MAX_SIZE`**: 20 (임시 최대 덱 크기)
+- **`HAND_SIZE`**: 3 (매 라운드 뽑는 카드의 수)
+- **`STARTER_DECK_TEMPLATE`**: 런 시작 시 플레이어에게 주어지는 기본 카드 구성
+  - 공격(Attack) 3장 (기본 파워 8)
+  - 수비(Guard) 2장 (기본 파워 5)
+
+### Card Drop & Scaling
+적 처치 시 카드 획득과 관련된 설정입니다.
+
+- **`NORMAL_DROP_RATE`**: 0.3 (30%)
+- **`ELITE_DROP_RATE`**: 0.6 (60%)
+- **`BOSS_DROP_RATE`**: 1.0 (100%, 확정 드롭)
+- **`BASE_DROP_CARD_POWER`**: 5 (드롭 카드의 기본 파워)
+- **`POWER_SCALING_PER_FLOOR`**: 0.5 (층당 카드 파워 증가량)
+  - 공식: `round(BASE_DROP_CARD_POWER + floorNumber * 0.5)`
+
+---
+
+## 3. Enemy & Difficulty Scaling
 
 층이 올라갈수록 적들의 기본 능력치가 상승하며, 아키타입에 따라 추가 보너스가 부여됩니다.
 
@@ -40,7 +63,7 @@ Dread Ascent의 게임 시스템 설정과 밸런스 값을 설명합니다. 대
 
 ---
 
-## 3. Floor & Progression
+## 4. Floor & Progression
 
 - **`BOSS_FLOOR_NUMBER`**: 100
   - 최종 보스가 확정적으로 등장하는 층입니다.
@@ -49,7 +72,7 @@ Dread Ascent의 게임 시스템 설정과 밸런스 값을 설명합니다. 대
 
 ---
 
-## 4. Meta Progression (Sanctuary)
+## 5. Meta Progression (Sanctuary)
 
 영구 강화 시스템의 비용과 보너스 설정입니다.
 
@@ -61,7 +84,7 @@ Dread Ascent의 게임 시스템 설정과 밸런스 값을 설명합니다. 대
 
 ---
 
-## 5. Persistence & Storage
+## 6. Persistence & Storage
 
 브라우저의 `localStorage`를 사용하여 데이터를 영구 저장합니다.
 
@@ -71,7 +94,7 @@ Dread Ascent의 게임 시스템 설정과 밸런스 값을 설명합니다. 대
 
 ---
 
-## 6. UI 및 조작
+## 7. UI 및 조작
 
 - **인벤토리**: `Tab` 또는 `I` 키로 토글합니다.
 - **취소/뒤로**: `Escape` 키를 사용하여 메뉴를 닫거나 이전 화면으로 이동합니다.

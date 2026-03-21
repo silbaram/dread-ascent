@@ -1,3 +1,4 @@
+import { type Card, type CardType, CARD_TYPE } from '../entities/Card';
 import { cloneCombatStats, type CombatStats } from '../entities/CombatStats';
 import {
     EQUIPMENT_SLOT,
@@ -22,6 +23,7 @@ export interface RunPersistenceSnapshot {
     floor: FloorSnapshot;
     player: PersistedPlayerSnapshot;
     inventory: InventoryItem[];
+    deck: Card[];
     defeatedEnemyCount: number;
 }
 
@@ -88,6 +90,7 @@ export class RunPersistenceService {
                 experience: snapshot.player.experience,
             },
             inventory: snapshot.inventory.map((item) => this.cloneInventoryItem(item)),
+            deck: snapshot.deck.map((card) => ({ ...card })),
             defeatedEnemyCount: snapshot.defeatedEnemyCount,
         };
     }
@@ -101,7 +104,8 @@ export class RunPersistenceService {
         const floor = this.normalizeFloor(snapshot.floor);
         const player = this.normalizePlayer(snapshot.player);
         const inventory = this.normalizeInventory(snapshot.inventory);
-        if (!floor || !player || !inventory) {
+        const deck = this.normalizeDeck((snapshot as { deck?: unknown }).deck);
+        if (!floor || !player || !inventory || !deck) {
             return undefined;
         }
 
@@ -115,6 +119,7 @@ export class RunPersistenceService {
             floor,
             player,
             inventory,
+            deck,
             defeatedEnemyCount: this.normalizeCount(snapshot.defeatedEnemyCount),
         };
     }
@@ -306,6 +311,41 @@ export class RunPersistenceService {
             || rarity === ITEM_RARITY.RARE
             || rarity === ITEM_RARITY.LEGENDARY
             ? rarity
+            : undefined;
+    }
+
+    private normalizeDeck(deck: unknown): Card[] | undefined {
+        if (!Array.isArray(deck)) {
+            // 이전 저장 데이터 호환: deck 필드가 없으면 빈 배열로 처리
+            return deck === undefined ? [] : undefined;
+        }
+
+        return deck
+            .map((card) => this.normalizeCard(card))
+            .filter((card): card is Card => !!card);
+    }
+
+    private normalizeCard(card: unknown): Card | undefined {
+        if (!card || typeof card !== 'object') {
+            return undefined;
+        }
+
+        const candidate = card as Partial<Card>;
+        const id = typeof candidate.id === 'string' ? candidate.id : undefined;
+        const name = typeof candidate.name === 'string' ? candidate.name : undefined;
+        const type = this.normalizeCardType(candidate.type);
+        const power = this.normalizeStat(candidate.power);
+
+        if (!id || !name || !type || power === undefined) {
+            return undefined;
+        }
+
+        return { id, name, type, power };
+    }
+
+    private normalizeCardType(type: unknown): CardType | undefined {
+        return type === CARD_TYPE.ATTACK || type === CARD_TYPE.GUARD
+            ? type
             : undefined;
     }
 

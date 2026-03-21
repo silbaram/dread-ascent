@@ -1,3 +1,4 @@
+import type { Card } from '../domain/entities/Card';
 import type { InventoryItem } from '../domain/entities/Item';
 import type {
     MetaUpgradeSnapshot,
@@ -167,6 +168,8 @@ export class GameHud {
     private inventoryDetail!: HTMLElement;
     private inventoryUseButton!: HTMLButtonElement;
     private inventoryDropButton!: HTMLButtonElement;
+    private cardSwapOverlay!: HTMLElement;
+    private cardSwapCallback?: (removeCardId: string | null) => void;
 
     constructor(
         private readonly root: HTMLElement,
@@ -236,7 +239,7 @@ export class GameHud {
                         </div>
                     </aside>
                 </section>
-                <section class="game-hud__bottom">
+                <section class="game-hud__dock">
                     <div class="game-hud__log-shell">
                         <div class="game-hud__log-header">
                             <span class="game-hud__eyebrow">${ui.logEyebrow}</span>
@@ -376,6 +379,18 @@ export class GameHud {
                         </footer>
                     </div>
                 </section>
+                <section class="game-hud__card-swap-overlay" data-role="card-swap-overlay" data-open="false">
+                    <div class="game-hud__card-swap-panel">
+                        <span class="game-hud__eyebrow">DECK FULL</span>
+                        <strong class="game-hud__title">Card Swap</strong>
+                        <div class="game-hud__card-swap-new" data-role="card-swap-new"></div>
+                        <p class="game-hud__title-copy">Select a card to replace, or skip.</p>
+                        <div class="game-hud__card-swap-list" data-role="card-swap-list"></div>
+                        <button class="game-hud__title-action game-hud__title-action--secondary" type="button" data-role="card-swap-skip">
+                            Skip
+                        </button>
+                    </div>
+                </section>
             </div>
         `;
         this.bindElements();
@@ -415,6 +430,7 @@ export class GameHud {
         this.inventoryDetail = this.requireRole('inventory-detail');
         this.inventoryUseButton = this.requireRole<HTMLButtonElement>('inventory-use');
         this.inventoryDropButton = this.requireRole<HTMLButtonElement>('inventory-drop');
+        this.cardSwapOverlay = this.requireRole('card-swap-overlay');
     }
 
     private renderAll() {
@@ -829,7 +845,64 @@ export class GameHud {
 
         if (target.closest('[data-role="inventory-drop"]')) {
             this.inventoryHandlers?.onDropItem();
+            return;
         }
+
+        if (target.closest('[data-role="card-swap-skip"]')) {
+            this.handleCardSwapSelection(null);
+            return;
+        }
+
+        const swapSlot = target.closest<HTMLElement>('[data-swap-card-id]');
+        if (swapSlot?.dataset.swapCardId) {
+            this.handleCardSwapSelection(swapSlot.dataset.swapCardId);
+        }
+    }
+
+    /** 덱이 가득 찬 상태에서 카드 교체 오버레이를 표시한다. */
+    showCardSwapOverlay(
+        newCard: Card,
+        deckCards: readonly Card[],
+        callback: (removeCardId: string | null) => void,
+    ): void {
+        this.cardSwapCallback = callback;
+
+        const newCardEl = this.root.querySelector('[data-role="card-swap-new"]');
+        if (newCardEl) {
+            const typeIcon = newCard.type === 'ATTACK' ? '⚔️' : '🛡️';
+            newCardEl.innerHTML = `
+                <div class="game-hud__card-swap-highlight">
+                    <strong>${typeIcon} ${this.escapeHtml(newCard.name)}</strong>
+                    <span>Power: ${newCard.power}</span>
+                </div>
+            `;
+        }
+
+        const listEl = this.root.querySelector('[data-role="card-swap-list"]');
+        if (listEl) {
+            listEl.innerHTML = deckCards.map((card) => {
+                const icon = card.type === 'ATTACK' ? '⚔️' : '🛡️';
+                return `
+                    <button
+                        class="game-hud__card-swap-slot"
+                        type="button"
+                        data-swap-card-id="${card.id}"
+                    >
+                        <span>${icon} ${this.escapeHtml(card.name)}</span>
+                        <span>Power: ${card.power}</span>
+                    </button>
+                `;
+            }).join('');
+        }
+
+        this.cardSwapOverlay.dataset.open = 'true';
+    }
+
+    private handleCardSwapSelection(cardId: string | null): void {
+        this.cardSwapOverlay.dataset.open = 'false';
+        const callback = this.cardSwapCallback;
+        this.cardSwapCallback = undefined;
+        callback?.(cardId);
     }
 
     private canUseSelectedItem(item?: InventoryItem) {

@@ -54,10 +54,10 @@ body {
 }
 
 .game-hud {
-    display: flex;
+    display: grid;
     min-height: 100vh;
-    flex-direction: column;
-    justify-content: space-between;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 18px;
     padding: 16px;
 }
 
@@ -194,9 +194,11 @@ body {
     line-height: 1.15;
 }
 
-.game-hud__bottom {
+.game-hud__dock {
     display: flex;
-    justify-content: flex-start;
+    min-height: 0;
+    justify-content: flex-end;
+    align-items: flex-end;
 }
 
 .game-hud__event-banner {
@@ -653,24 +655,31 @@ body {
 }
 
 .game-hud__log-shell {
-    width: min(680px, 100%);
+    display: flex;
+    min-height: 188px;
+    max-height: min(248px, calc(100vh - 232px));
+    width: min(360px, 100%);
+    flex-direction: column;
     padding: 14px 16px 10px;
     border-radius: 22px;
     background:
         linear-gradient(180deg, rgba(23, 28, 38, 0.96), rgba(10, 12, 18, 0.94));
+    pointer-events: auto;
 }
 
 .game-hud__log-header {
+    flex: 0 0 auto;
     margin-bottom: 10px;
 }
 
 .game-hud__log-list {
+    flex: 1;
+    min-height: 0;
     margin: 0;
     padding: 0;
     list-style: none;
     display: grid;
     gap: 8px;
-    max-height: 292px;
     overflow-y: auto;
     padding-right: 4px;
 }
@@ -729,6 +738,7 @@ body {
 @media (max-width: 960px) {
     .game-hud {
         padding: 12px;
+        gap: 12px;
     }
 
     .game-hud__top {
@@ -751,6 +761,8 @@ body {
 
     .game-hud__log-shell {
         width: 100%;
+        min-height: 152px;
+        max-height: min(188px, calc(100vh - 184px));
     }
 
     .game-hud__inventory-body {
@@ -772,5 +784,29 @@ body {
 
     .game-hud__gameover-stats {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (min-width: 1500px) {
+    .game-hud {
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+        grid-template-rows: auto minmax(0, 1fr);
+        align-items: start;
+    }
+
+    .game-hud__top {
+        grid-column: 1 / -1;
+    }
+
+    .game-hud__dock {
+        grid-column: 2;
+        grid-row: 2;
+        align-items: stretch;
+    }
+
+    .game-hud__log-shell {
+        width: 100%;
+        min-height: 260px;
+        max-height: min(440px, calc(100vh - 196px));
     }
 }

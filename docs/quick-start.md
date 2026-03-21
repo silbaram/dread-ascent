@@ -47,7 +47,13 @@ npm run dev
 
 - **최종 목표**: 100층에 도달하여 'Final Boss'를 물리치는 것입니다.
 - **층 이동**: 금색 계단 타일로 이동하면 다음 층으로 전환됩니다. (이때 자동 저장됩니다)
-- **전투**: 적 방향으로 이동하면 범프 공격을 수행합니다. 적의 등급(일반/엘리트/보스)에 따라 난이도가 다릅니다.
+- **전투**: 적과 조우 시 카드 배틀 씬으로 진입합니다. 
+  - **드로우**: 매 라운드 덱에서 무작위 3장의 카드를 뽑습니다.
+  - **선택**: 3장 중 1장을 선택하여 적의 카드와 맞붙습니다.
+  - **상성**: 공격 vs 수비(데미지 감쇄), 공격 vs 공격(서로 피해), 수비 vs 수비(무피해) 상성이 적용됩니다.
+  - **장비**: 무기와 방어구의 스탯이 각각 공격/수비 카드의 파워에 보너스로 반영됩니다.
+  - **보상**: 적 처치 시 일정 확률로 새 카드를 획득하여 덱에 추가하거나 기존 카드와 교체할 수 있습니다.
+  - **종료**: 한 쪽의 HP가 0이 될 때까지 라운드가 반복됩니다.
 - **아이템**: 필드 위 아이템 타일로 이동하여 자동 습득하고, 인벤토리에서 장착하거나 사용할 수 있습니다.
 - **성장**: 적 처치 시 경험치를 획득하며 레벨업 시 기본 능력치가 상승합니다. 영구 강화는 'Sanctuary' 메뉴를 이용하세요.
 
@@ -103,23 +109,23 @@ npm test
 src/
 ├── main.ts                        # Phaser 게임 설정 및 진입점
 ├── scenes/
-│   └── MainScene.ts               # 입력 처리 + 렌더링 담당
-├── ui/
-│   ├── GameHud.ts                 # DOM HUD 상태/로그/오버레이 렌더링
-│   └── gameHud.css                # HUD 스타일
+│   ├── MainScene.ts               # 던전 탐험 및 입력 처리
+│   ├── BattleScene.ts             # 카드 배틀 시각화 및 UI
+│   └── directors/
+│       ├── FloorDirector.ts       # 층 전환 및 이벤트 조정
+│       └── BattleDirector.ts      # 배틀 진입 및 결과 처리
 ├── domain/
-│   ├── entities/                  # 도메인 모델 (Player, Enemy, Item, Stats)
+│   ├── entities/                  # 도메인 모델 (Player, Enemy, Item, Card)
 │   └── services/                  # 순수 게임 로직
-│       ├── CombatService.ts       # 전투 수식
+│       ├── CardBattleLoopService.ts  # 멀티 라운드 배틀 관리
+│       ├── CardBattleResolver.ts     # 상성 판정 및 데미지 계산
+│       ├── CardBattleService.ts      # 카드 드로우 및 적 풀 생성
+│       ├── CardDropService.ts        # 카드 드롭 및 덱 교체
+│       ├── DeckService.ts            # 플레이어 덱 관리
+│       ├── EquipmentCardBonusService.ts # 장비 스탯 보너스 적용
 │       ├── EnemySpawnerService.ts # 적 및 보스 스폰
 │       ├── ItemService.ts         # 아이템 습득/장착/사용
 │       ├── RunPersistenceService.ts # LocalStorage 저장 관리
-│       ├── FloorProgressionService.ts
-│       ├── MetaProgressionService.ts
-│       └── VisibilityService.ts   # FOV + 탐험 상태
+│       └── FloorProgressionService.ts
 └── infra/                         # 외부 라이브러리 어댑터
-    └── rot/
-        ├── MapGenerator.ts        # rot.js 맵 생성
-        ├── RotPathFinder.ts       # rot.js 경로 탐색
-        └── RotFovCalculator.ts    # rot.js FOV
 ```

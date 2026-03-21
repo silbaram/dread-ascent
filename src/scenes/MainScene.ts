@@ -1,78 +1,52 @@
 import 'phaser';
-import { Enemy } from '../domain/entities/Enemy';
-import { ItemEntity, ITEM_RARITY } from '../domain/entities/Item';
-import { type Position, Player } from '../domain/entities/Player';
-import { EnemyAiService } from '../domain/services/EnemyAiService';
-import { CombatService } from '../domain/services/CombatService';
+import { Player } from '../domain/entities/Player';
 import { EnemySpawnerService } from '../domain/services/EnemySpawnerService';
-import {
-    FloorProgressionService,
-    type FloorSnapshot,
-} from '../domain/services/FloorProgressionService';
+import { FloorProgressionService, type FloorSnapshot } from '../domain/services/FloorProgressionService';
 import { ItemService } from '../domain/services/ItemService';
-import {
-    MetaProgressionService,
-    type PermanentUpgradeKey,
-} from '../domain/services/MetaProgressionService';
-import {
-    RunPersistenceService,
-    type PersistedRunStatus,
-} from '../domain/services/RunPersistenceService';
+import { MetaProgressionService, PermanentUpgradeKey } from '../domain/services/MetaProgressionService';
+import { RunPersistenceService, PersistedRunStatus } from '../domain/services/RunPersistenceService';
 import { SoulShardService } from '../domain/services/SoulShardService';
-import { VisibilityService, VisibilityState } from '../domain/services/VisibilityService';
-import { MapGenerator, type MapData } from '../infra/rot/MapGenerator';
-import { RotFovCalculator } from '../infra/rot/RotFovCalculator';
-import { RotPathFinder } from '../infra/rot/RotPathFinder';
-import { type TurnActor, TurnQueueService } from '../domain/services/TurnQueueService';
-import { RotTurnScheduler } from '../infra/rot/RotTurnScheduler';
-import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
+import { CardBattleService } from '../domain/services/CardBattleService';
+import { CardDropService, type CardDropResult } from '../domain/services/CardDropService';
+import { CombatService } from '../domain/services/CombatService';
+import { DeckService } from '../domain/services/DeckService';
 import { WORLD_TILE, isWalkableTile } from '../shared/types/WorldTiles';
-import { GameLocalization, type MovementDirection } from '../ui/GameLocalization';
+import { GameLocalization, MovementDirection } from '../ui/GameLocalization';
 import { type HudLogTone, GameHud } from '../ui/GameHud';
+import { RenderSynchronizer } from './synchronizers/RenderSynchronizer';
+import { FloorDirector } from './directors/FloorDirector';
+import { BattleDirector, BattleOutcome } from './directors/BattleDirector';
+import { BattleScene, type BattleSceneData, type BattleSceneResult } from './BattleScene';
+import { OverlayController } from './controllers/OverlayController';
+import { InputController, InputDelegate } from './controllers/InputController';
+import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
+import { ITEM_RARITY } from '../domain/entities/Item';
+import { Position } from '../domain/entities/Player';
+import { Enemy } from '../domain/entities/Enemy';
 
-type TitleScreenMessage =
-    | { key: 'sanctuary-help'; tone: HudLogTone }
-    | {
-        key: 'upgrade-purchased';
-        tone: HudLogTone;
-        upgradeKey: PermanentUpgradeKey;
-        level: number;
-    }
-    | {
-        key: 'upgrade-insufficient';
-        tone: HudLogTone;
-        upgradeKey: PermanentUpgradeKey;
-        missingSoulShards: number;
-    };
-
-export class MainScene extends Phaser.Scene {
-    private mapData?: MapData;
-    private tileSize: number = 32;
+export class MainScene extends Phaser.Scene implements InputDelegate {
     private playerEntity?: Player;
-    private playerSprite?: Phaser.GameObjects.Sprite;
-    private mapLayer?: Phaser.Tilemaps.TilemapLayer;
-    private visibilityService?: VisibilityService;
-    private fovRadius: number = 8;
-    private turnQueue?: TurnQueueService;
-    private enemyEntities: Enemy[] = [];
-    private readonly enemySprites = new Map<string, Phaser.GameObjects.Sprite>();
-    private fieldItems: ItemEntity[] = [];
-    private readonly itemLabels = new Map<string, Phaser.GameObjects.Text>();
-    private isTitleScreenOpen = false;
-    private isSanctuaryOpen = false;
-    private isInventoryOpen = false;
-    private selectedInventoryItemId?: string;
-    private isGameOver = false;
-    private isVictory = false;
     private defeatedEnemyCount = 0;
-    private titleScreenMessage?: TitleScreenMessage;
+    private tileSize: number = 32;
+    private fovRadius: number = 8;
+    private selectedInventoryItemId?: string;
+
     private readonly combatService = new CombatService();
+    private readonly cardBattleService = new CardBattleService();
+    private readonly cardDropService = new CardDropService();
+    private readonly deckService = new DeckService();
     private readonly enemySpawner = new EnemySpawnerService();
     private readonly floorProgression = new FloorProgressionService();
     private readonly itemService = new ItemService();
     private readonly soulShardService = new SoulShardService();
     private readonly metaProgression = new MetaProgressionService(this.soulShardService);
     private readonly runPersistence = new RunPersistenceService();
+
+    private renderSynchronizer!: RenderSynchronizer;
+    private floorDirector!: FloorDirector;
+    private battleDirector!: BattleDirector;
+    private overlayController!: OverlayController;
+    private inputController!: InputController;
 
     constructor(
         private readonly hud: GameHud,
@@ -85,89 +59,38 @@ export class MainScene extends Phaser.Scene {
     }
 
     preload() {
-        // Create simple tiles as textures if assets are missing
         this.generateDefaultTextures();
     }
 
-    private generateDefaultTextures() {
-        const graphics = this.make.graphics({ x: 0, y: 0 });
-
-        graphics.fillStyle(0x333333, 1);
-        graphics.fillRect(0, 0, this.tileSize, this.tileSize);
-        graphics.lineStyle(1, 0x444444, 0.5);
-        graphics.strokeRect(0, 0, this.tileSize, this.tileSize);
-
-        graphics.fillStyle(0x666666, 1);
-        graphics.fillRect(this.tileSize, 0, this.tileSize, this.tileSize);
-        graphics.lineStyle(1, 0x777777, 0.5);
-        graphics.strokeRect(this.tileSize, 0, this.tileSize, this.tileSize);
-
-        graphics.fillStyle(0x5c4a16, 1);
-        graphics.fillRect(this.tileSize * 2, 0, this.tileSize, this.tileSize);
-        graphics.fillStyle(0xd4a017, 1);
-        graphics.fillRect((this.tileSize * 2) + 8, 6, this.tileSize - 16, 4);
-        graphics.fillRect((this.tileSize * 2) + 12, 14, this.tileSize - 20, 4);
-        graphics.fillRect((this.tileSize * 2) + 16, 22, this.tileSize - 24, 4);
-        graphics.lineStyle(1, 0xeab308, 0.7);
-        graphics.strokeRect(this.tileSize * 2, 0, this.tileSize, this.tileSize);
-
-        graphics.fillStyle(0x214f3b, 1);
-        graphics.fillRect(this.tileSize * 3, 0, this.tileSize, this.tileSize);
-        graphics.fillStyle(0x6ee7b7, 1);
-        graphics.fillCircle((this.tileSize * 3) + (this.tileSize / 2), this.tileSize / 2, this.tileSize * 0.28);
-        graphics.lineStyle(1, 0x9ae6b4, 0.7);
-        graphics.strokeRect(this.tileSize * 3, 0, this.tileSize, this.tileSize);
-
-        graphics.generateTexture('tiles', this.tileSize * 4, this.tileSize);
-
-        const playerGraphics = this.make.graphics({ x: 0, y: 0 });
-        playerGraphics.fillStyle(0x00ffff, 1);
-        playerGraphics.fillCircle(this.tileSize / 2, this.tileSize / 2, this.tileSize * 0.4);
-        playerGraphics.generateTexture('player', this.tileSize, this.tileSize);
-
-        const crawlerGraphics = this.make.graphics({ x: 0, y: 0 });
-        crawlerGraphics.fillStyle(0x2f855a, 1);
-        crawlerGraphics.fillCircle(this.tileSize / 2, this.tileSize / 2, this.tileSize * 0.34);
-        crawlerGraphics.fillStyle(0x111827, 1);
-        crawlerGraphics.fillCircle((this.tileSize / 2) - 5, (this.tileSize / 2) - 4, 2);
-        crawlerGraphics.fillCircle((this.tileSize / 2) + 5, (this.tileSize / 2) - 4, 2);
-        crawlerGraphics.generateTexture('enemy-ash-crawler', this.tileSize, this.tileSize);
-
-        const raiderGraphics = this.make.graphics({ x: 0, y: 0 });
-        raiderGraphics.fillStyle(0xb91c1c, 1);
-        raiderGraphics.fillRect(6, 6, this.tileSize - 12, this.tileSize - 12);
-        raiderGraphics.fillStyle(0x111827, 1);
-        raiderGraphics.fillRect(10, 10, 4, 4);
-        raiderGraphics.fillRect(this.tileSize - 14, 10, 4, 4);
-        raiderGraphics.fillStyle(0xf97316, 1);
-        raiderGraphics.fillRect(12, this.tileSize - 14, this.tileSize - 24, 4);
-        raiderGraphics.generateTexture('enemy-blade-raider', this.tileSize, this.tileSize);
-
-        const sentinelGraphics = this.make.graphics({ x: 0, y: 0 });
-        sentinelGraphics.fillStyle(0x1d4ed8, 1);
-        sentinelGraphics.fillRect(5, 5, this.tileSize - 10, this.tileSize - 10);
-        sentinelGraphics.fillStyle(0x93c5fd, 1);
-        sentinelGraphics.fillRect(10, 10, this.tileSize - 20, this.tileSize - 20);
-        sentinelGraphics.fillStyle(0x111827, 1);
-        sentinelGraphics.fillRect(10, 10, 4, 4);
-        sentinelGraphics.fillRect(this.tileSize - 14, 10, 4, 4);
-        sentinelGraphics.generateTexture('enemy-dread-sentinel', this.tileSize, this.tileSize);
-
-        const bossGraphics = this.make.graphics({ x: 0, y: 0 });
-        bossGraphics.fillStyle(0x7f1d1d, 1);
-        bossGraphics.fillRect(4, 6, this.tileSize - 8, this.tileSize - 8);
-        bossGraphics.fillStyle(0xfbbf24, 1);
-        bossGraphics.fillRect(8, 4, 6, 6);
-        bossGraphics.fillRect(this.tileSize - 14, 4, 6, 6);
-        bossGraphics.fillStyle(0x111827, 1);
-        bossGraphics.fillRect(10, 12, 4, 4);
-        bossGraphics.fillRect(this.tileSize - 14, 12, 4, 4);
-        bossGraphics.fillStyle(0xfca5a5, 1);
-        bossGraphics.fillRect(10, this.tileSize - 12, this.tileSize - 20, 4);
-        bossGraphics.generateTexture('boss', this.tileSize, this.tileSize);
+    create() {
+        this.initializeComponents();
+        this.setupHudHandlers();
+        this.returnToTitleScreen();
     }
 
-    create() {
+    private initializeComponents() {
+        this.renderSynchronizer = new RenderSynchronizer(this, this.localization, this.tileSize, this.fovRadius);
+        this.floorDirector = new FloorDirector(
+            this.floorProgression,
+            this.enemySpawner,
+            this.itemService,
+            this.runPersistence,
+        );
+        this.battleDirector = new BattleDirector(
+            this.combatService,
+            this.cardBattleService,
+            this.deckService,
+            this.itemService,
+            this.localization,
+            this.renderSynchronizer,
+            this.floorDirector,
+        );
+        this.overlayController = new OverlayController(this.hud, this.localization, this.soulShardService);
+        this.inputController = new InputController(this, this);
+        this.inputController.setupInput();
+    }
+
+    private setupHudHandlers() {
         this.hud.clearLogs();
         this.hud.clearEventBanner();
         this.hud.setInventoryHandlers({
@@ -184,128 +107,90 @@ export class MainScene extends Phaser.Scene {
             onCloseSanctuary: () => this.closeSanctuary(),
             onPurchaseUpgrade: (key) => this.purchaseSanctuaryUpgrade(key),
         });
-        this.hud.updateGameOver({
-            isOpen: false,
-            floorNumber: 1,
-            defeatedEnemies: 0,
-            earnedSoulShards: 0,
-            totalSoulShards: this.soulShardService.getTotalSoulShards(),
-        });
-        this.hud.updateVictory({
-            isOpen: false,
-            floorNumber: 100,
-            defeatedEnemies: 0,
-            bossName: this.getDefaultBossName(),
-        });
-        this.hud.updateBoss({
-            isVisible: false,
-            name: this.getDefaultBossName(),
-            health: 0,
-            maxHealth: 0,
-        });
-        this.setupInput();
-        this.returnToTitleScreen();
-        console.log('MainScene initialized with floor progression');
     }
 
-    private initializeVisibilityService() {
-        const data = this.mapData;
-        if (!data) return;
+    private buildFloor(floor: FloorSnapshot, arrivalLog: string) {
+        this.overlayController.setGameOver(false);
+        this.overlayController.setVictory(false);
+        this.overlayController.setTitleScreen(false);
+        this.overlayController.setSanctuary(false);
+        this.overlayController.setInventory(false);
+        this.overlayController.setTitleScreenMessage(undefined);
 
-        this.visibilityService = new VisibilityService(
-            data.width,
-            data.height,
-            new RotFovCalculator((x, y) => this.isTransparentTile(x, y)),
-        );
-    }
+        const mapData = this.floorDirector.generateMap(floor.type);
+        this.renderSynchronizer.initializeVisibilityService(mapData);
+        this.renderSynchronizer.renderMap(mapData);
 
-    private setupInput() {
-        if (!this.input.keyboard) return;
-
-        // Single key press events for grid-based movement
-        this.input.keyboard.on('keydown', (event: KeyboardEvent) => {
-            this.handleKeyDown(event);
-        });
-    }
-
-    private handleKeyDown(event: KeyboardEvent) {
-        if (event.code === 'Tab') {
-            event.preventDefault();
+        if (!this.playerEntity) {
+            this.playerEntity = new Player(mapData.playerSpawn, this.metaProgression.getRunStartStats());
+        } else {
+            this.playerEntity.moveTo(mapData.playerSpawn.x, mapData.playerSpawn.y);
         }
 
-        if (this.isTitleScreenOpen) {
-            if (event.code === 'Escape' && this.isSanctuaryOpen) {
-                this.closeSanctuary();
-            }
-            return;
+        this.renderSynchronizer.synchronizePlayer(this.playerEntity);
+        const entities = this.floorDirector.spawnEntities(floor.number);
+        this.renderSynchronizer.clearEnemySprites();
+        this.renderSynchronizer.synchronizeEnemies(entities.enemies);
+        this.renderSynchronizer.clearItemLabels();
+        this.renderSynchronizer.synchronizeItems(entities.items);
+
+        this.battleDirector.initializeTurnQueue(this.localization.getPlayerLabel());
+        this.renderSynchronizer.updateVisibility(this.playerEntity.position, mapData, entities.enemies, entities.items);
+        this.renderSynchronizer.updateCameras(mapData);
+
+        this.syncTitleOverlay();
+        this.overlayController.updateGameOver(floor.number, this.defeatedEnemyCount, 0);
+        this.overlayController.updateVictory(floor.number, this.defeatedEnemyCount, this.getBossName());
+
+        this.syncInventoryOverlay();
+        this.syncBossHud();
+        this.refreshTurnStatus();
+        this.queueFloorEventBanner(floor);
+
+        this.pushTurnLog(arrivalLog, 'travel');
+        if (floor.type === 'safe') {
+            this.pushTurnLog(this.localization.formatSanctuaryAwaits());
+        } else if (floor.type === 'boss') {
+            this.pushTurnLog(this.localization.formatBossFloorWarning(this.getBossName()), 'danger');
         }
 
-        if (event.code === 'KeyI' || event.code === 'Tab') {
-            this.toggleInventoryOpen();
-            return;
-        }
-
-        if (event.code === 'Escape' && this.isInventoryOpen) {
-            this.setInventoryOpen(false);
-            return;
-        }
-
-        if (this.isInventoryOpen || !this.playerEntity || !this.isPlayerTurn()) return;
-
-        let dx = 0;
-        let dy = 0;
-
-        switch (event.code) {
-            case 'ArrowLeft':
-            case 'KeyA':
-                dx = -1;
-                break;
-            case 'ArrowRight':
-            case 'KeyD':
-                dx = 1;
-                break;
-            case 'ArrowUp':
-            case 'KeyW':
-                dy = -1;
-                break;
-            case 'ArrowDown':
-            case 'KeyS':
-                dy = 1;
-                break;
-        }
-
-        if (dx !== 0 || dy !== 0) {
-            this.tryMove(dx, dy);
+        const turnSnapshot = this.battleDirector.getTurnSnapshot();
+        if (turnSnapshot) {
+            this.pushTurnLog(this.localization.formatRoundActorTurn(turnSnapshot.round, turnSnapshot.activeActor.label));
         }
     }
 
-    private tryMove(dx: number, dy: number) {
-        if (!this.playerEntity || !this.mapData) return;
+    // InputDelegate Implementation
+    public onMove(dx: number, dy: number) {
+        if (!this.playerEntity) return;
+
+        const mapData = this.floorDirector.getMapData();
+        if (!mapData) return;
 
         const newX = this.playerEntity.position.x + dx;
         const newY = this.playerEntity.position.y + dy;
 
-        // Check map bounds
-        if (newX < 0 || newX >= this.mapData.width || newY < 0 || newY >= this.mapData.height) {
+        if (newX < 0 || newX >= mapData.width || newY < 0 || newY >= mapData.height) return;
+
+        const targetEnemy = this.floorDirector.getEnemyAt(newX, newY);
+        if (targetEnemy) {
+            // 덱이 비어있으면 기존 자동 전투, 아니면 BattleScene으로 전환
+            const deckCards = this.deckService.getCards();
+            if (deckCards.length === 0) {
+                this.handleBattleOutcome(this.battleDirector.performPlayerAttack(this.playerEntity, targetEnemy), targetEnemy);
+            } else {
+                this.launchBattleScene(this.playerEntity, targetEnemy);
+            }
             return;
         }
 
-        const targetEnemy = this.getEnemyAt(newX, newY);
-        if (targetEnemy) {
-            this.performPlayerAttack(targetEnemy);
-            return;
-        }
-        const targetTile = this.mapData.tiles[newY][newX];
-        if (!isWalkableTile(targetTile)) {
-            return;
-        }
+        const targetTile = mapData.tiles[newY][newX];
+        if (!isWalkableTile(targetTile)) return;
 
         this.playerEntity.moveTo(newX, newY);
-        if (this.playerSprite) {
-            this.playerSprite.setPosition(newX * this.tileSize, newY * this.tileSize);
-        }
+        this.renderSynchronizer.synchronizePlayer(this.playerEntity);
+        this.renderSynchronizer.updateVisibility(this.playerEntity.position, mapData, this.floorDirector.getEnemyEntities(), this.floorDirector.getFieldItems());
 
-        this.updateVisibility();
         const pickupLog = this.collectItemAtPlayerPosition();
 
         if (targetTile === WORLD_TILE.STAIRS) {
@@ -325,462 +210,291 @@ export class MainScene extends Phaser.Scene {
         );
     }
 
-    private updateVisibility() {
-        if (!this.playerEntity || !this.mapData || !this.mapLayer || !this.visibilityService) return;
+    public onToggleInventory() {
+        const state = this.overlayController.getState();
+        if (state.isTitleScreenOpen || state.isGameOver || !this.playerEntity || !this.isPlayerTurn()) return;
+        this.setInventoryOpen(!state.isInventoryOpen);
+    }
 
-        const snapshot = this.visibilityService.recalculate(this.playerEntity.position, this.fovRadius);
+    public onCloseInventory() {
+        this.setInventoryOpen(false);
+    }
 
-        for (let y = 0; y < this.mapData.height; y++) {
-            for (let x = 0; x < this.mapData.width; x++) {
-                this.applyVisibilityToTile(x, y, snapshot.tiles[y][x]);
+    public onCloseSanctuary() {
+        this.closeSanctuary();
+    }
+
+    public isTitleScreenOpen() { return this.overlayController.getState().isTitleScreenOpen; }
+    public isSanctuaryOpen() { return this.overlayController.getState().isSanctuaryOpen; }
+    public isInventoryOpen() { return this.overlayController.getState().isInventoryOpen; }
+    public isPlayerTurn() {
+        const state = this.overlayController.getState();
+        return !state.isGameOver && !state.isVictory && this.battleDirector.isPlayerTurn();
+    }
+
+    private launchBattleScene(player: Player, enemy: Enemy): void {
+        const battleData: BattleSceneData = {
+            player,
+            enemy,
+            deckService: this.deckService,
+            cardBattleService: this.cardBattleService,
+            itemService: this.itemService,
+            enemyName: this.getEnemyName(enemy),
+        };
+
+        // BattleScene 시작
+        const battleScene = this.scene.get('BattleScene') as BattleScene;
+        battleScene.setOnBattleEnd((result: BattleSceneResult) => {
+            this.handleBattleSceneResult(result);
+        });
+        this.scene.sleep('MainScene');
+        this.scene.launch('BattleScene', battleData);
+    }
+
+    private handleBattleSceneResult(result: BattleSceneResult): void {
+        if (!this.playerEntity) return;
+
+        const { enemy } = result;
+
+        // 데미지를 실제 엔티티에 적용
+        if (result.totalEnemyDamage > 0) {
+            enemy.applyDamage(result.totalEnemyDamage);
+        }
+        if (result.totalPlayerDamage > 0) {
+            this.playerEntity.applyDamage(result.totalPlayerDamage);
+        }
+
+        // 로그 기록
+        this.pushTurnLog(
+            `⚔️ Card Battle: ${result.totalRounds} round(s) — ${result.outcome === 'player-win' ? 'Victory!' : 'Defeat...'}`,
+            result.outcome === 'player-win' ? 'combat' : 'danger',
+        );
+
+        // 승패 처리
+        if (result.outcome === 'player-win') {
+            if (enemy.isDead()) {
+                if (enemy.isBoss()) {
+                    this.handleVictory(enemy);
+                } else {
+                    this.floorDirector.removeEnemy(enemy.id);
+                    this.renderSynchronizer.removeEnemySprite(enemy.id);
+                    this.battleDirector.refreshTurnQueueRoster();
+                    this.handleEnemyDeath(enemy);
+                }
+            } else {
+                this.completePlayerTurn('');
+            }
+        } else {
+            this.handlePlayerDeath();
+        }
+    }
+
+    private handleBattleOutcome(outcome: BattleOutcome, enemy: Enemy) {
+        if (!this.playerEntity) return;
+
+        for (const log of outcome.logs) {
+            this.pushTurnLog(log.line, log.tone);
+        }
+        this.syncBossHud();
+
+        if (outcome.type === 'game-over') {
+            this.handlePlayerDeath();
+        } else if (outcome.type === 'none') {
+            if (enemy.stats.health <= 0) {
+                this.handleEnemyDeath(enemy);
+            } else {
+                this.completePlayerTurn('');
+            }
+        } else if (outcome.type === 'victory' && outcome.boss) {
+            this.handleVictory(outcome.boss);
+        }
+    }
+
+    private handleEnemyDeath(enemy: Enemy) {
+        if (!this.playerEntity) return;
+
+        this.defeatedEnemyCount += 1;
+        const totalExp = this.playerEntity.gainExperience(enemy.experienceReward);
+        this.pushTurnLog(this.localization.formatEnemyDeath(this.getEnemyName(enemy)), 'danger');
+        this.pushTurnLog(this.localization.formatExperienceGain(enemy.experienceReward, totalExp), 'item');
+
+        this.rollCardDrop(enemy);
+        this.spawnEliteReward(enemy);
+        this.syncBossHud();
+        this.completePlayerTurn('');
+    }
+
+    /** 적 처치 시 카드 드롭을 판정하고 결과를 로그에 표시한다. */
+    private pendingCardDrop: CardDropResult | null = null;
+
+    private rollCardDrop(enemy: Enemy): void {
+        const floorNumber = this.floorDirector.getFloorSnapshot().number;
+        const result = this.cardDropService.rollCardDrop(
+            enemy.kind,
+            enemy.elite,
+            floorNumber,
+            this.deckService,
+        );
+
+        if (!result.dropped) {
+            return;
+        }
+
+        const cardTypeLabel = result.card.type === 'ATTACK' ? '⚔️' : '🛡️';
+        this.pushTurnLog(
+            `🃏 Card Drop! ${cardTypeLabel} ${result.card.name} (Power: ${result.card.power})`,
+            'item',
+        );
+
+        if (result.deckFull) {
+            this.pendingCardDrop = result;
+            this.pushTurnLog('📦 Deck is full! Choose a card to swap or skip.', 'danger');
+            this.hud.showCardSwapOverlay(
+                result.card,
+                this.deckService.getCards(),
+                (removeCardId: string | null) => this.handleCardSwapSelection(removeCardId),
+            );
+        } else {
+            this.persistRun('active');
+        }
+    }
+
+    private handleCardSwapSelection(removeCardId: string | null): void {
+        if (!this.pendingCardDrop || !this.pendingCardDrop.dropped) {
+            this.pendingCardDrop = null;
+            return;
+        }
+
+        if (removeCardId === null) {
+            this.pushTurnLog('🃏 Card drop skipped.', 'system');
+            this.pendingCardDrop = null;
+            return;
+        }
+
+        const swapResult = this.cardDropService.swapCard(
+            removeCardId,
+            this.pendingCardDrop.card,
+            this.deckService,
+        );
+
+        if (swapResult.swapped) {
+            this.pushTurnLog(
+                `🔄 Swapped ${swapResult.removedCard.name} → ${swapResult.addedCard.name}`,
+                'item',
+            );
+            this.persistRun('active');
+        }
+
+        this.pendingCardDrop = null;
+    }
+
+    private completePlayerTurn(logLine: string, extraLogs: Array<{ line: string; tone: HudLogTone }> = []) {
+        if (!this.playerEntity) return;
+
+        if (logLine) this.pushTurnLog(logLine);
+        for (const entry of extraLogs) this.pushTurnLog(entry.line, entry.tone);
+
+        const resolution = this.battleDirector.completePlayerTurn();
+        if (!resolution) return;
+
+        const mapData = this.floorDirector.getMapData();
+        if (!mapData) return;
+
+        for (const enemyTurn of resolution.enemyTurns) {
+            const outcome = this.battleDirector.resolveEnemyTurn(enemyTurn, this.playerEntity, mapData);
+            for (const log of outcome.logs) {
+                this.pushTurnLog(log.line, log.tone);
+            }
+            if (outcome.type === 'game-over') {
+                this.handlePlayerDeath();
+                break;
             }
         }
 
-        this.applyVisibilityToEnemies(snapshot.tiles);
-        this.applyVisibilityToItems(snapshot.tiles);
-    }
-
-    private applyVisibilityToTile(x: number, y: number, state: VisibilityState) {
-        const tile = this.mapLayer?.getTileAt(x, y);
-        if (!tile) return;
-
-        switch (state) {
-            case 'visible':
-                tile.setAlpha(1);
-                tile.tint = 0xffffff;
-                break;
-            case 'explored':
-                tile.setAlpha(0.3);
-                tile.tint = 0x888888;
-                break;
-            case 'hidden':
-                tile.setAlpha(0);
-                tile.tint = 0xffffff;
-                break;
-        }
-    }
-
-    private isTransparentTile(x: number, y: number) {
-        const data = this.mapData;
-        if (!data) return false;
-        if (x < 0 || x >= data.width || y < 0 || y >= data.height) return false;
-
-        return isWalkableTile(data.tiles[y][x]);
-    }
-
-    private renderMap() {
-        if (!this.mapData) return;
-        this.mapLayer?.destroy();
-
-        const map = this.make.tilemap({
-            data: this.mapData.tiles,
-            tileWidth: this.tileSize,
-            tileHeight: this.tileSize
-        });
-
-        const tileset = map.addTilesetImage('tiles', 'tiles', this.tileSize, this.tileSize, 0, 0);
-        if (tileset) {
-            this.mapLayer = map.createLayer(0, tileset, 0, 0) || undefined;
-        }
-    }
-
-    private spawnEnemies(floorNumber: number) {
-        if (!this.mapData) return;
-
-        this.clearEnemySprites();
-        this.enemyEntities = this.enemySpawner.spawn({
-            floorNumber,
-            floorType: this.mapData.floorType,
-            tiles: this.mapData.tiles,
-            rooms: this.mapData.rooms,
-            bossSpawn: this.mapData.bossSpawn,
-            blockedPositions: [
-                this.mapData.playerSpawn,
-                this.mapData.stairsPosition,
-                ...this.mapData.restPoints,
-            ],
-        });
-
-        for (const enemy of this.enemyEntities) {
-            const sprite = this.add
-                .sprite(
-                    enemy.position.x * this.tileSize,
-                    enemy.position.y * this.tileSize,
-                    this.getEnemyTextureKey(enemy),
-                )
-                .setOrigin(0);
-            this.applyEnemySpriteStyle(sprite, enemy);
-            this.enemySprites.set(enemy.id, sprite);
-        }
-    }
-
-    private spawnItems(floorNumber: number) {
-        if (!this.mapData) return;
-
-        this.clearItemLabels();
-        this.fieldItems = this.itemService.initializeFloor({
-            floorNumber,
-            floorType: this.mapData.floorType,
-            tiles: this.mapData.tiles,
-            rooms: this.mapData.rooms,
-            blockedPositions: [
-                this.mapData.playerSpawn,
-                this.mapData.stairsPosition,
-                ...this.mapData.restPoints,
-                ...this.enemyEntities.map((enemy) => enemy.position),
-            ],
-        });
-
-        for (const item of this.fieldItems) {
-            this.renderFieldItem(item);
-        }
-    }
-
-    private clearEnemySprites() {
-        for (const sprite of this.enemySprites.values()) {
-            sprite.destroy();
-        }
-
-        this.enemySprites.clear();
-    }
-
-    private clearItemLabels() {
-        for (const label of this.itemLabels.values()) {
-            label.destroy();
-        }
-
-        this.itemLabels.clear();
-        this.fieldItems = [];
-    }
-
-    private applyVisibilityToEnemies(states: VisibilityState[][]) {
-        for (const enemy of this.enemyEntities) {
-            const sprite = this.enemySprites.get(enemy.id);
-            if (!sprite) continue;
-
-            const state = states[enemy.position.y]?.[enemy.position.x];
-            const visible = state === 'visible';
-            sprite.setVisible(visible);
-            sprite.setAlpha(visible ? 1 : 0);
-        }
-    }
-
-    private applyVisibilityToItems(states: VisibilityState[][]) {
-        for (const item of this.fieldItems) {
-            const label = this.itemLabels.get(item.instanceId);
-            if (!label) continue;
-
-            const state = states[item.position.y]?.[item.position.x];
-            const visible = state === 'visible';
-            label.setVisible(visible);
-            label.setAlpha(visible ? 1 : 0);
-        }
-    }
-
-    private placePlayer(spawn: Position) {
-        if (!this.playerEntity) {
-            this.playerEntity = new Player(
-                { x: spawn.x, y: spawn.y },
-                this.metaProgression.getRunStartStats(),
-            );
-        } else {
-            this.playerEntity.moveTo(spawn.x, spawn.y);
-        }
-
-        if (!this.playerSprite) {
-            this.playerSprite = this.add
-                .sprite(spawn.x * this.tileSize, spawn.y * this.tileSize, 'player')
-                .setOrigin(0);
-            this.cameras.main.startFollow(this.playerSprite, true, 0.1, 0.1);
-            this.cameras.main.setZoom(1.5);
-        } else {
-            this.playerSprite.setPosition(spawn.x * this.tileSize, spawn.y * this.tileSize);
-        }
-    }
-
-    private initializeTurnQueue() {
-        if (!this.playerEntity) return;
-
-        this.turnQueue = new TurnQueueService(new RotTurnScheduler());
-        this.turnQueue.initialize(
-            {
-                id: 'player',
-                kind: 'player',
-                label: this.localization.getPlayerLabel(),
-            },
-            this.createEnemyTurnActors(),
-        );
-    }
-
-    private createEnemyTurnActors(): TurnActor[] {
-        return this.enemyEntities.map((enemy) => ({
-            id: enemy.id,
-            kind: 'enemy' as const,
-            label: this.getEnemyDisplayName(enemy),
-        }));
-    }
-
-    private buildFloor(floor: FloorSnapshot, arrivalLog: string) {
-        this.isGameOver = false;
-        this.isVictory = false;
-        this.isTitleScreenOpen = false;
-        this.isSanctuaryOpen = false;
-        this.isInventoryOpen = false;
-        this.titleScreenMessage = undefined;
-        this.mapData = MapGenerator.generate(40, 30, { floorType: floor.type });
-        this.initializeVisibilityService();
-        this.renderMap();
-        this.placePlayer(this.mapData.playerSpawn);
-        this.spawnEnemies(floor.number);
-        this.spawnItems(floor.number);
-        this.initializeTurnQueue();
-        this.updateVisibility();
-        this.cameras.main.setBounds(0, 0, this.mapData.width * this.tileSize, this.mapData.height * this.tileSize);
-        this.syncTitleOverlay();
-        this.hud.updateGameOver({
-            isOpen: false,
-            floorNumber: floor.number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            earnedSoulShards: 0,
-            totalSoulShards: this.soulShardService.getTotalSoulShards(),
-        });
-        this.hud.updateVictory({
-            isOpen: false,
-            floorNumber: floor.number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getBossName(),
-        });
-        this.syncInventoryOverlay();
-        this.syncBossHud();
+        this.renderSynchronizer.updateVisibility(this.playerEntity.position, mapData, this.floorDirector.getEnemyEntities(), this.floorDirector.getFieldItems());
         this.refreshTurnStatus();
-        this.queueFloorEventBanner(floor);
 
-        this.pushTurnLog(arrivalLog, 'travel');
-        if (floor.type === 'safe') {
-            this.pushTurnLog(this.localization.formatSanctuaryAwaits());
-        } else if (floor.type === 'boss') {
-            this.pushTurnLog(this.localization.formatBossFloorWarning(this.getBossName()), 'danger');
-        }
-
-        const snapshot = this.turnQueue?.getSnapshot();
-        if (snapshot) {
-            this.pushTurnLog(
-                this.localization.formatRoundActorTurn(snapshot.round, snapshot.activeActor.label),
-            );
+        const state = this.overlayController.getState();
+        if (!state.isGameOver) {
+            this.pushTurnLog(this.localization.formatRoundActorTurn(resolution.round, resolution.nextActor.label));
         }
     }
 
     private advanceToNextFloor() {
-        const nextFloor = this.floorProgression.advance();
-        this.buildFloor(
-            nextFloor,
-            this.localization.formatEnteredFloor(nextFloor.number, nextFloor.type),
-        );
+        const nextFloor = this.floorDirector.advanceFloor();
+        this.buildFloor(nextFloor, this.localization.formatEnteredFloor(nextFloor.number, nextFloor.type));
         this.persistRun('active');
     }
 
-    private completePlayerTurn(
-        logLine: string,
-        extraLogs: Array<{ line: string; tone: HudLogTone }> = [],
-    ) {
-        if (!this.turnQueue || !this.playerEntity) return;
-
-        if (logLine) {
-            this.pushTurnLog(logLine);
-        }
-        for (const entry of extraLogs) {
-            this.pushTurnLog(entry.line, entry.tone);
-        }
-
-        const resolution = this.turnQueue.completePlayerTurn();
-        for (const enemyTurn of resolution.enemyTurns) {
-            this.resolveEnemyTurn(enemyTurn);
-            if (this.isGameOver) {
-                break;
-            }
-        }
-
-        this.updateVisibility();
-        this.refreshTurnStatus();
-        if (!this.isGameOver) {
-            this.pushTurnLog(
-                this.localization.formatRoundActorTurn(
-                    resolution.round,
-                    resolution.nextActor.label,
-                ),
-            );
-        }
-    }
-
-    private collectItemAtPlayerPosition() {
-        if (!this.playerEntity) {
-            return undefined;
-        }
-
-        const pickup = this.itemService.pickupAt(this.playerEntity.position);
-        if (!pickup) {
-            return undefined;
-        }
-
-        if (pickup.status === 'inventory-full' || !pickup.inventoryItem) {
-            const inventory = this.itemService.getInventorySnapshot();
-            const itemName = pickup.fieldItem
-                ? this.getItemDisplayName(pickup.fieldItem.definition)
-                : 'item';
-
-            return {
-                line: this.localization.formatInventoryFull(
-                    itemName,
-                    inventory.usedSlots,
-                    inventory.slotCapacity,
-                ),
-                tone: 'danger' as const,
-            };
-        }
-
-        const label = this.itemLabels.get(pickup.fieldItemId);
-        label?.destroy();
-        this.itemLabels.delete(pickup.fieldItemId);
-        this.fieldItems = this.itemService.getFieldItems();
-        this.syncInventoryOverlay();
-        this.persistRun('active');
-
-        return {
-            line: this.describePickup(pickup.inventoryItem),
-            tone: 'item' as const,
-        };
-    }
-
-    private refreshTurnStatus() {
-        if (this.isTitleScreenOpen) {
-            const previewStats = this.metaProgression.getRunStartStats();
-            this.hud.updateStatus({
-                floorNumber: 1,
-                floorType: this.localization.getFloorTypeLabel('normal'),
-                health: previewStats.health,
-                maxHealth: previewStats.maxHealth,
-                experience: 0,
-                activeTurn: this.isSanctuaryOpen
-                    ? this.localization.getSanctuaryTurnLabel()
-                    : this.localization.getTitleScreenTurnLabel(),
-                enemyCount: 0,
-                isGameOver: false,
-                runState: 'playing',
-            });
-            return;
-        }
-
-        if (!this.playerEntity) return;
-
-        if (this.isVictory) {
-            const floor = this.floorProgression.getSnapshot();
-            this.hud.updateStatus({
-                floorNumber: floor.number,
-                floorType: this.localization.getFloorTypeLabel(floor.type),
-                health: this.playerEntity.stats.health,
-                maxHealth: this.playerEntity.stats.maxHealth,
-                experience: this.playerEntity.experience,
-                activeTurn: this.localization.getEndingTurnLabel(),
-                enemyCount: 0,
-                isGameOver: false,
-                runState: 'victory',
-            });
-            return;
-        }
-
-        if (this.isGameOver) {
-            const floor = this.floorProgression.getSnapshot();
-            this.hud.updateStatus({
-                floorNumber: floor.number,
-                floorType: this.localization.getFloorTypeLabel(floor.type),
-                health: this.playerEntity.stats.health,
-                maxHealth: this.playerEntity.stats.maxHealth,
-                experience: this.playerEntity.experience,
-                activeTurn: this.localization.getGameOverTurnLabel(),
-                enemyCount: this.enemyEntities.length,
-                isGameOver: true,
-                runState: 'game-over',
-            });
-            return;
-        }
-
-        if (!this.turnQueue) return;
-
-        const snapshot = this.turnQueue.getSnapshot();
-        const floor = this.floorProgression.getSnapshot();
-
-        this.hud.updateStatus({
+    private handlePlayerDeath() {
+        this.overlayController.setGameOver(true);
+        this.renderSynchronizer.setPlayerDeathStyle();
+        const floor = this.floorDirector.getFloorSnapshot();
+        const rewardSummary = this.soulShardService.awardSoulShards({
             floorNumber: floor.number,
-            floorType: this.localization.getFloorTypeLabel(floor.type),
-            health: this.playerEntity.stats.health,
-            maxHealth: this.playerEntity.stats.maxHealth,
-            experience: this.playerEntity.experience,
-            activeTurn: this.isInventoryOpen
-                ? this.localization.getInventoryTurnLabel(snapshot.activeActor.label)
-                : this.localization.getRoundTurnLabel(snapshot.round, snapshot.activeActor.label),
-            enemyCount: snapshot.enemyCount,
-            isGameOver: false,
-            runState: 'playing',
+            defeatedEnemies: this.defeatedEnemyCount,
         });
+        this.overlayController.updateGameOver(floor.number, this.defeatedEnemyCount, rewardSummary.earnedSoulShards);
+        this.pushTurnLog(this.localization.formatPlayerDeath(), 'danger');
+        this.pushTurnLog(this.localization.formatSoulShardReward(rewardSummary.earnedSoulShards, rewardSummary.totalSoulShards), 'item');
+        this.refreshTurnStatus();
+        this.persistRun('game-over');
     }
 
-    private pushTurnLog(line: string, tone: HudLogTone = 'system') {
-        this.hud.pushLog(line, tone);
+    private handleVictory(boss: Enemy) {
+        this.overlayController.setVictory(true);
+        const floor = this.floorDirector.getFloorSnapshot();
+        this.overlayController.updateVictory(floor.number, this.defeatedEnemyCount, this.getEnemyName(boss));
+        this.pushTurnLog(this.localization.formatVictory(this.getEnemyName(boss)), 'item');
+        this.refreshTurnStatus();
+        this.persistRun('victory');
     }
 
-    private queueFloorEventBanner(floor: FloorSnapshot) {
-        this.hud.queueEventBanner(
-            this.localization.formatFloorBanner(floor.number, floor.type),
-            'travel',
-            1700,
-        );
-
-        if (floor.type === 'boss') {
-            this.hud.queueEventBanner(
-                this.localization.formatBossApproaches(this.getBossName()),
-                'danger',
-                2400,
-            );
-        }
+    private returnToTitleScreen() {
+        this.overlayController.setTitleScreen(true);
+        this.overlayController.setSanctuary(false);
+        this.overlayController.setInventory(false);
+        this.overlayController.setGameOver(false);
+        this.overlayController.setVictory(false);
+        this.overlayController.setTitleScreenMessage(undefined);
+        this.selectedInventoryItemId = undefined;
+        this.hud.clearEventBanner();
+        this.syncTitleOverlay();
+        this.syncInventoryOverlay();
+        this.syncBossHud();
+        this.refreshTurnStatus();
     }
 
-    private persistRun(status: PersistedRunStatus) {
-        if (!this.playerEntity) {
-            return;
-        }
-
-        this.runPersistence.save({
-            status,
-            floor: this.floorProgression.getSnapshot(),
-            player: {
-                stats: { ...this.playerEntity.stats },
-                experience: this.playerEntity.experience,
-            },
-            inventory: this.itemService.getInventorySnapshot().items,
-            defeatedEnemyCount: this.defeatedEnemyCount,
-        });
+    private startNewRun() {
+        this.defeatedEnemyCount = 0;
+        this.selectedInventoryItemId = undefined;
+        this.overlayController.setTitleScreen(false);
+        this.overlayController.setSanctuary(false);
+        this.overlayController.setInventory(false);
+        this.overlayController.setGameOver(false);
+        this.overlayController.setVictory(false);
+        this.itemService.resetRun();
+        this.deckService.initializeStarterDeck();
+        const firstFloor = this.floorDirector.restoreFloor({ number: 1, type: 'normal' });
+        this.playerEntity?.reset(this.metaProgression.getRunStartStats());
+        this.renderSynchronizer.clearPlayerTint();
+        this.hud.clearLogs();
+        this.buildFloor(firstFloor, this.localization.formatEnteredFloor(firstFloor.number, firstFloor.type));
+        this.persistRun('active');
     }
 
     private resumeSavedRun() {
-        if (!this.isTitleScreenOpen) {
-            return;
-        }
-
-        const savedRun = this.runPersistence.load();
-        if (!savedRun || savedRun.status !== 'active') {
-            return;
-        }
+        const savedRun = this.floorDirector.loadSavedRun();
+        if (!savedRun || savedRun.status !== 'active') return;
 
         this.hud.clearLogs();
         this.selectedInventoryItemId = undefined;
         this.defeatedEnemyCount = savedRun.defeatedEnemyCount;
-        this.playerSprite?.clearTint();
-        const floor = this.floorProgression.restore(savedRun.floor);
+        this.renderSynchronizer.clearPlayerTint();
+        const floor = this.floorDirector.restoreFloor(savedRun.floor);
         this.itemService.resetRun();
-        this.buildFloor(
-            floor,
-            this.localization.formatResumedFloor(floor.number, floor.type),
-        );
+        this.deckService.restoreDeck(savedRun.deck);
+        this.buildFloor(floor, this.localization.formatResumedFloor(floor.number, floor.type));
         this.playerEntity?.restore(savedRun.player.stats, savedRun.player.experience);
         this.itemService.restoreInventory(savedRun.inventory);
         this.syncInventoryOverlay();
@@ -788,511 +502,37 @@ export class MainScene extends Phaser.Scene {
         this.persistRun('active');
     }
 
-    private isPlayerTurn() {
-        return !this.isGameOver
-            && !this.isVictory
-            && this.turnQueue?.getSnapshot().activeActor.kind === 'player';
-    }
-
-    private getEnemyAt(x: number, y: number) {
-        return this.enemyEntities.find((enemy) =>
-            enemy.position.x === x && enemy.position.y === y,
-        );
-    }
-
-    private getEnemyById(enemyId: string) {
-        return this.enemyEntities.find((enemy) => enemy.id === enemyId);
-    }
-
-    private getBossEnemy() {
-        return this.enemyEntities.find((enemy) => enemy.isBoss());
-    }
-
-    private syncBossHud() {
-        const boss = this.getBossEnemy();
-        this.hud.updateBoss({
-            isVisible: !!boss && !this.isTitleScreenOpen && !this.isGameOver && !this.isVictory,
-            name: boss ? this.getEnemyDisplayName(boss) : this.getDefaultBossName(),
-            health: boss?.stats.health ?? 0,
-            maxHealth: boss?.stats.maxHealth ?? 0,
-        });
-    }
-
-    private resolveEnemyTurn(enemyTurn: TurnActor) {
-        if (!this.playerEntity) return;
-
-        const enemy = this.getEnemyById(enemyTurn.id);
-        if (!enemy) {
-            this.pushTurnLog(this.localization.formatActorMissing(enemyTurn.label));
-            return;
-        }
-
-        const enemyName = this.getEnemyDisplayName(enemy);
-
-        const ai = new EnemyAiService(
-            this.createEnemyPathFinder(enemy.id),
-            new RotFovCalculator((x, y) => this.isTransparentTile(x, y)),
-            this.fovRadius,
-        );
-        const action = ai.decide(enemy, this.playerEntity.position);
-
-        switch (action.type) {
-            case 'move':
-                this.updateEnemySpritePosition(enemy);
-                this.pushTurnLog(
-                    action.pursuit === 'player'
-                        ? this.localization.formatEnemyAdvances(enemyName)
-                        : this.localization.formatEnemySearches(enemyName),
-                    'travel',
-                );
-                break;
-            case 'attack':
-                this.resolveEnemyAttack(enemy);
-                break;
-            case 'wait':
-                this.pushTurnLog(this.describeEnemyWait(enemy, action.reason));
-                break;
-        }
-    }
-
-    private createEnemyPathFinder(movingEnemyId: string) {
-        return new RotPathFinder((x, y) => this.isEnemyPathTileWalkable(x, y, movingEnemyId));
-    }
-
-    private isEnemyPathTileWalkable(x: number, y: number, movingEnemyId: string) {
-        if (!this.mapData || !this.playerEntity) {
-            return false;
-        }
-
-        if (x < 0 || x >= this.mapData.width || y < 0 || y >= this.mapData.height) {
-            return false;
-        }
-
-        if (this.playerEntity.position.x === x && this.playerEntity.position.y === y) {
-            return true;
-        }
-
-        const movingEnemy = this.getEnemyById(movingEnemyId);
-        if (movingEnemy && movingEnemy.position.x === x && movingEnemy.position.y === y) {
-            return true;
-        }
-
-        if (!isWalkableTile(this.mapData.tiles[y][x])) {
-            return false;
-        }
-
-        return !this.enemyEntities.some((enemy) =>
-            enemy.id !== movingEnemyId
-            && enemy.position.x === x
-            && enemy.position.y === y,
-        );
-    }
-
-    private updateEnemySpritePosition(enemy: Enemy) {
-        const sprite = this.enemySprites.get(enemy.id);
-        if (!sprite) return;
-
-        sprite.setPosition(enemy.position.x * this.tileSize, enemy.position.y * this.tileSize);
-    }
-
-    private getEnemyTextureKey(enemy: Enemy) {
-        if (enemy.isBoss()) {
-            return 'boss';
-        }
-
-        return `enemy-${enemy.archetypeId}`;
-    }
-
-    private applyEnemySpriteStyle(sprite: Phaser.GameObjects.Sprite, enemy: Enemy) {
-        if (enemy.isBoss()) {
-            sprite.setDepth(1);
-            return;
-        }
-
-        sprite.setScale(enemy.isElite() ? 1.14 : 1);
-        if (enemy.isElite()) {
-            sprite.setTint(0xfbbf24);
-        }
-    }
-
-    private describeEnemyWait(enemy: Enemy, reason: 'idle' | 'searching' | 'blocked') {
-        return this.localization.formatEnemyWait(this.getEnemyDisplayName(enemy), reason);
-    }
-
-    private spawnFloatingDamage(
-        position: Position,
-        damage: number,
-        isCritical: boolean,
-        target: 'enemy' | 'player',
-    ) {
-        const color = isCritical
-            ? '#fbbf24'
-            : target === 'enemy'
-                ? '#fca5a5'
-                : '#93c5fd';
-        const damageLabel = this.add.text(
-            (position.x * this.tileSize) + (this.tileSize / 2),
-            (position.y * this.tileSize) + 8,
-            `${damage}`,
-            {
-                color,
-                fontFamily: 'monospace',
-                fontSize: isCritical ? '18px' : '15px',
-                stroke: '#111827',
-                strokeThickness: 4,
-            },
-        )
-            .setDepth(3)
-            .setOrigin(0.5);
-        damageLabel.setAlpha(0.96);
-
-        this.tweens.add({
-            targets: damageLabel,
-            y: damageLabel.y - (this.tileSize * 0.7),
-            alpha: 0,
-            scaleX: isCritical ? 1.16 : 1,
-            scaleY: isCritical ? 1.16 : 1,
-            duration: isCritical ? 520 : 420,
-            ease: 'Cubic.easeOut',
-            onComplete: () => damageLabel.destroy(),
-        });
-    }
-
-    private performPlayerAttack(enemy: Enemy) {
-        if (!this.playerEntity) return;
-
-        const resolution = this.combatService.resolveAttack(this.playerEntity.stats, enemy.stats);
-        enemy.applyDamage(resolution.damage);
-        this.spawnFloatingDamage(enemy.position, resolution.damage, resolution.isCritical, 'enemy');
-        this.syncBossHud();
-
-        this.pushTurnLog(
-            this.describeAttack(
-                this.localization.getPlayerLabel(),
-                this.getEnemyDisplayName(enemy),
-                resolution.damage,
-                resolution.isCritical,
-            ),
-            'combat',
-        );
-
-        if (resolution.targetDefeated) {
-            this.handleEnemyDeath(enemy);
-            if (this.isVictory) {
-                return;
-            }
-        }
-
-        this.completePlayerTurn('');
-    }
-
-    private resolveEnemyAttack(enemy: Enemy) {
-        if (!this.playerEntity) return;
-
-        const resolution = this.combatService.resolveAttack(enemy.stats, this.playerEntity.stats);
-        this.playerEntity.applyDamage(resolution.damage);
-        this.spawnFloatingDamage(this.playerEntity.position, resolution.damage, resolution.isCritical, 'player');
-        this.pushTurnLog(
-            this.describeAttack(
-                this.getEnemyDisplayName(enemy),
-                this.localization.getPlayerLabel(),
-                resolution.damage,
-                resolution.isCritical,
-            ),
-            'danger',
-        );
-
-        if (resolution.targetDefeated) {
-            this.handlePlayerDeath();
-        }
-    }
-
-    private handleEnemyDeath(enemy: Enemy) {
-        if (!this.playerEntity) return;
-
-        this.removeEnemy(enemy.id);
-        this.defeatedEnemyCount += 1;
-        const totalExp = this.playerEntity.gainExperience(enemy.experienceReward);
-        this.pushTurnLog(this.localization.formatEnemyDeath(this.getEnemyDisplayName(enemy)), 'danger');
-        this.pushTurnLog(this.localization.formatExperienceGain(enemy.experienceReward, totalExp), 'item');
-
-        if (enemy.isBoss()) {
-            this.handleVictory(enemy);
-            return;
-        }
-
-        this.spawnEliteReward(enemy);
-
-        this.refreshTurnQueueRoster();
-        this.syncBossHud();
-    }
-
-    private handlePlayerDeath() {
-        if (this.isGameOver) {
-            return;
-        }
-
-        this.isGameOver = true;
-        this.isVictory = false;
-        this.isInventoryOpen = false;
-        this.selectedInventoryItemId = undefined;
-        this.hud.clearEventBanner();
-        this.playerSprite?.setTint(0x991b1b);
-        const rewardSummary = this.soulShardService.awardSoulShards({
-            floorNumber: this.floorProgression.getSnapshot().number,
-            defeatedEnemies: this.defeatedEnemyCount,
-        });
-        this.hud.updateGameOver({
-            isOpen: true,
-            ...rewardSummary,
-        });
-        this.hud.updateVictory({
-            isOpen: false,
-            floorNumber: this.floorProgression.getSnapshot().number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getBossName(),
-        });
-        this.syncInventoryOverlay();
-        this.syncBossHud();
-        this.pushTurnLog(this.localization.formatPlayerDeath(), 'danger');
-        this.pushTurnLog(
-            this.localization.formatSoulShardReward(
-                rewardSummary.earnedSoulShards,
-                rewardSummary.totalSoulShards,
-            ),
-            'item',
-        );
-        this.refreshTurnStatus();
-        this.persistRun('game-over');
-    }
-
-    private handleVictory(boss: Enemy) {
-        this.isVictory = true;
-        this.isGameOver = false;
-        this.isInventoryOpen = false;
-        this.selectedInventoryItemId = undefined;
-        this.hud.clearEventBanner();
-        this.hud.updateGameOver({
-            isOpen: false,
-            floorNumber: this.floorProgression.getSnapshot().number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            earnedSoulShards: 0,
-            totalSoulShards: this.soulShardService.getTotalSoulShards(),
-        });
-        this.hud.updateVictory({
-            isOpen: true,
-            floorNumber: this.floorProgression.getSnapshot().number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getEnemyDisplayName(boss),
-        });
-        this.syncInventoryOverlay();
-        this.syncBossHud();
-        this.pushTurnLog(this.localization.formatVictory(this.getEnemyDisplayName(boss)), 'item');
-        this.refreshTurnStatus();
-        this.persistRun('victory');
-    }
-
-    private spawnEliteReward(enemy: Enemy) {
-        if (!enemy.isElite()) {
-            return;
-        }
-        const rewardPosition = this.findRewardDropPosition(enemy.position);
-        if (!rewardPosition) {
-            this.pushTurnLog(
-                this.localization.formatEliteRewardLost(this.getEnemyDisplayName(enemy)),
-                'danger',
-            );
-            return;
-        }
-
-        const reward = this.itemService.spawnRewardDrop(
-            rewardPosition,
-            this.floorProgression.getSnapshot().number,
-            ITEM_RARITY.RARE,
-        );
-        this.fieldItems = this.itemService.getFieldItems();
-        this.renderFieldItem(reward);
-        this.pushTurnLog(
-            this.localization.formatEnemyDrops(
-                this.getEnemyDisplayName(enemy),
-                this.getItemDisplayName(reward.definition),
-                reward.definition.rarity,
-            ),
-            'item',
-        );
-    }
-
-    private findRewardDropPosition(origin: Position) {
-        if (!this.mapData) {
-            return undefined;
-        }
-
-        const candidates: Position[] = [{ ...origin }];
-        for (let radius = 1; radius <= 2; radius += 1) {
-            for (let dy = -radius; dy <= radius; dy += 1) {
-                for (let dx = -radius; dx <= radius; dx += 1) {
-                    candidates.push({
-                        x: origin.x + dx,
-                        y: origin.y + dy,
-                    });
-                }
-            }
-        }
-
-        return candidates.find((candidate) => this.isRewardDropTileAvailable(candidate));
-    }
-
-    private isRewardDropTileAvailable(position: Position) {
-        if (!this.mapData) {
-            return false;
-        }
-        if (
-            position.x < 0
-            || position.x >= this.mapData.width
-            || position.y < 0
-            || position.y >= this.mapData.height
-        ) {
-            return false;
-        }
-
-        if (this.mapData.tiles[position.y][position.x] !== WORLD_TILE.FLOOR) {
-            return false;
-        }
-
-        if (this.playerEntity?.position.x === position.x && this.playerEntity.position.y === position.y) {
-            return false;
-        }
-
-        return !this.fieldItems.some((item) =>
-            item.position.x === position.x && item.position.y === position.y,
-        ) && !this.enemyEntities.some((enemy) =>
-            enemy.position.x === position.x && enemy.position.y === position.y,
-        );
-    }
-
-    private removeEnemy(enemyId: string) {
-        this.enemyEntities = this.enemyEntities.filter((enemy) => enemy.id !== enemyId);
-        const sprite = this.enemySprites.get(enemyId);
-        sprite?.destroy();
-        this.enemySprites.delete(enemyId);
-    }
-
-    private refreshTurnQueueRoster() {
-        if (!this.turnQueue) return;
-
-        this.turnQueue.refresh(
-            {
-                id: 'player',
-                kind: 'player',
-                label: this.localization.getPlayerLabel(),
-            },
-            this.createEnemyTurnActors(),
-        );
-    }
-
-    private describeAttack(attacker: string, target: string, damage: number, isCritical: boolean) {
-        return this.localization.formatAttack(attacker, target, damage, isCritical);
-    }
-
-    private describePickup(item: { icon: string; id: string; name: string; quantity: number }) {
-        return this.localization.formatPickup(
-            item.icon,
-            this.localization.getItemName(item.id, item.name),
-            item.quantity,
-        );
-    }
-
-    private describeDrop(item: { icon: string; id: string; name: string }) {
-        return this.localization.formatDrop(
-            item.icon,
-            this.localization.getItemName(item.id, item.name),
-        );
-    }
-
-    private describeUse(item: { icon: string; id: string; name: string }, healedAmount: number) {
-        return this.localization.formatUse(
-            item.icon,
-            this.localization.getItemName(item.id, item.name),
-            healedAmount,
-        );
-    }
-
-    private describeEquip(
-        item: { icon: string; id: string; name: string },
-        state: 'equip' | 'unequip',
-        statModifier?: { maxHealth?: number; attack?: number; defense?: number },
-    ) {
-        const summary = this.formatStatModifierSummary(
-            state === 'unequip' ? this.invertModifierForDisplay(statModifier) : statModifier,
-        );
-        return this.localization.formatEquip(
-            item.icon,
-            this.localization.getItemName(item.id, item.name),
-            state,
-            summary,
-        );
-    }
-
-    private formatStatModifierSummary(modifier?: { maxHealth?: number; attack?: number; defense?: number }) {
-        if (!modifier) {
-            return '';
-        }
-
-        const entries = [
-            modifier.maxHealth ? `HP ${formatSignedNumber(modifier.maxHealth)}` : undefined,
-            modifier.attack ? `ATK ${formatSignedNumber(modifier.attack)}` : undefined,
-            modifier.defense ? `DEF ${formatSignedNumber(modifier.defense)}` : undefined,
-        ].filter(Boolean);
-
-        return entries.join(' · ');
-    }
-
-    private invertModifierForDisplay(modifier?: { maxHealth?: number; attack?: number; defense?: number }) {
-        if (!modifier) {
-            return undefined;
-        }
-
-        return {
-            maxHealth: modifier.maxHealth ? -modifier.maxHealth : undefined,
-            attack: modifier.attack ? -modifier.attack : undefined,
-            defense: modifier.defense ? -modifier.defense : undefined,
-        };
-    }
-
-    private describeDirection(dx: number, dy: number): MovementDirection {
-        if (dx < 0) return 'west';
-        if (dx > 0) return 'east';
-        if (dy < 0) return 'north';
-        return 'south';
-    }
-
-    private toggleInventoryOpen() {
-        if (this.isTitleScreenOpen || this.isGameOver || !this.playerEntity || !this.isPlayerTurn()) {
-            return;
-        }
-
-        this.setInventoryOpen(!this.isInventoryOpen);
-    }
-
-    private setInventoryOpen(isOpen: boolean) {
-        this.isInventoryOpen = isOpen;
-        this.syncInventoryOverlay();
+    private openSanctuary() {
+        this.overlayController.setSanctuary(true);
+        this.overlayController.setTitleScreenMessage({ key: 'sanctuary-help', tone: 'system' });
+        this.syncTitleOverlay();
         this.refreshTurnStatus();
     }
 
-    private selectInventoryItem(instanceId: string) {
-        this.selectedInventoryItemId = instanceId;
-        this.syncInventoryOverlay();
+    private closeSanctuary() {
+        this.overlayController.setSanctuary(false);
+        this.syncTitleOverlay();
+        this.refreshTurnStatus();
+    }
+
+    private purchaseSanctuaryUpgrade(key: PermanentUpgradeKey) {
+        const purchase = this.metaProgression.purchaseUpgrade(key);
+        if (purchase.status === 'purchased') {
+            this.overlayController.setTitleScreenMessage({ key: 'upgrade-purchased', tone: 'item', upgradeKey: key, level: purchase.upgrade.level });
+        } else {
+            this.overlayController.setTitleScreenMessage({ key: 'upgrade-insufficient', tone: 'danger', upgradeKey: key, missingSoulShards: purchase.missingSoulShards ?? 0 });
+        }
+        this.overlayController.setSanctuary(true);
+        this.syncTitleOverlay();
+        this.refreshTurnStatus();
     }
 
     private syncInventoryOverlay() {
         const inventory = this.itemService.getInventorySnapshot();
-        const selectedItem = inventory.items.find((item) => item.instanceId === this.selectedInventoryItemId)
-            ?? inventory.items[0];
-
+        const selectedItem = inventory.items.find((item) => item.instanceId === this.selectedInventoryItemId) ?? inventory.items[0];
         this.selectedInventoryItemId = selectedItem?.instanceId;
         this.hud.updateInventory({
-            isOpen: this.isInventoryOpen,
+            isOpen: this.overlayController.getState().isInventoryOpen,
             items: inventory.items,
             selectedItemId: this.selectedInventoryItemId,
             usedSlots: inventory.usedSlots,
@@ -1300,28 +540,109 @@ export class MainScene extends Phaser.Scene {
         });
     }
 
-    private syncTitleOverlay() {
-        const snapshot = this.metaProgression.getSnapshot();
-        this.hud.updateTitleScreen({
-            isOpen: this.isTitleScreenOpen,
-            totalSoulShards: snapshot.totalSoulShards,
-            canContinueRun: this.runPersistence.hasActiveRun(),
-            isSanctuaryOpen: this.isSanctuaryOpen,
-            sanctuaryMessage: this.getTitleScreenMessageText(),
-            sanctuaryMessageTone: this.titleScreenMessage?.tone ?? 'system',
-            upgrades: snapshot.upgrades,
+    private syncBossHud() {
+        const boss = this.floorDirector.getBossEnemy();
+        this.overlayController.syncBossHud(!!boss, boss ? this.getEnemyName(boss) : '', boss?.stats.health ?? 0, boss?.stats.maxHealth ?? 0);
+    }
+
+    private refreshTurnStatus() {
+        const state = this.overlayController.getState();
+        if (state.isTitleScreenOpen) {
+            const previewStats = this.metaProgression.getRunStartStats();
+            this.hud.updateStatus({
+                floorNumber: 1, floorType: this.localization.getFloorTypeLabel('normal'),
+                health: previewStats.health, maxHealth: previewStats.maxHealth, experience: 0,
+                activeTurn: state.isSanctuaryOpen ? this.localization.getSanctuaryTurnLabel() : this.localization.getTitleScreenTurnLabel(),
+                enemyCount: 0, isGameOver: false, runState: 'playing',
+            });
+            return;
+        }
+
+        if (!this.playerEntity) return;
+        const floor = this.floorDirector.getFloorSnapshot();
+
+        if (state.isVictory) {
+            this.hud.updateStatus({
+                floorNumber: floor.number, floorType: this.localization.getFloorTypeLabel(floor.type),
+                health: this.playerEntity.stats.health, maxHealth: this.playerEntity.stats.maxHealth, experience: this.playerEntity.experience,
+                activeTurn: this.localization.getEndingTurnLabel(), enemyCount: 0, isGameOver: false, runState: 'victory',
+            });
+            return;
+        }
+
+        if (state.isGameOver) {
+            this.hud.updateStatus({
+                floorNumber: floor.number, floorType: this.localization.getFloorTypeLabel(floor.type),
+                health: this.playerEntity.stats.health, maxHealth: this.playerEntity.stats.maxHealth, experience: this.playerEntity.experience,
+                activeTurn: this.localization.getGameOverTurnLabel(), enemyCount: this.floorDirector.getEnemyEntities().length, isGameOver: true, runState: 'game-over',
+            });
+            return;
+        }
+
+        const turnSnapshot = this.battleDirector.getTurnSnapshot();
+        if (!turnSnapshot) return;
+
+        this.hud.updateStatus({
+            floorNumber: floor.number, floorType: this.localization.getFloorTypeLabel(floor.type),
+            health: this.playerEntity.stats.health, maxHealth: this.playerEntity.stats.maxHealth, experience: this.playerEntity.experience,
+            activeTurn: state.isInventoryOpen ? this.localization.getInventoryTurnLabel(turnSnapshot.activeActor.label) : this.localization.getRoundTurnLabel(turnSnapshot.round, turnSnapshot.activeActor.label),
+            enemyCount: turnSnapshot.enemyCount, isGameOver: false, runState: 'playing',
         });
     }
 
-    private dropSelectedInventoryItem() {
-        if (!this.playerEntity || !this.selectedInventoryItemId) {
-            return;
+    private collectItemAtPlayerPosition() {
+        if (!this.playerEntity) return undefined;
+        const pickup = this.itemService.pickupAt(this.playerEntity.position);
+        if (!pickup) return undefined;
+
+        if (pickup.status === 'inventory-full' || !pickup.inventoryItem) {
+            const inventory = this.itemService.getInventorySnapshot();
+            const itemName = pickup.fieldItem ? this.localization.getItemName(pickup.fieldItem.definition.id, pickup.fieldItem.definition.name) : 'item';
+            return { line: this.localization.formatInventoryFull(itemName, inventory.usedSlots, inventory.slotCapacity), tone: 'danger' as const };
         }
 
-        const drop = this.itemService.dropItem(this.selectedInventoryItemId, this.playerEntity.position);
-        if (!drop) {
-            return;
+        this.renderSynchronizer.removeItemLabel(pickup.fieldItemId);
+        this.syncInventoryOverlay();
+        this.persistRun('active');
+        return { line: this.describePickup(pickup.inventoryItem), tone: 'item' as const };
+    }
+
+    private useSelectedInventoryItem() {
+        if (!this.playerEntity || !this.selectedInventoryItemId) return;
+        const activation = this.itemService.activateItem(this.selectedInventoryItemId);
+        if (!activation) return;
+
+        const inventory = this.itemService.getInventorySnapshot();
+        const item = inventory.items.find(i => i.instanceId === this.selectedInventoryItemId) || activation.item;
+        if (!item) return;
+
+        switch (activation.status) {
+            case 'consumed':
+                const healed = this.playerEntity.heal(activation.healAmount ?? 0);
+                this.pushTurnLog(this.describeUse(item, healed), 'item');
+                break;
+            case 'equipped':
+                this.playerEntity.applyStatModifier(activation.statModifier ?? {});
+                if (activation.replacedItem) this.pushTurnLog(this.describeEquip(activation.replacedItem, 'unequip', activation.replacedItem.equipment?.statModifier), 'item');
+                this.pushTurnLog(this.describeEquip(item, 'equip', item.equipment?.statModifier), 'item');
+                break;
+            case 'unequipped':
+                this.playerEntity.applyStatModifier(activation.statModifier ?? {});
+                this.pushTurnLog(this.describeEquip(item, 'unequip', item.equipment?.statModifier), 'item');
+                break;
+            case 'not-usable':
+                this.pushTurnLog(this.localization.formatItemNotUsable(this.localization.getItemName(item.id, item.name)), 'danger');
+                break;
         }
+        this.syncInventoryOverlay();
+        this.refreshTurnStatus();
+        this.persistRun('active');
+    }
+
+    private dropSelectedInventoryItem() {
+        if (!this.playerEntity || !this.selectedInventoryItemId) return;
+        const drop = this.itemService.dropItem(this.selectedInventoryItemId, this.playerEntity.position);
+        if (!drop) return;
 
         if (drop.status === 'equipped-item') {
             this.pushTurnLog(this.localization.formatUnequipBeforeDrop(), 'danger');
@@ -1333,276 +654,138 @@ export class MainScene extends Phaser.Scene {
             return;
         }
 
-        this.fieldItems = this.itemService.getFieldItems();
-        this.renderFieldItem(drop.fieldItem);
-        this.updateVisibility();
+        this.renderSynchronizer.synchronizeItems(this.floorDirector.getFieldItems());
+        this.renderSynchronizer.updateVisibility(this.playerEntity.position, this.floorDirector.getMapData()!, this.floorDirector.getEnemyEntities(), this.floorDirector.getFieldItems());
         this.syncInventoryOverlay();
         this.pushTurnLog(this.describeDrop(drop.fieldItem.definition), 'item');
     }
 
-    private useSelectedInventoryItem() {
-        if (!this.playerEntity || !this.selectedInventoryItemId) {
-            return;
-        }
+    private spawnEliteReward(enemy: Enemy) {
+        if (!enemy.isElite()) return;
+        const mapData = this.floorDirector.getMapData();
+        if (!mapData) return;
 
-        const selectedItem = this.itemService.getInventorySnapshot().items.find((item) =>
-            item.instanceId === this.selectedInventoryItemId,
-        );
-        if (!selectedItem) {
-            return;
-        }
-
-        const activation = this.itemService.activateItem(this.selectedInventoryItemId);
-        if (!activation) {
-            return;
-        }
-
-        switch (activation.status) {
-            case 'consumed': {
-                const healedAmount = this.playerEntity.heal(activation.healAmount ?? 0);
-                this.pushTurnLog(this.describeUse(selectedItem, healedAmount), 'item');
-                break;
-            }
-            case 'equipped':
-                this.playerEntity.applyStatModifier(activation.statModifier ?? {});
-                if (activation.replacedItem) {
-                    this.pushTurnLog(
-                        this.describeEquip(activation.replacedItem, 'unequip', activation.replacedItem.equipment?.statModifier),
-                        'item',
-                    );
+        const candidates: Position[] = [{ ...enemy.position }];
+        for (let r = 1; r <= 2; r++) {
+            for (let dy = -r; dy <= r; dy++) {
+                for (let dx = -r; dx <= r; dx++) {
+                    candidates.push({ x: enemy.position.x + dx, y: enemy.position.y + dy });
                 }
-                this.pushTurnLog(
-                    this.describeEquip(selectedItem, 'equip', selectedItem.equipment?.statModifier),
-                    'item',
-                );
-                break;
-            case 'unequipped':
-                this.playerEntity.applyStatModifier(activation.statModifier ?? {});
-                this.pushTurnLog(
-                    this.describeEquip(selectedItem, 'unequip', activation.item?.equipment?.statModifier),
-                    'item',
-                );
-                break;
-            case 'not-usable':
-                this.pushTurnLog(
-                    this.localization.formatItemNotUsable(
-                        this.localization.getItemName(selectedItem.id, selectedItem.name),
-                    ),
-                    'danger',
-                );
-                break;
+            }
         }
 
+        const pos = candidates.find(p => {
+            if (p.x < 0 || p.x >= mapData.width || p.y < 0 || p.y >= mapData.height) return false;
+            if (mapData.tiles[p.y][p.x] !== WORLD_TILE.FLOOR) return false;
+            if (this.playerEntity?.position.x === p.x && this.playerEntity.position.y === p.y) return false;
+            return !this.floorDirector.getFieldItems().some(i => i.position.x === p.x && i.position.y === p.y)
+                && !this.floorDirector.getEnemyEntities().some(e => e.position.x === p.x && e.position.y === p.y);
+        });
+
+        if (!pos) {
+            this.pushTurnLog(this.localization.formatEliteRewardLost(this.getEnemyName(enemy)), 'danger');
+            return;
+        }
+
+        const reward = this.itemService.spawnRewardDrop(pos, this.floorDirector.getFloorSnapshot().number, ITEM_RARITY.RARE);
+        this.renderSynchronizer.synchronizeItems(this.floorDirector.getFieldItems());
+        this.pushTurnLog(this.localization.formatEnemyDrops(this.getEnemyName(enemy), this.localization.getItemName(reward.definition.id, reward.definition.name), reward.definition.rarity), 'item');
+    }
+
+    private setInventoryOpen(isOpen: boolean) {
+        this.overlayController.setInventory(isOpen);
         this.syncInventoryOverlay();
         this.refreshTurnStatus();
-        this.persistRun('active');
     }
 
-    private returnToTitleScreen() {
-        this.isTitleScreenOpen = true;
-        this.isSanctuaryOpen = false;
-        this.isInventoryOpen = false;
-        this.isVictory = false;
-        this.selectedInventoryItemId = undefined;
-        this.titleScreenMessage = undefined;
-        this.hud.clearEventBanner();
-        this.hud.updateGameOver({
-            isOpen: false,
-            floorNumber: this.floorProgression.getSnapshot().number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            earnedSoulShards: 0,
-            totalSoulShards: this.soulShardService.getTotalSoulShards(),
-        });
-        this.hud.updateVictory({
-            isOpen: false,
-            floorNumber: this.floorProgression.getSnapshot().number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getBossName(),
-        });
-        this.syncTitleOverlay();
+    private selectInventoryItem(id: string) {
+        this.selectedInventoryItemId = id;
         this.syncInventoryOverlay();
-        this.syncBossHud();
-        this.refreshTurnStatus();
-    }
-
-    private openSanctuary() {
-        if (!this.isTitleScreenOpen) {
-            return;
-        }
-
-        this.isSanctuaryOpen = true;
-        this.titleScreenMessage = {
-            key: 'sanctuary-help',
-            tone: 'system',
-        };
-        this.syncTitleOverlay();
-        this.refreshTurnStatus();
-    }
-
-    private closeSanctuary() {
-        if (!this.isTitleScreenOpen) {
-            return;
-        }
-
-        this.isSanctuaryOpen = false;
-        this.syncTitleOverlay();
-        this.refreshTurnStatus();
-    }
-
-    private purchaseSanctuaryUpgrade(key: PermanentUpgradeKey) {
-        if (!this.isTitleScreenOpen) {
-            return;
-        }
-
-        const purchase = this.metaProgression.purchaseUpgrade(key);
-        if (purchase.status === 'purchased') {
-            this.titleScreenMessage = {
-                key: 'upgrade-purchased',
-                tone: 'item',
-                upgradeKey: key,
-                level: purchase.upgrade.level,
-            };
-        } else {
-            this.titleScreenMessage = {
-                key: 'upgrade-insufficient',
-                tone: 'danger',
-                upgradeKey: key,
-                missingSoulShards: purchase.missingSoulShards ?? 0,
-            };
-        }
-
-        this.isSanctuaryOpen = true;
-        this.syncTitleOverlay();
-        this.refreshTurnStatus();
-    }
-
-    private startNewRun() {
-        this.defeatedEnemyCount = 0;
-        this.selectedInventoryItemId = undefined;
-        this.titleScreenMessage = undefined;
-        this.isTitleScreenOpen = false;
-        this.isSanctuaryOpen = false;
-        this.isInventoryOpen = false;
-        this.isGameOver = false;
-        this.isVictory = false;
-        this.itemService.resetRun();
-        const firstFloor = this.floorProgression.reset();
-        this.playerEntity?.reset(this.metaProgression.getRunStartStats());
-        this.playerSprite?.clearTint();
-        this.hud.clearLogs();
-        this.buildFloor(
-            firstFloor,
-            this.localization.formatEnteredFloor(firstFloor.number, firstFloor.type),
-        );
-        this.persistRun('active');
-    }
-
-    private renderFieldItem(item: ItemEntity) {
-        const label = this.add.text(
-            (item.position.x * this.tileSize) + (this.tileSize / 2),
-            (item.position.y * this.tileSize) + (this.tileSize / 2),
-            `${item.definition.icon}\n${this.getItemDisplayName(item.definition)}`,
-            {
-                align: 'center',
-                color: this.getItemRarityColor(item.rarity),
-                fontFamily: 'monospace',
-                fontSize: '11px',
-                stroke: '#111827',
-                strokeThickness: 2,
-            },
-        )
-            .setDepth(1)
-            .setOrigin(0.5);
-        this.itemLabels.set(item.instanceId, label);
     }
 
     private handleLocaleChange() {
-        if (this.turnQueue && this.shouldRefreshTurnQueueLocale()) {
-            this.refreshTurnQueueRoster();
-        }
-
-        this.refreshFieldItemLabels();
-        this.hud.updateVictory({
-            isOpen: this.isVictory,
-            floorNumber: this.floorProgression.getSnapshot().number,
-            defeatedEnemies: this.defeatedEnemyCount,
-            bossName: this.getBossName(),
-        });
+        this.battleDirector.refreshTurnQueueRoster();
+        this.renderSynchronizer.refreshFieldItemLabels(this.floorDirector.getFieldItems());
+        this.overlayController.updateVictory(this.floorDirector.getFloorSnapshot().number, this.defeatedEnemyCount, this.getBossName());
         this.syncTitleOverlay();
         this.syncInventoryOverlay();
         this.syncBossHud();
         this.refreshTurnStatus();
     }
 
-    private shouldRefreshTurnQueueLocale() {
-        if (this.isTitleScreenOpen || this.isGameOver || this.isVictory || !this.turnQueue) {
-            return false;
-        }
-
-        return this.turnQueue.getSnapshot().activeActor.kind === 'player';
+    private pushTurnLog(line: string, tone: HudLogTone = 'system') { this.hud.pushLog(line, tone); }
+    private queueFloorEventBanner(floor: FloorSnapshot) {
+        this.hud.queueEventBanner(this.localization.formatFloorBanner(floor.number, floor.type), 'travel', 1700);
+        if (floor.type === 'boss') this.hud.queueEventBanner(this.localization.formatBossApproaches(this.getBossName()), 'danger', 2400);
+    }
+    private persistRun(status: PersistedRunStatus) {
+        if (this.playerEntity) this.floorDirector.persistRun(status, this.playerEntity, this.defeatedEnemyCount, this.deckService.getCards());
     }
 
-    private refreshFieldItemLabels() {
-        for (const item of this.fieldItems) {
-            const label = this.itemLabels.get(item.instanceId);
-            if (!label) {
-                continue;
-            }
-
-            label.setText(`${item.definition.icon}\n${this.getItemDisplayName(item.definition)}`);
-        }
+    private getEnemyName(enemy: Pick<Enemy, 'archetypeId' | 'elite'>) { return this.localization.getEnemyName(enemy.archetypeId, enemy.elite); }
+    private getBossName() { const boss = this.floorDirector.getBossEnemy(); return boss ? this.getEnemyName(boss) : this.localization.getEnemyName('final-boss'); }
+    private describePickup(i: any) { return this.localization.formatPickup(i.icon, this.localization.getItemName(i.id, i.name), i.quantity); }
+    private describeDrop(i: any) { return this.localization.formatDrop(i.icon, this.localization.getItemName(i.id, i.name)); }
+    private describeUse(i: any, h: number) { return this.localization.formatUse(i.icon, this.localization.getItemName(i.id, i.name), h); }
+    private describeEquip(i: any, s: 'equip' | 'unequip', m?: any) {
+        const mod = s === 'unequip' ? { maxHealth: m?.maxHealth ? -m.maxHealth : undefined, attack: m?.attack ? -m.attack : undefined, defense: m?.defense ? -m.defense : undefined } : m;
+        const summary = [mod?.maxHealth ? `HP ${formatSignedNumber(mod.maxHealth)}` : undefined, mod?.attack ? `ATK ${formatSignedNumber(mod.attack)}` : undefined, mod?.defense ? `DEF ${formatSignedNumber(mod.defense)}` : undefined].filter(Boolean).join(' · ');
+        return this.localization.formatEquip(i.icon, this.localization.getItemName(i.id, i.name), s, summary);
+    }
+    private describeDirection(dx: number, dy: number): MovementDirection {
+        if (dx < 0) return 'west'; if (dx > 0) return 'east'; if (dy < 0) return 'north'; return 'south';
     }
 
-    private getItemDisplayName(item: { id: string; name: string }) {
-        return this.localization.getItemName(item.id, item.name);
+    private syncTitleOverlay() {
+        const snapshot = this.metaProgression.getSnapshot();
+        this.overlayController.syncTitleOverlay(this.runPersistence.hasActiveRun(), snapshot.upgrades);
     }
 
-    private getEnemyDisplayName(enemy: Pick<Enemy, 'archetypeId' | 'elite'>) {
-        return this.localization.getEnemyName(enemy.archetypeId, enemy.elite);
+    private generateDefaultTextures() {
+        const graphics = this.make.graphics({ x: 0, y: 0 });
+        graphics.fillStyle(0x333333, 1); graphics.fillRect(0, 0, this.tileSize, this.tileSize);
+        graphics.lineStyle(1, 0x444444, 0.5); graphics.strokeRect(0, 0, this.tileSize, this.tileSize);
+        graphics.fillStyle(0x666666, 1); graphics.fillRect(this.tileSize, 0, this.tileSize, this.tileSize);
+        graphics.lineStyle(1, 0x777777, 0.5); graphics.strokeRect(this.tileSize, 0, this.tileSize, this.tileSize);
+        graphics.fillStyle(0x5c4a16, 1); graphics.fillRect(this.tileSize * 2, 0, this.tileSize, this.tileSize);
+        graphics.fillStyle(0xd4a017, 1); graphics.fillRect((this.tileSize * 2) + 8, 6, this.tileSize - 16, 4);
+        graphics.fillRect((this.tileSize * 2) + 12, 14, this.tileSize - 20, 4);
+        graphics.fillRect((this.tileSize * 2) + 16, 22, this.tileSize - 24, 4);
+        graphics.lineStyle(1, 0xeab308, 0.7); graphics.strokeRect(this.tileSize * 2, 0, this.tileSize, this.tileSize);
+        graphics.fillStyle(0x214f3b, 1); graphics.fillRect(this.tileSize * 3, 0, this.tileSize, this.tileSize);
+        graphics.fillStyle(0x6ee7b7, 1); graphics.fillCircle((this.tileSize * 3) + (this.tileSize / 2), this.tileSize / 2, this.tileSize * 0.28);
+        graphics.lineStyle(1, 0x9ae6b4, 0.7); graphics.strokeRect(this.tileSize * 3, 0, this.tileSize, this.tileSize);
+        graphics.generateTexture('tiles', this.tileSize * 4, this.tileSize);
+
+        const playerGraphics = this.make.graphics({ x: 0, y: 0 });
+        playerGraphics.fillStyle(0x00ffff, 1); playerGraphics.fillCircle(this.tileSize / 2, this.tileSize / 2, this.tileSize * 0.4);
+        playerGraphics.generateTexture('player', this.tileSize, this.tileSize);
+
+        const crawlerGraphics = this.make.graphics({ x: 0, y: 0 });
+        crawlerGraphics.fillStyle(0x2f855a, 1); crawlerGraphics.fillCircle(this.tileSize / 2, this.tileSize / 2, this.tileSize * 0.34);
+        crawlerGraphics.fillStyle(0x111827, 1); crawlerGraphics.fillCircle((this.tileSize / 2) - 5, (this.tileSize / 2) - 4, 2);
+        crawlerGraphics.fillCircle((this.tileSize / 2) + 5, (this.tileSize / 2) - 4, 2);
+        crawlerGraphics.generateTexture('enemy-ash-crawler', this.tileSize, this.tileSize);
+
+        const raiderGraphics = this.make.graphics({ x: 0, y: 0 });
+        raiderGraphics.fillStyle(0xb91c1c, 1); raiderGraphics.fillRect(6, 6, this.tileSize - 12, this.tileSize - 12);
+        raiderGraphics.fillStyle(0x111827, 1); raiderGraphics.fillRect(10, 10, 4, 4); raiderGraphics.fillRect(this.tileSize - 14, 10, 4, 4);
+        raiderGraphics.fillStyle(0xf97316, 1); raiderGraphics.fillRect(12, this.tileSize - 14, this.tileSize - 24, 4);
+        raiderGraphics.generateTexture('enemy-blade-raider', this.tileSize, this.tileSize);
+
+        const sentinelGraphics = this.make.graphics({ x: 0, y: 0 });
+        sentinelGraphics.fillStyle(0x1d4ed8, 1); sentinelGraphics.fillRect(5, 5, this.tileSize - 10, this.tileSize - 10);
+        sentinelGraphics.fillStyle(0x93c5fd, 1); sentinelGraphics.fillRect(10, 10, this.tileSize - 20, this.tileSize - 20);
+        sentinelGraphics.fillStyle(0x111827, 1); sentinelGraphics.fillRect(10, 10, 4, 4); sentinelGraphics.fillRect(this.tileSize - 14, 10, 4, 4);
+        sentinelGraphics.generateTexture('enemy-dread-sentinel', this.tileSize, this.tileSize);
+
+        const bossGraphics = this.make.graphics({ x: 0, y: 0 });
+        bossGraphics.fillStyle(0x7f1d1d, 1); bossGraphics.fillRect(4, 6, this.tileSize - 8, this.tileSize - 8);
+        bossGraphics.fillStyle(0xfbbf24, 1); bossGraphics.fillRect(8, 4, 6, 6); bossGraphics.fillRect(this.tileSize - 14, 4, 6, 6);
+        bossGraphics.fillStyle(0x111827, 1); bossGraphics.fillRect(10, 12, 4, 4); bossGraphics.fillRect(this.tileSize - 14, 12, 4, 4);
+        bossGraphics.fillStyle(0xfca5a5, 1); bossGraphics.fillRect(10, this.tileSize - 12, this.tileSize - 20, 4);
+        bossGraphics.generateTexture('boss', this.tileSize, this.tileSize);
     }
 
-    private getDefaultBossName() {
-        return this.localization.getEnemyName('final-boss');
-    }
-
-    private getBossName() {
-        const boss = this.getBossEnemy();
-        return boss ? this.getEnemyDisplayName(boss) : this.getDefaultBossName();
-    }
-
-    private getTitleScreenMessageText() {
-        if (!this.titleScreenMessage) {
-            return undefined;
-        }
-
-        switch (this.titleScreenMessage.key) {
-            case 'sanctuary-help':
-                return this.localization.formatSanctuaryHelp();
-            case 'upgrade-purchased':
-                return this.localization.formatUpgradeAdvanced(
-                    this.titleScreenMessage.upgradeKey,
-                    this.titleScreenMessage.level,
-                );
-            case 'upgrade-insufficient':
-                return this.localization.formatUpgradeNeedMore(
-                    this.titleScreenMessage.upgradeKey,
-                    this.titleScreenMessage.missingSoulShards,
-                );
-        }
-    }
-
-    private getItemRarityColor(rarity: ItemEntity['rarity']) {
-        switch (rarity) {
-            case ITEM_RARITY.LEGENDARY:
-                return '#facc15';
-            case ITEM_RARITY.RARE:
-                return '#7dd3fc';
-            case ITEM_RARITY.COMMON:
-            default:
-                return '#fef08a';
-        }
-    }
-
-    update() {
-    }
+    update() {}
 }

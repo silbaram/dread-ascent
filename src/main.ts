@@ -1,5 +1,6 @@
 import 'phaser';
 import { MainScene } from './scenes/MainScene';
+import { BattleScene } from './scenes/BattleScene';
 import { GameLocalization } from './ui/GameLocalization';
 import { GameHud } from './ui/GameHud';
 import './ui/gameHud.css';
@@ -18,7 +19,7 @@ const config: Phaser.Types.Core.GameConfig = {
     height: 600,
     parent: 'game-container',
     backgroundColor: '#000',
-    scene: [new MainScene(hud, localization)],
+    scene: [new MainScene(hud, localization), new BattleScene()],
     pixelArt: true,
     physics: {
         default: 'arcade',

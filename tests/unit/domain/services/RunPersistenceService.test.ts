@@ -56,6 +56,11 @@ function createSnapshot(): RunPersistenceSnapshot {
                 isEquipped: true,
             },
         ],
+        deck: [
+            { id: 'card-1', name: 'Slash', type: 'ATTACK', power: 8 },
+            { id: 'card-2', name: 'Thrust', type: 'ATTACK', power: 8 },
+            { id: 'card-3', name: 'Shield Block', type: 'GUARD', power: 5 },
+        ],
         defeatedEnemyCount: 12,
     };
 }
