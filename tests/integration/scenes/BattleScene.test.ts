@@ -10,24 +10,46 @@ import {
 import { CardEffectService } from '../../../src/domain/services/CardEffectService';
 import { DrawCycleService } from '../../../src/domain/services/DrawCycleService';
 import { EnergyService } from '../../../src/domain/services/EnergyService';
+import {
+    ENEMY_INTENT_TYPE,
+    EnemyIntentService,
+} from '../../../src/domain/services/EnemyIntentService';
+import {
+    StatusEffectService,
+    type StatusEffectState,
+} from '../../../src/domain/services/StatusEffectService';
 
 vi.mock('phaser', () => ({}));
 
 type BattleSceneModule = typeof import('../../../src/scenes/BattleScene');
+
+class FixedRandom {
+    constructor(private readonly value: number) {}
+
+    next(): number {
+        return this.value;
+    }
+}
 
 interface TestScene {
     readonly onEndTurn: () => void;
     readonly afterEnemyTurn: () => void;
     readonly onPlayCard: (handIndex: number) => void;
     readonly displayHandCards: () => void;
+    readonly executeEnemyTurn: () => void;
+    readonly endBattle: (outcome: 'player-win' | 'player-lose') => void;
     drawCycleService: DrawCycleService;
     cardEffectService: CardEffectService;
     energyService: EnergyService;
+    statusEffectService: StatusEffectService;
+    enemyIntentService: EnemyIntentService;
     drawCycleState: ReturnType<DrawCycleService['initialize']>;
     energyState: {
         current: number;
         max: number;
     };
+    playerStatusEffects: StatusEffectState;
+    enemyStatusEffects: StatusEffectState;
     playerState: {
         health: number;
         maxHealth: number;
@@ -51,9 +73,47 @@ interface TestScene {
     startPlayerTurn: ReturnType<typeof vi.fn>;
     createCardVisual: ReturnType<typeof vi.fn>;
     cardSprites: unknown[];
+    totalPlayerDamage: number;
     totalEnemyDamage: number;
-    endBattle: ReturnType<typeof vi.fn>;
+    turnNumber: number;
+    battleResolution: 'victory' | 'defeat' | 'escape';
+    onBattleEndCallback?: ReturnType<typeof vi.fn>;
+    sceneData: {
+        enemy: {
+            id: string;
+            label: string;
+            position: { x: number; y: number };
+            stats: {
+                health: number;
+                maxHealth: number;
+                attack: number;
+                defense: number;
+            };
+            experienceReward: number;
+            kind: 'normal' | 'boss';
+            archetypeId: 'ash-crawler' | 'blade-raider' | 'dread-sentinel' | 'final-boss';
+            elite: boolean;
+        };
+    };
+    scene: {
+        stop: ReturnType<typeof vi.fn>;
+        wake: ReturnType<typeof vi.fn>;
+    };
     isInputLocked: boolean;
+    battleLogLines: string[];
+    enemyAttackBuff: number;
+    currentEnemyIntent?: {
+        type: 'attack' | 'defend' | 'buff';
+        damage?: number;
+        block?: number;
+        amount?: number;
+        label: string;
+        sourceCardId?: string;
+    };
+    enemyIntentText?: {
+        setText: ReturnType<typeof vi.fn>;
+        setAlpha: ReturnType<typeof vi.fn>;
+    };
 }
 
 describe('BattleScene block lifecycle', () => {
@@ -90,8 +150,12 @@ describe('BattleScene block lifecycle', () => {
         scene.drawCycleService = drawCycleService;
         scene.cardEffectService = new CardEffectService();
         scene.energyService = new EnergyService();
+        scene.statusEffectService = new StatusEffectService();
+        scene.enemyIntentService = new EnemyIntentService(new FixedRandom(0));
         scene.drawCycleState = drawCycleService.initialize([]);
         scene.energyState = { current: 3, max: 3 };
+        scene.playerStatusEffects = scene.statusEffectService.createState();
+        scene.enemyStatusEffects = scene.statusEffectService.createState();
         scene.playerState = { health: 100, maxHealth: 100, block: 5 };
         scene.enemyState = { health: 40, maxHealth: 40, block: 0 };
         scene.enemyCardPool = [
@@ -112,9 +176,40 @@ describe('BattleScene block lifecycle', () => {
         scene.startPlayerTurn = vi.fn();
         scene.createCardVisual = vi.fn(() => ({}));
         scene.cardSprites = [];
+        scene.totalPlayerDamage = 0;
         scene.totalEnemyDamage = 0;
-        scene.endBattle = vi.fn();
+        scene.turnNumber = 0;
+        scene.battleResolution = 'victory';
+        scene.onBattleEndCallback = vi.fn();
+        scene.sceneData = {
+            enemy: {
+                id: 'enemy-1',
+                label: 'Enemy',
+                position: { x: 0, y: 0 },
+                stats: {
+                    health: 40,
+                    maxHealth: 40,
+                    attack: 4,
+                    defense: 2,
+                },
+                experienceReward: 10,
+                kind: 'normal',
+                archetypeId: 'ash-crawler',
+                elite: false,
+            },
+        };
+        scene.scene = {
+            stop: vi.fn(),
+            wake: vi.fn(),
+        };
         scene.isInputLocked = false;
+        scene.battleLogLines = [];
+        scene.enemyAttackBuff = 0;
+        scene.currentEnemyIntent = undefined;
+        scene.enemyIntentText = {
+            setText: vi.fn(),
+            setAlpha: vi.fn(),
+        };
 
         return scene;
     }
@@ -136,6 +231,12 @@ describe('BattleScene block lifecycle', () => {
         scene.afterEnemyTurn();
 
         expect(scene.enemyState.block).toBe(0);
+        expect(scene.currentEnemyIntent).toEqual({
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            damage: 4,
+            label: 'Enemy Strike',
+            sourceCardId: expect.any(String),
+        });
         expect(scene.startPlayerTurn).toHaveBeenCalledOnce();
     });
 
@@ -198,5 +299,146 @@ describe('BattleScene block lifecycle', () => {
         expect(scene.energyState.current).toBe(3);
         expect(scene.drawCycleState.hand).toEqual([lastStand]);
         expect(scene.showEffectText).not.toHaveBeenCalled();
+    });
+
+    it('shows an escape result instead of ending immediately when a flee card is played', () => {
+        const scene = createScene();
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Shadow Step',
+                    type: CARD_TYPE.ATTACK,
+                    power: 0,
+                    cost: 0,
+                    effectType: CARD_EFFECT_TYPE.FLEE,
+                    keywords: [CARD_KEYWORD.EXHAUST],
+                    rarity: CARD_RARITY.RARE,
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.showBattleEnd).toHaveBeenCalledWith('player-win', 'escape');
+    });
+
+    it('applies Vulnerable from Weaken and increases the next attack damage', () => {
+        const scene = createScene();
+        scene.playerState = { health: 100, maxHealth: 100, block: 0 };
+        scene.enemyState = { health: 40, maxHealth: 40, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Weaken',
+                    type: CARD_TYPE.ATTACK,
+                    power: 0,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+                    statusEffect: { type: 'VULNERABLE', duration: 2 },
+                }),
+                createCard({
+                    name: 'Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+        scene.onPlayCard(0);
+
+        expect(scene.enemyStatusEffects.vulnerable).toBe(2);
+        expect(scene.enemyState.health).toBe(31);
+        expect(scene.totalEnemyDamage).toBe(9);
+        expect(scene.battleLogLines).toContain('Enemy gains Vulnerable 2');
+    });
+
+    it('applies Poison at turn end and records status expiry in the battle log', () => {
+        const scene = createScene();
+        scene.enemyCardPool = [];
+        scene.playerState = { health: 20, maxHealth: 20, block: 5 };
+        scene.playerStatusEffects = {
+            vulnerable: 1,
+            weak: 0,
+            poison: 3,
+        };
+
+        scene.onEndTurn();
+
+        expect(scene.playerState.health).toBe(17);
+        expect(scene.playerStatusEffects).toEqual({
+            vulnerable: 0,
+            weak: 0,
+            poison: 2,
+        });
+        expect(scene.battleLogLines).toContain('Player takes 3 poison');
+        expect(scene.battleLogLines).toContain('Player Vulnerable expired');
+    });
+
+    it('executes the revealed defend intent instead of choosing a random attack', () => {
+        const scene = createScene();
+        scene.playerState = { health: 20, maxHealth: 20, block: 0 };
+        scene.enemyState = { health: 40, maxHealth: 40, block: 0 };
+        scene.currentEnemyIntent = {
+            type: ENEMY_INTENT_TYPE.DEFEND,
+            block: 5,
+            label: 'Enemy Guard 5',
+            sourceCardId: 'enemy-guard-5',
+        };
+        scene.enemyCardPool = [
+            createCard({
+                id: 'enemy-strike-4',
+                name: 'Enemy Strike 4',
+                type: CARD_TYPE.ATTACK,
+                power: 4,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            }),
+            createCard({
+                id: 'enemy-guard-5',
+                name: 'Enemy Guard 5',
+                type: CARD_TYPE.GUARD,
+                power: 5,
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            }),
+        ];
+
+        scene.executeEnemyTurn();
+
+        expect(scene.enemyState.block).toBe(0);
+        expect(scene.playerState.health).toBe(20);
+        expect(scene.showEnemyActionText).toHaveBeenCalledWith(
+            expect.objectContaining({ name: 'Enemy Guard 5' }),
+            0,
+            5,
+        );
+    });
+
+    it('returns the battle result to MainScene and wakes it after battle end', () => {
+        const scene = createScene();
+        scene.turnNumber = 4;
+        scene.totalPlayerDamage = 7;
+        scene.totalEnemyDamage = 12;
+        scene.battleResolution = 'victory';
+
+        BattleScene.prototype.endBattle.call(scene, 'player-win');
+
+        expect(scene.onBattleEndCallback).toHaveBeenCalledWith({
+            outcome: 'player-win',
+            resolution: 'victory',
+            totalRounds: 4,
+            totalPlayerDamage: 7,
+            totalEnemyDamage: 12,
+            enemy: scene.sceneData.enemy,
+        });
+        expect(scene.scene.stop).toHaveBeenCalledWith('BattleScene');
+        expect(scene.scene.wake).toHaveBeenCalledWith('MainScene');
     });
 });

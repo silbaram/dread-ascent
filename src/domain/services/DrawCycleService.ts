@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { CARD_KEYWORD, type Card } from '../entities/Card';
+import { COMBAT_RESOURCE_BALANCE } from './CombatBalance';
 import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
 
 // ---------------------------------------------------------------------------
@@ -10,7 +11,7 @@ import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
 // ---------------------------------------------------------------------------
 
 /** 매 턴 기본 드로우 수. */
-export const DEFAULT_HAND_SIZE = 5;
+export const DEFAULT_HAND_SIZE = COMBAT_RESOURCE_BALANCE.cardsPerTurn;
 
 // ---------------------------------------------------------------------------
 // Types

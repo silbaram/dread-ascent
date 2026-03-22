@@ -3,31 +3,23 @@
 // ---------------------------------------------------------------------------
 
 import {
-    CARD_EFFECT_TYPE,
-    CARD_KEYWORD,
-    CARD_RARITY,
-    CARD_TYPE,
     createCard,
     type Card,
     type CreateCardParams,
 } from './Card';
+import {
+    CARD_BALANCE_TABLE,
+    CARD_CATALOG_ID,
+    STARTER_DECK_COMPOSITION,
+    type CardCatalogId,
+} from '../services/CombatBalance';
 
 // ---------------------------------------------------------------------------
 // Card Template Definitions
 // ---------------------------------------------------------------------------
 
-/** 카드 카탈로그 ID. 카드 인스턴스의 식별자와는 별개의 정의 ID. */
-export const CARD_CATALOG_ID = {
-    STRIKE: 'STRIKE',
-    FORTIFY: 'FORTIFY',
-    WEAKEN: 'WEAKEN',
-    BLOODRUSH: 'BLOODRUSH',
-    SHADOW_STEP: 'SHADOW_STEP',
-    LAST_STAND: 'LAST_STAND',
-    SHOCKWAVE: 'SHOCKWAVE',
-} as const;
-
-export type CardCatalogId = (typeof CARD_CATALOG_ID)[keyof typeof CARD_CATALOG_ID];
+export { CARD_CATALOG_ID, STARTER_DECK_COMPOSITION };
+export type { CardCatalogId };
 
 /** 카드 템플릿. createCard에 전달할 파라미터를 정의한다. */
 export interface CardTemplate {
@@ -35,102 +27,25 @@ export interface CardTemplate {
     readonly params: Omit<CreateCardParams, 'id'>;
 }
 
+const CARD_BALANCE_ENTRIES = Object.entries(CARD_BALANCE_TABLE) as readonly [
+    CardCatalogId,
+    Omit<CreateCardParams, 'id'>,
+][];
+
 /** 7종 기본 카드 템플릿. */
-export const CARD_TEMPLATES: readonly CardTemplate[] = [
-    {
-        catalogId: CARD_CATALOG_ID.STRIKE,
-        params: {
-            name: 'Strike',
-            type: CARD_TYPE.ATTACK,
-            power: 6,
-            cost: 1,
-            keywords: [],
-            effectType: CARD_EFFECT_TYPE.DAMAGE,
-            rarity: CARD_RARITY.COMMON,
-        },
-    },
-    {
-        catalogId: CARD_CATALOG_ID.FORTIFY,
-        params: {
-            name: 'Fortify',
-            type: CARD_TYPE.GUARD,
-            power: 5,
-            cost: 1,
-            keywords: [],
-            effectType: CARD_EFFECT_TYPE.BLOCK,
-            rarity: CARD_RARITY.COMMON,
-        },
-    },
-    {
-        catalogId: CARD_CATALOG_ID.WEAKEN,
-        params: {
-            name: 'Weaken',
-            type: CARD_TYPE.ATTACK,
-            power: 0,
-            cost: 1,
-            keywords: [],
-            effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
-            rarity: CARD_RARITY.COMMON,
-            statusEffect: { type: 'VULNERABLE', duration: 2 },
-        },
-    },
-    {
-        catalogId: CARD_CATALOG_ID.BLOODRUSH,
-        params: {
-            name: 'Bloodrush',
-            type: CARD_TYPE.ATTACK,
-            power: 18,
-            cost: 2,
-            keywords: [CARD_KEYWORD.EXHAUST],
-            effectType: CARD_EFFECT_TYPE.DAMAGE,
-            rarity: CARD_RARITY.COMMON,
-        },
-    },
-    {
-        catalogId: CARD_CATALOG_ID.SHADOW_STEP,
-        params: {
-            name: 'Shadow Step',
-            type: CARD_TYPE.ATTACK,
-            power: 0,
-            cost: 0,
-            keywords: [CARD_KEYWORD.EXHAUST],
-            effectType: CARD_EFFECT_TYPE.FLEE,
-            rarity: CARD_RARITY.RARE,
-        },
-    },
-    {
-        catalogId: CARD_CATALOG_ID.LAST_STAND,
-        params: {
-            name: 'Last Stand',
-            type: CARD_TYPE.ATTACK,
-            power: 30,
-            cost: 3,
-            keywords: [CARD_KEYWORD.RETAIN],
-            effectType: CARD_EFFECT_TYPE.DAMAGE,
-            rarity: CARD_RARITY.RARE,
-            condition: { type: 'HP_THRESHOLD', value: 5 },
-        },
-    },
-    {
-        catalogId: CARD_CATALOG_ID.SHOCKWAVE,
-        params: {
-            name: 'Shockwave',
-            type: CARD_TYPE.ATTACK,
-            power: 8,
-            cost: 2,
-            keywords: [],
-            effectType: CARD_EFFECT_TYPE.DAMAGE,
-            rarity: CARD_RARITY.COMMON,
-        },
-    },
-] as const;
+export const CARD_TEMPLATES: readonly CardTemplate[] = CARD_BALANCE_ENTRIES.map(
+    ([catalogId, params]) => ({
+        catalogId,
+        params,
+    }),
+);
 
 // ---------------------------------------------------------------------------
 // Factory Functions
 // ---------------------------------------------------------------------------
 
 /** 카드 카탈로그 맵 (catalogId → template). */
-const CATALOG_MAP = new Map<string, CardTemplate>(
+const CATALOG_MAP = new Map<CardCatalogId, CardTemplate>(
     CARD_TEMPLATES.map((t) => [t.catalogId, t]),
 );
 
@@ -147,16 +62,6 @@ export function createCardFromCatalog(catalogId: CardCatalogId): Card {
 export function getCardTemplate(catalogId: CardCatalogId): CardTemplate | undefined {
     return CATALOG_MAP.get(catalogId);
 }
-
-// ---------------------------------------------------------------------------
-// Starter Deck (Cycle 3)
-// ---------------------------------------------------------------------------
-
-/** Cycle 3 시작 덱 구성. */
-export const STARTER_DECK_COMPOSITION: readonly { catalogId: CardCatalogId; count: number }[] = [
-    { catalogId: CARD_CATALOG_ID.STRIKE, count: 4 },
-    { catalogId: CARD_CATALOG_ID.FORTIFY, count: 3 },
-];
 
 /** 시작 덱 카드를 생성한다. */
 export function createStarterDeckCards(): Card[] {

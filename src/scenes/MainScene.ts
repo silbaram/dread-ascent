@@ -241,6 +241,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             cardBattleService: this.cardBattleService,
             itemService: this.itemService,
             enemyName: this.getEnemyName(enemy),
+            floorNumber: this.floorDirector.getFloorSnapshot().number,
         };
 
         // BattleScene 시작
@@ -266,13 +267,24 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         }
 
         // 로그 기록
+        const battleSummary = result.resolution === 'escape'
+            ? 'Escaped.'
+            : result.outcome === 'player-win'
+                ? 'Victory!'
+                : 'Defeat...';
         this.pushTurnLog(
-            `⚔️ Card Battle: ${result.totalRounds} round(s) — ${result.outcome === 'player-win' ? 'Victory!' : 'Defeat...'}`,
-            result.outcome === 'player-win' ? 'combat' : 'danger',
+            `⚔️ Card Battle: ${result.totalRounds} round(s) — ${battleSummary}`,
+            result.resolution === 'escape'
+                ? 'travel'
+                : result.outcome === 'player-win'
+                    ? 'combat'
+                    : 'danger',
         );
 
         // 승패 처리
-        if (result.outcome === 'player-win') {
+        if (result.resolution === 'escape') {
+            this.completePlayerTurn('');
+        } else if (result.outcome === 'player-win') {
             if (enemy.isDead()) {
                 if (enemy.isBoss()) {
                     this.handleVictory(enemy);

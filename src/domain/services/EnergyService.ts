@@ -2,12 +2,14 @@
 // Energy Service — 턴당 에너지 관리 도메인 로직 (TASK-032)
 // ---------------------------------------------------------------------------
 
+import { COMBAT_RESOURCE_BALANCE } from './CombatBalance';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 /** 기본 최대 에너지. game-systems.md MAX_ENERGY 참조. */
-export const DEFAULT_MAX_ENERGY = 3;
+export const DEFAULT_MAX_ENERGY = COMBAT_RESOURCE_BALANCE.maxEnergy;
 
 // ---------------------------------------------------------------------------
 // Types
