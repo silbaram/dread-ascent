@@ -50,13 +50,32 @@ export interface BattleSceneResult {
 // ---------------------------------------------------------------------------
 
 const SCENE_KEY = 'BattleScene';
+const SCENE_CENTER_X = 400;
 const CARD_WIDTH = 120;
 const CARD_HEIGHT = 160;
 const CARD_GAP = 20;
 const CARD_Y = 420;
+const CARD_LIFT_OFFSET = 20;
 const HP_BAR_WIDTH = 200;
 const HP_BAR_HEIGHT = 20;
+const ENEMY_HP_BAR_Y = 78;
+const PLAYER_HP_BAR_Y = 303;
+const HP_LOW_THRESHOLD = 0.3;
 const RESULT_DISPLAY_MS = 1200;
+const CARD_SELECT_DELAY_MS = 400;
+const CLASH_REVEAL_DELAY_MS = 600;
+
+// Colors
+const COLOR_BG = 0x1a1a2e;
+const COLOR_HP_BAR_BG = 0x333333;
+const COLOR_ENEMY_HP_HEALTHY = 0xff4444;
+const COLOR_ENEMY_HP_LOW = 0xff0000;
+const COLOR_PLAYER_HP_HEALTHY = 0x44ff44;
+const COLOR_PLAYER_HP_LOW = 0xff6600;
+const COLOR_CARD_ATTACK = 0xcc3333;
+const COLOR_CARD_GUARD = 0x3366cc;
+const COLOR_ENEMY_CARD_ATTACK = 0x993333;
+const COLOR_ENEMY_CARD_GUARD = 0x335599;
 
 // ---------------------------------------------------------------------------
 // Scene
@@ -137,17 +156,17 @@ export class BattleScene extends Phaser.Scene {
     // -----------------------------------------------------------------------
 
     private createBackground(): void {
-        this.add.rectangle(400, 300, 800, 600, 0x1a1a2e);
+        this.add.rectangle(SCENE_CENTER_X, 300, 800, 600, COLOR_BG);
 
         // 적 이름 표시
-        this.add.text(400, 40, this.sceneData.enemyName, {
+        this.add.text(SCENE_CENTER_X, 40, this.sceneData.enemyName, {
             fontSize: '20px',
             color: '#ff6666',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
 
         // 플레이어 라벨
-        this.add.text(400, 340, 'Your Hand', {
+        this.add.text(SCENE_CENTER_X, 340, 'Your Hand', {
             fontSize: '16px',
             color: '#aaaaaa',
             fontFamily: 'monospace',
@@ -160,28 +179,28 @@ export class BattleScene extends Phaser.Scene {
 
     private createHpBars(): void {
         // 적 HP (상단 중앙)
-        this.add.text(400, 65, 'Enemy HP', {
+        this.add.text(SCENE_CENTER_X, 65, 'Enemy HP', {
             fontSize: '12px',
             color: '#ff8888',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
 
         this.enemyHpBar = this.add.graphics();
-        this.enemyHpText = this.add.text(400, 85, '', {
+        this.enemyHpText = this.add.text(SCENE_CENTER_X, 85, '', {
             fontSize: '14px',
             color: '#ffffff',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
 
         // 플레이어 HP (중앙)
-        this.add.text(400, 290, 'Player HP', {
+        this.add.text(SCENE_CENTER_X, 290, 'Player HP', {
             fontSize: '12px',
             color: '#88ff88',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
 
         this.playerHpBar = this.add.graphics();
-        this.playerHpText = this.add.text(400, 310, '', {
+        this.playerHpText = this.add.text(SCENE_CENTER_X, 310, '', {
             fontSize: '14px',
             color: '#ffffff',
             fontFamily: 'monospace',
@@ -192,26 +211,37 @@ export class BattleScene extends Phaser.Scene {
 
     private updateHpBars(): void {
         const state = this.battleState;
+        const barX = SCENE_CENTER_X - HP_BAR_WIDTH / 2;
 
-        // 적 HP Bar
-        this.enemyHpBar.clear();
-        const enemyBarX = 400 - HP_BAR_WIDTH / 2;
-        this.enemyHpBar.fillStyle(0x333333);
-        this.enemyHpBar.fillRect(enemyBarX, 78, HP_BAR_WIDTH, HP_BAR_HEIGHT);
-        const enemyHpRatio = Math.max(0, state.enemyHp / state.enemyMaxHp);
-        this.enemyHpBar.fillStyle(enemyHpRatio > 0.3 ? 0xff4444 : 0xff0000);
-        this.enemyHpBar.fillRect(enemyBarX, 78, HP_BAR_WIDTH * enemyHpRatio, HP_BAR_HEIGHT);
-        this.enemyHpText.setText(`${state.enemyHp} / ${state.enemyMaxHp}`);
+        this.renderHpBar(
+            this.enemyHpBar, this.enemyHpText,
+            barX, ENEMY_HP_BAR_Y,
+            state.enemyHp, state.enemyMaxHp,
+            COLOR_ENEMY_HP_HEALTHY, COLOR_ENEMY_HP_LOW,
+        );
 
-        // 플레이어 HP Bar
-        this.playerHpBar.clear();
-        const playerBarX = 400 - HP_BAR_WIDTH / 2;
-        this.playerHpBar.fillStyle(0x333333);
-        this.playerHpBar.fillRect(playerBarX, 303, HP_BAR_WIDTH, HP_BAR_HEIGHT);
-        const playerHpRatio = Math.max(0, state.playerHp / state.playerMaxHp);
-        this.playerHpBar.fillStyle(playerHpRatio > 0.3 ? 0x44ff44 : 0xff6600);
-        this.playerHpBar.fillRect(playerBarX, 303, HP_BAR_WIDTH * playerHpRatio, HP_BAR_HEIGHT);
-        this.playerHpText.setText(`${state.playerHp} / ${state.playerMaxHp}`);
+        this.renderHpBar(
+            this.playerHpBar, this.playerHpText,
+            barX, PLAYER_HP_BAR_Y,
+            state.playerHp, state.playerMaxHp,
+            COLOR_PLAYER_HP_HEALTHY, COLOR_PLAYER_HP_LOW,
+        );
+    }
+
+    private renderHpBar(
+        bar: Phaser.GameObjects.Graphics,
+        text: Phaser.GameObjects.Text,
+        x: number, y: number,
+        hp: number, maxHp: number,
+        healthyColor: number, lowColor: number,
+    ): void {
+        bar.clear();
+        bar.fillStyle(COLOR_HP_BAR_BG);
+        bar.fillRect(x, y, HP_BAR_WIDTH, HP_BAR_HEIGHT);
+        const ratio = Math.max(0, hp / maxHp);
+        bar.fillStyle(ratio > HP_LOW_THRESHOLD ? healthyColor : lowColor);
+        bar.fillRect(x, y, HP_BAR_WIDTH * ratio, HP_BAR_HEIGHT);
+        text.setText(`${hp} / ${maxHp}`);
     }
 
     // -----------------------------------------------------------------------
@@ -219,7 +249,7 @@ export class BattleScene extends Phaser.Scene {
     // -----------------------------------------------------------------------
 
     private createRoundDisplay(): void {
-        this.roundText = this.add.text(400, 15, '', {
+        this.roundText = this.add.text(SCENE_CENTER_X, 15, '', {
             fontSize: '18px',
             color: '#ffcc00',
             fontFamily: 'monospace',
@@ -236,7 +266,7 @@ export class BattleScene extends Phaser.Scene {
     // -----------------------------------------------------------------------
 
     private createResultText(): void {
-        this.resultText = this.add.text(400, 200, '', {
+        this.resultText = this.add.text(SCENE_CENTER_X, 200, '', {
             fontSize: '28px',
             color: '#ffffff',
             fontFamily: 'monospace',
@@ -254,7 +284,7 @@ export class BattleScene extends Phaser.Scene {
         this.clearCardSprites();
 
         const totalWidth = hand.length * CARD_WIDTH + (hand.length - 1) * CARD_GAP;
-        const startX = 400 - totalWidth / 2 + CARD_WIDTH / 2;
+        const startX = SCENE_CENTER_X - totalWidth / 2 + CARD_WIDTH / 2;
 
         hand.forEach((card, index) => {
             const x = startX + index * (CARD_WIDTH + CARD_GAP);
@@ -268,7 +298,7 @@ export class BattleScene extends Phaser.Scene {
 
         // 카드 배경
         const isAttack = card.type === CARD_TYPE.ATTACK;
-        const bgColor = isAttack ? 0xcc3333 : 0x3366cc;
+        const bgColor = isAttack ? COLOR_CARD_ATTACK : COLOR_CARD_GUARD;
         const bg = this.add.rectangle(0, 0, CARD_WIDTH, CARD_HEIGHT, bgColor, 0.85);
         bg.setStrokeStyle(2, 0xffffff, 0.6);
         container.add(bg);
@@ -354,7 +384,7 @@ export class BattleScene extends Phaser.Scene {
                 // 선택된 카드를 위로 이동
                 this.tweens.add({
                     targets: container,
-                    y: CARD_Y - 20,
+                    y: CARD_Y - CARD_LIFT_OFFSET,
                     duration: 200,
                     ease: 'Power2',
                 });
@@ -364,7 +394,7 @@ export class BattleScene extends Phaser.Scene {
         });
 
         // 잠시 후 라운드 해결
-        this.time.delayedCall(400, () => {
+        this.time.delayedCall(CARD_SELECT_DELAY_MS, () => {
             this.resolveCurrentRound(index);
         });
     }
@@ -382,7 +412,7 @@ export class BattleScene extends Phaser.Scene {
         this.showEnemyCard(lastRound);
 
         // 결과 표시
-        this.time.delayedCall(600, () => {
+        this.time.delayedCall(CLASH_REVEAL_DELAY_MS, () => {
             this.showClashResult(lastRound);
             this.updateHpBars();
 
@@ -407,10 +437,10 @@ export class BattleScene extends Phaser.Scene {
         this.enemyCardDisplay?.destroy();
 
         const card = round.enemyCard;
-        const container = this.add.container(400, 180);
+        const container = this.add.container(SCENE_CENTER_X, 180);
 
         const isAttack = card.type === CARD_TYPE.ATTACK;
-        const bg = this.add.rectangle(0, 0, 100, 130, isAttack ? 0x993333 : 0x335599, 0.85);
+        const bg = this.add.rectangle(0, 0, 100, 130, isAttack ? COLOR_ENEMY_CARD_ATTACK : COLOR_ENEMY_CARD_GUARD, 0.85);
         bg.setStrokeStyle(2, 0xff6666, 0.8);
         container.add(bg);
 
@@ -474,7 +504,7 @@ export class BattleScene extends Phaser.Scene {
             color = '#aaaaaa';
         }
 
-        this.clashResultText = this.add.text(400, 250, text, {
+        this.clashResultText = this.add.text(SCENE_CENTER_X, 250, text, {
             fontSize: '22px',
             color,
             fontFamily: 'monospace',

@@ -20,7 +20,8 @@ import { BattleScene, type BattleSceneData, type BattleSceneResult } from './Bat
 import { OverlayController } from './controllers/OverlayController';
 import { InputController, InputDelegate } from './controllers/InputController';
 import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
-import { ITEM_RARITY } from '../domain/entities/Item';
+import { ITEM_RARITY, type InventoryItem, type ItemDefinition } from '../domain/entities/Item';
+import type { CombatStatModifier } from '../domain/entities/CombatStats';
 import { Position } from '../domain/entities/Player';
 import { Enemy } from '../domain/entities/Enemy';
 
@@ -724,13 +725,25 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     private getEnemyName(enemy: Pick<Enemy, 'archetypeId' | 'elite'>) { return this.localization.getEnemyName(enemy.archetypeId, enemy.elite); }
     private getBossName() { const boss = this.floorDirector.getBossEnemy(); return boss ? this.getEnemyName(boss) : this.localization.getEnemyName('final-boss'); }
-    private describePickup(i: any) { return this.localization.formatPickup(i.icon, this.localization.getItemName(i.id, i.name), i.quantity); }
-    private describeDrop(i: any) { return this.localization.formatDrop(i.icon, this.localization.getItemName(i.id, i.name)); }
-    private describeUse(i: any, h: number) { return this.localization.formatUse(i.icon, this.localization.getItemName(i.id, i.name), h); }
-    private describeEquip(i: any, s: 'equip' | 'unequip', m?: any) {
-        const mod = s === 'unequip' ? { maxHealth: m?.maxHealth ? -m.maxHealth : undefined, attack: m?.attack ? -m.attack : undefined, defense: m?.defense ? -m.defense : undefined } : m;
-        const summary = [mod?.maxHealth ? `HP ${formatSignedNumber(mod.maxHealth)}` : undefined, mod?.attack ? `ATK ${formatSignedNumber(mod.attack)}` : undefined, mod?.defense ? `DEF ${formatSignedNumber(mod.defense)}` : undefined].filter(Boolean).join(' · ');
-        return this.localization.formatEquip(i.icon, this.localization.getItemName(i.id, i.name), s, summary);
+    private describePickup(item: Pick<InventoryItem, 'icon' | 'id' | 'name' | 'quantity'>): string {
+        return this.localization.formatPickup(item.icon, this.localization.getItemName(item.id, item.name), item.quantity);
+    }
+    private describeDrop(item: Pick<ItemDefinition, 'icon' | 'id' | 'name'>): string {
+        return this.localization.formatDrop(item.icon, this.localization.getItemName(item.id, item.name));
+    }
+    private describeUse(item: Pick<InventoryItem, 'icon' | 'id' | 'name'>, healAmount: number): string {
+        return this.localization.formatUse(item.icon, this.localization.getItemName(item.id, item.name), healAmount);
+    }
+    private describeEquip(item: Pick<InventoryItem, 'icon' | 'id' | 'name'>, action: 'equip' | 'unequip', modifier?: CombatStatModifier): string {
+        const mod = action === 'unequip'
+            ? { maxHealth: modifier?.maxHealth ? -modifier.maxHealth : undefined, attack: modifier?.attack ? -modifier.attack : undefined, defense: modifier?.defense ? -modifier.defense : undefined }
+            : modifier;
+        const summary = [
+            mod?.maxHealth ? `HP ${formatSignedNumber(mod.maxHealth)}` : undefined,
+            mod?.attack ? `ATK ${formatSignedNumber(mod.attack)}` : undefined,
+            mod?.defense ? `DEF ${formatSignedNumber(mod.defense)}` : undefined,
+        ].filter(Boolean).join(' · ');
+        return this.localization.formatEquip(item.icon, this.localization.getItemName(item.id, item.name), action, summary);
     }
     private describeDirection(dx: number, dy: number): MovementDirection {
         if (dx < 0) return 'west'; if (dx > 0) return 'east'; if (dy < 0) return 'north'; return 'south';

@@ -2,11 +2,11 @@ import { Enemy, type EnemyArchetypeId } from '../entities/Enemy';
 import type { CombatStats } from '../entities/CombatStats';
 import type { Position } from '../entities/Player';
 import type { FloorType } from './FloorProgressionService';
-import { WORLD_TILE } from '../../shared/types/WorldTiles';
+import { positionToKey } from '../../shared/utils/positionKey';
+import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
+import { selectUnoccupiedPosition } from '../../shared/utils/roomPositions';
 
-export interface EnemyRandomSource {
-    next(): number;
-}
+export type EnemyRandomSource = RandomSource;
 
 export interface SpawnRoom {
     left: number;
@@ -133,14 +133,14 @@ export class EnemySpawnerService {
         }
 
         const occupied = new Set(
-            request.blockedPositions.map((position) => this.toKey(position)),
+            request.blockedPositions.map((position) => positionToKey(position)),
         );
 
-        return this.shuffle(availableRooms)
+        return shuffleArray(availableRooms, this.random)
             .slice(0, targetCount)
             .map((room, index) => {
-                const position = this.selectSpawnPosition(room, request.tiles, occupied);
-                occupied.add(this.toKey(position));
+                const position = selectUnoccupiedPosition(room, request.tiles, occupied, this.random, 'enemy');
+                occupied.add(positionToKey(position));
                 const archetype = this.selectArchetype(request.floorNumber);
                 const isElite = this.random.next() < this.eliteChance;
 
@@ -160,9 +160,9 @@ export class EnemySpawnerService {
     private spawnBoss(request: EnemySpawnRequest) {
         const position = request.bossSpawn ?? this.resolveBossSpawn(request.rooms);
         const occupied = new Set(
-            request.blockedPositions.map((blockedPosition) => this.toKey(blockedPosition)),
+            request.blockedPositions.map((blockedPosition) => positionToKey(blockedPosition)),
         );
-        if (occupied.has(this.toKey(position))) {
+        if (occupied.has(positionToKey(position))) {
             throw new Error('Boss spawn position cannot overlap a blocked tile.');
         }
 
@@ -238,34 +238,6 @@ export class EnemySpawnerService {
         return this.buildExperienceReward(floorNumber) * BOSS_EXP_REWARD_MULTIPLIER;
     }
 
-    private selectSpawnPosition(
-        room: SpawnRoom,
-        tiles: number[][],
-        occupied: Set<string>,
-    ): Position {
-        const candidates = this.shuffle(this.collectRoomPositions(room, tiles));
-        const position = candidates.find((candidate) => !occupied.has(this.toKey(candidate)));
-        if (!position) {
-            throw new Error('No spawn position available for enemy.');
-        }
-
-        return position;
-    }
-
-    private collectRoomPositions(room: SpawnRoom, tiles: number[][]): Position[] {
-        const positions: Position[] = [];
-
-        for (let y = room.top; y <= room.bottom; y += 1) {
-            for (let x = room.left; x <= room.right; x += 1) {
-                if (tiles[y]?.[x] === WORLD_TILE.FLOOR) {
-                    positions.push({ x, y });
-                }
-            }
-        }
-
-        return positions;
-    }
-
     private resolveBossSpawn(rooms: SpawnRoom[]) {
         const room = rooms[rooms.length - 1];
         if (!room) {
@@ -293,18 +265,4 @@ export class EnemySpawnerService {
         return pool[Math.min(index, pool.length - 1)];
     }
 
-    private shuffle<T>(values: T[]) {
-        const shuffled = [...values];
-
-        for (let index = shuffled.length - 1; index > 0; index -= 1) {
-            const randomIndex = Math.floor(this.random.next() * (index + 1));
-            [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
-        }
-
-        return shuffled;
-    }
-
-    private toKey(position: Position) {
-        return `${position.x},${position.y}`;
-    }
 }

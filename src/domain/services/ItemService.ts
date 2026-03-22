@@ -14,11 +14,11 @@ import type { CombatStatModifier } from '../entities/CombatStats';
 import type { Position } from '../entities/Player';
 import type { SpawnRoom } from './EnemySpawnerService';
 import type { FloorType } from './FloorProgressionService';
-import { WORLD_TILE } from '../../shared/types/WorldTiles';
+import { positionToKey } from '../../shared/utils/positionKey';
+import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
+import { collectRoomFloorPositions, selectUnoccupiedPosition } from '../../shared/utils/roomPositions';
 
-export interface ItemRandomSource {
-    next(): number;
-}
+export type ItemRandomSource = RandomSource;
 
 export interface ItemSpawnRequest {
     floorNumber: number;
@@ -352,11 +352,11 @@ export class ItemService {
 
     private spawn(request: ItemSpawnRequest) {
         const occupied = new Set(
-            request.blockedPositions.map((position) => this.toKey(position)),
+            request.blockedPositions.map((position) => positionToKey(position)),
         );
-        const availableRooms = this.shuffle(request.rooms).filter((room) =>
-            this.collectRoomPositions(room, request.tiles).some((position) =>
-                !occupied.has(this.toKey(position)),
+        const availableRooms = shuffleArray(request.rooms, this.random).filter((room) =>
+            collectRoomFloorPositions(room, request.tiles).some((position) =>
+                !occupied.has(positionToKey(position)),
             ),
         );
         const floorLimit = request.floorType === 'boss'
@@ -369,8 +369,8 @@ export class ItemService {
         return availableRooms
             .slice(0, targetCount)
             .map((room) => {
-                const position = this.selectSpawnPosition(room, request.tiles, occupied);
-                occupied.add(this.toKey(position));
+                const position = selectUnoccupiedPosition(room, request.tiles, occupied, this.random, 'item');
+                occupied.add(positionToKey(position));
 
                 return new ItemEntity(
                     this.createFieldItemId(request.floorNumber),
@@ -458,46 +458,4 @@ export class ItemService {
         return weights[weights.length - 1]?.rarity ?? minimumRarity;
     }
 
-    private selectSpawnPosition(
-        room: SpawnRoom,
-        tiles: number[][],
-        occupied: Set<string>,
-    ) {
-        const candidates = this.shuffle(this.collectRoomPositions(room, tiles));
-        const position = candidates.find((candidate) => !occupied.has(this.toKey(candidate)));
-        if (!position) {
-            throw new Error('No spawn position available for item.');
-        }
-
-        return position;
-    }
-
-    private collectRoomPositions(room: SpawnRoom, tiles: number[][]) {
-        const positions: Position[] = [];
-
-        for (let y = room.top; y <= room.bottom; y += 1) {
-            for (let x = room.left; x <= room.right; x += 1) {
-                if (tiles[y]?.[x] === WORLD_TILE.FLOOR) {
-                    positions.push({ x, y });
-                }
-            }
-        }
-
-        return positions;
-    }
-
-    private shuffle<T>(values: T[]) {
-        const shuffled = [...values];
-
-        for (let index = shuffled.length - 1; index > 0; index -= 1) {
-            const randomIndex = Math.floor(this.random.next() * (index + 1));
-            [shuffled[index], shuffled[randomIndex]] = [shuffled[randomIndex], shuffled[index]];
-        }
-
-        return shuffled;
-    }
-
-    private toKey(position: Position) {
-        return `${position.x},${position.y}`;
-    }
 }
