@@ -6,7 +6,6 @@ import {
     CARD_TYPE,
     DECK_MAX_SIZE,
     addCardToDeck,
-    createCard,
     createDeck,
     getDeckSize,
     isDeckFull,
@@ -14,9 +13,10 @@ import {
     type Card,
     type Deck,
 } from '../entities/Card';
+import { createStarterDeckCards } from '../entities/CardCatalog';
 
 // ---------------------------------------------------------------------------
-// Default Deck Constants
+// Legacy Default Deck Constants (Cycle 2 — 후방 호환용)
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_ATTACK_CARD_POWER = 8;
@@ -24,7 +24,7 @@ export const DEFAULT_GUARD_CARD_POWER = 5;
 export const DEFAULT_ATTACK_CARD_COUNT = 3;
 export const DEFAULT_GUARD_CARD_COUNT = 2;
 
-/** 기본 덱 카드 템플릿 — 새 런 시 지급할 카드 정의 */
+/** @deprecated Cycle 3에서는 CardCatalog의 STARTER_DECK_COMPOSITION 사용. */
 export const STARTER_DECK_TEMPLATE: readonly { name: string; type: Card['type']; power: number }[] = [
     { name: 'Slash', type: CARD_TYPE.ATTACK, power: DEFAULT_ATTACK_CARD_POWER },
     { name: 'Thrust', type: CARD_TYPE.ATTACK, power: DEFAULT_ATTACK_CARD_POWER },
@@ -55,16 +55,12 @@ export class DeckService {
         this.deck = createDeck(maxSize);
     }
 
-    /** 새 런 시작 시 기본 덱으로 초기화한다. */
+    /** 새 런 시작 시 기본 덱으로 초기화한다. Cycle 3 카드 카탈로그 기반. */
     initializeStarterDeck(): DeckSnapshot {
         this.deck = createDeck(this.maxSize);
 
-        for (const template of STARTER_DECK_TEMPLATE) {
-            const card = createCard({
-                name: template.name,
-                type: template.type,
-                power: template.power,
-            });
+        const starterCards = createStarterDeckCards();
+        for (const card of starterCards) {
             const result = addCardToDeck(this.deck, card);
             this.deck = result.deck;
         }

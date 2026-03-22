@@ -5,19 +5,14 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CARD_TYPE, resetCardSequence } from '../../../src/domain/entities/Card';
+import { STARTER_DECK_COMPOSITION } from '../../../src/domain/entities/CardCatalog';
 import { resolveCardClash } from '../../../src/domain/services/CardBattleResolver';
 import {
     CardBattleService,
     HAND_SIZE,
     type BattleRandomSource,
 } from '../../../src/domain/services/CardBattleService';
-import {
-    DeckService,
-    DEFAULT_ATTACK_CARD_COUNT,
-    DEFAULT_ATTACK_CARD_POWER,
-    DEFAULT_GUARD_CARD_COUNT,
-    DEFAULT_GUARD_CARD_POWER,
-} from '../../../src/domain/services/DeckService';
+import { DeckService } from '../../../src/domain/services/DeckService';
 import {
     RunPersistenceService,
     type RunPersistenceSnapshot,
@@ -39,6 +34,8 @@ class MemoryStorage implements StorageLike {
     setItem(key: string, value: string) { this.values.set(key, value); }
 }
 
+const STARTER_DECK_SIZE = STARTER_DECK_COMPOSITION.reduce((sum, e) => sum + e.count, 0);
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -54,35 +51,38 @@ describe('Card Battle Integration', () => {
     });
 
     // -----------------------------------------------------------------------
-    // TASK-023: 새 런 시작 시 기본 덱 5장 자동 지급
+    // Cycle 3: 새 런 시작 시 기본 덱 7장 (Strike x4 + Fortify x3) 자동 지급
     // -----------------------------------------------------------------------
 
     describe('starter deck initialization on new run', () => {
-        it('provides 5 starter cards (3 attack + 2 guard) after initializeStarterDeck', () => {
-            // Act — 새 런 시작 시 호출되는 초기화
+        it('provides starter cards (Strike x4 + Fortify x3) after initializeStarterDeck', () => {
             const snapshot = deckService.initializeStarterDeck();
 
-            // Assert
-            expect(snapshot.size).toBe(DEFAULT_ATTACK_CARD_COUNT + DEFAULT_GUARD_CARD_COUNT);
+            expect(snapshot.size).toBe(STARTER_DECK_SIZE);
 
             const cards = deckService.getCards();
-            const attacks = cards.filter((c) => c.type === CARD_TYPE.ATTACK);
-            const guards = cards.filter((c) => c.type === CARD_TYPE.GUARD);
-            expect(attacks).toHaveLength(DEFAULT_ATTACK_CARD_COUNT);
-            expect(guards).toHaveLength(DEFAULT_GUARD_CARD_COUNT);
+            const strikes = cards.filter((c) => c.name === 'Strike');
+            const fortifies = cards.filter((c) => c.name === 'Fortify');
+            expect(strikes).toHaveLength(4);
+            expect(fortifies).toHaveLength(3);
 
-            for (const card of attacks) expect(card.power).toBe(DEFAULT_ATTACK_CARD_POWER);
-            for (const card of guards) expect(card.power).toBe(DEFAULT_GUARD_CARD_POWER);
+            for (const card of strikes) {
+                expect(card.power).toBe(6);
+                expect(card.cost).toBe(1);
+            }
+            for (const card of fortifies) {
+                expect(card.power).toBe(5);
+                expect(card.cost).toBe(1);
+            }
         });
     });
 
     // -----------------------------------------------------------------------
-    // TASK-023: 덱 저장/복원 흐름
+    // 덱 저장/복원 흐름
     // -----------------------------------------------------------------------
 
     describe('deck persistence round-trip', () => {
         it('saves and restores deck through RunPersistenceService', () => {
-            // Arrange
             deckService.initializeStarterDeck();
             const originalCards = [...deckService.getCards()];
 
@@ -98,23 +98,19 @@ describe('Card Battle Integration', () => {
                 defeatedEnemyCount: 0,
             };
 
-            // Act — save and reload
             persistence.save(snapshot);
             const loaded = persistence.load();
 
-            // Assert
             expect(loaded).toBeDefined();
             expect(loaded!.deck).toHaveLength(originalCards.length);
             expect(loaded!.deck).toEqual(originalCards);
 
-            // Restore into a new DeckService
             const newDeckService = new DeckService();
             newDeckService.restoreDeck(loaded!.deck);
             expect(newDeckService.getCards()).toEqual(originalCards);
         });
 
         it('loads empty deck from legacy saves without deck field', () => {
-            // Arrange — 이전 저장 형식 (deck 필드 없음)
             const storage = new MemoryStorage();
             const legacyData = JSON.stringify({
                 status: 'active',
@@ -126,67 +122,54 @@ describe('Card Battle Integration', () => {
             storage.setItem('dread-ascent.run-state', legacyData);
 
             const persistence = new RunPersistenceService(storage);
-
-            // Act
             const loaded = persistence.load();
 
-            // Assert — 이전 데이터와 호환, 빈 덱으로 처리
             expect(loaded).toBeDefined();
             expect(loaded!.deck).toEqual([]);
         });
     });
 
     // -----------------------------------------------------------------------
-    // TASK-024: 배틀 진입 시 드로우 흐름
+    // 배틀 진입 시 드로우 흐름 (레거시 CardBattleService.drawHand 호환)
     // -----------------------------------------------------------------------
 
     describe('battle entry draw flow', () => {
         it('draws 3 cards from starter deck on battle entry', () => {
-            // Arrange — 새 런 시작
             deckService.initializeStarterDeck();
             const deckCards = deckService.getCards();
 
-            // Act — 배틀 진입 시 드로우
             const drawResult = cardBattleService.drawHand(deckCards);
 
-            // Assert
             expect(drawResult.hand).toHaveLength(HAND_SIZE);
-            expect(drawResult.deckSize).toBe(5);
+            expect(drawResult.deckSize).toBe(STARTER_DECK_SIZE);
 
-            // 드로우된 카드는 모두 덱에 존재하는 카드
             for (const card of drawResult.hand) {
                 expect(deckCards.some((d) => d.id === card.id)).toBe(true);
             }
 
-            // 중복 없음
             const ids = drawResult.hand.map((c) => c.id);
             expect(new Set(ids).size).toBe(ids.length);
         });
 
         it('draws all remaining cards when deck has fewer than 3', () => {
-            // Arrange — 2장만 있는 덱
             deckService.initializeStarterDeck();
-            // 3장 제거해서 2장만 남김
             const cards = deckService.getCards();
-            deckService.removeCard(cards[0].id);
-            deckService.removeCard(cards[1].id);
-            deckService.removeCard(cards[2].id);
+            // 덱을 2장만 남김
+            for (let i = 0; i < STARTER_DECK_SIZE - 2; i++) {
+                deckService.removeCard(cards[i].id);
+            }
             expect(deckService.getCards()).toHaveLength(2);
 
-            // Act
             const drawResult = cardBattleService.drawHand(deckService.getCards());
 
-            // Assert
             expect(drawResult.hand).toHaveLength(2);
         });
 
         it('generates enemy card pool based on enemy kind', () => {
-            // Act
             const normalPool = cardBattleService.generateEnemyCardPool('normal', false);
             const elitePool = cardBattleService.generateEnemyCardPool('normal', true);
             const bossPool = cardBattleService.generateEnemyCardPool('boss', false);
 
-            // Assert
             expect(normalPool).toHaveLength(3); // 2 attack + 1 guard
             expect(elitePool).toHaveLength(5);  // 3 attack + 2 guard
             expect(bossPool).toHaveLength(7);   // 4 attack + 3 guard
@@ -194,28 +177,23 @@ describe('Card Battle Integration', () => {
     });
 
     // -----------------------------------------------------------------------
-    // TASK-024 + TASK-025: 드로우 → 적 카드 선택 → 상성 판정 end-to-end
+    // 드로우 → 적 카드 선택 → 상성 판정 end-to-end
     // -----------------------------------------------------------------------
 
     describe('draw to clash resolution', () => {
         it('resolves a full draw → enemy select → clash cycle', () => {
-            // Arrange — 새 런
             deckService.initializeStarterDeck();
             const deckCards = deckService.getCards();
 
-            // Act — 드로우
             const drawResult = cardBattleService.drawHand(deckCards);
             expect(drawResult.hand.length).toBeGreaterThan(0);
 
-            // 적 카드 풀 생성 및 적 카드 선택
             const enemyPool = cardBattleService.generateEnemyCardPool('normal', false);
             const enemyCard = cardBattleService.selectEnemyCard(enemyPool);
 
-            // 상성 판정
             const playerCard = drawResult.hand[0];
             const clashResult = resolveCardClash(playerCard, enemyCard);
 
-            // Assert — 결과가 유효한 값을 가짐
             expect(clashResult.playerDamage).toBeGreaterThanOrEqual(0);
             expect(clashResult.enemyDamage).toBeGreaterThanOrEqual(0);
             expect(clashResult.playerCard).toBe(playerCard);

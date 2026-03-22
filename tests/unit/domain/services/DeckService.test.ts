@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import {
-    DeckService,
-    DEFAULT_ATTACK_CARD_COUNT,
-    DEFAULT_ATTACK_CARD_POWER,
-    DEFAULT_GUARD_CARD_COUNT,
-    DEFAULT_GUARD_CARD_POWER,
-} from '../../../../src/domain/services/DeckService';
+import { DeckService } from '../../../../src/domain/services/DeckService';
 import {
     CARD_TYPE,
     DECK_MAX_SIZE,
     createCard,
     resetCardSequence,
 } from '../../../../src/domain/entities/Card';
+import { STARTER_DECK_COMPOSITION } from '../../../../src/domain/entities/CardCatalog';
+
+// ---------------------------------------------------------------------------
+// Cycle 3 시작 덱 상수
+// ---------------------------------------------------------------------------
+
+const STARTER_DECK_SIZE = STARTER_DECK_COMPOSITION.reduce((sum, e) => sum + e.count, 0); // 7
 
 describe('DeckService', () => {
     let service: DeckService;
@@ -26,54 +27,49 @@ describe('DeckService', () => {
     // -----------------------------------------------------------------------
 
     describe('initializeStarterDeck', () => {
-        it('creates the default deck with 5 cards', () => {
-            // Act
+        it('creates the starter deck with 7 cards (Strike x4 + Fortify x3)', () => {
             const snapshot = service.initializeStarterDeck();
 
-            // Assert
-            expect(snapshot.size).toBe(DEFAULT_ATTACK_CARD_COUNT + DEFAULT_GUARD_CARD_COUNT);
+            expect(snapshot.size).toBe(STARTER_DECK_SIZE);
             expect(snapshot.maxSize).toBe(DECK_MAX_SIZE);
             expect(snapshot.isFull).toBe(false);
         });
 
-        it('contains 3 attack cards with power 8', () => {
-            // Act
+        it('contains 4 Strike cards with power 6 and cost 1', () => {
             service.initializeStarterDeck();
             const cards = service.getCards();
-            const attackCards = cards.filter((c) => c.type === CARD_TYPE.ATTACK);
+            const strikes = cards.filter((c) => c.name === 'Strike');
 
-            // Assert
-            expect(attackCards).toHaveLength(DEFAULT_ATTACK_CARD_COUNT);
-            for (const card of attackCards) {
-                expect(card.power).toBe(DEFAULT_ATTACK_CARD_POWER);
+            expect(strikes).toHaveLength(4);
+            for (const card of strikes) {
+                expect(card.power).toBe(6);
+                expect(card.cost).toBe(1);
+                expect(card.type).toBe(CARD_TYPE.ATTACK);
             }
         });
 
-        it('contains 2 guard cards with power 5', () => {
-            // Act
+        it('contains 3 Fortify cards with power 5 and cost 1', () => {
             service.initializeStarterDeck();
             const cards = service.getCards();
-            const guardCards = cards.filter((c) => c.type === CARD_TYPE.GUARD);
+            const fortifies = cards.filter((c) => c.name === 'Fortify');
 
-            // Assert
-            expect(guardCards).toHaveLength(DEFAULT_GUARD_CARD_COUNT);
-            for (const card of guardCards) {
-                expect(card.power).toBe(DEFAULT_GUARD_CARD_POWER);
+            expect(fortifies).toHaveLength(3);
+            for (const card of fortifies) {
+                expect(card.power).toBe(5);
+                expect(card.cost).toBe(1);
+                expect(card.type).toBe(CARD_TYPE.GUARD);
             }
         });
 
         it('resets existing deck when re-initialized', () => {
-            // Arrange
             service.initializeStarterDeck();
             const extraCard = createCard({ name: 'X', type: CARD_TYPE.ATTACK, power: 99 });
             service.addCard(extraCard);
-            expect(service.getCards()).toHaveLength(6);
+            expect(service.getCards()).toHaveLength(STARTER_DECK_SIZE + 1);
 
-            // Act
             const snapshot = service.initializeStarterDeck();
 
-            // Assert
-            expect(snapshot.size).toBe(5);
+            expect(snapshot.size).toBe(STARTER_DECK_SIZE);
         });
     });
 
@@ -83,30 +79,24 @@ describe('DeckService', () => {
 
     describe('addCard', () => {
         it('adds a card to the deck', () => {
-            // Arrange
             service.initializeStarterDeck();
             const card = createCard({ name: 'New Card', type: CARD_TYPE.ATTACK, power: 10 });
 
-            // Act
             const added = service.addCard(card);
 
-            // Assert
             expect(added).toBe(true);
-            expect(service.getCards()).toHaveLength(6);
+            expect(service.getCards()).toHaveLength(STARTER_DECK_SIZE + 1);
         });
 
         it('rejects when deck is full', () => {
-            // Arrange
-            const smallService = new DeckService(5);
+            const smallService = new DeckService(STARTER_DECK_SIZE);
             smallService.initializeStarterDeck();
             const card = createCard({ name: 'Overflow', type: CARD_TYPE.ATTACK, power: 1 });
 
-            // Act
             const added = smallService.addCard(card);
 
-            // Assert
             expect(added).toBe(false);
-            expect(smallService.getCards()).toHaveLength(5);
+            expect(smallService.getCards()).toHaveLength(STARTER_DECK_SIZE);
         });
     });
 
@@ -116,30 +106,24 @@ describe('DeckService', () => {
 
     describe('removeCard', () => {
         it('removes a card by id', () => {
-            // Arrange
             service.initializeStarterDeck();
             const cards = service.getCards();
             const targetId = cards[0].id;
 
-            // Act
             const removed = service.removeCard(targetId);
 
-            // Assert
             expect(removed).toBe(true);
-            expect(service.getCards()).toHaveLength(4);
+            expect(service.getCards()).toHaveLength(STARTER_DECK_SIZE - 1);
             expect(service.findCard(targetId)).toBeUndefined();
         });
 
         it('returns false when card not found', () => {
-            // Arrange
             service.initializeStarterDeck();
 
-            // Act
             const removed = service.removeCard('non-existent-id');
 
-            // Assert
             expect(removed).toBe(false);
-            expect(service.getCards()).toHaveLength(5);
+            expect(service.getCards()).toHaveLength(STARTER_DECK_SIZE);
         });
     });
 
@@ -149,14 +133,11 @@ describe('DeckService', () => {
 
     describe('findCard', () => {
         it('finds a card by id', () => {
-            // Arrange
             service.initializeStarterDeck();
             const firstCard = service.getCards()[0];
 
-            // Act
             const found = service.findCard(firstCard.id);
 
-            // Assert
             expect(found).toEqual(firstCard);
         });
     });
@@ -168,7 +149,7 @@ describe('DeckService', () => {
         });
 
         it('returns true when deck is at capacity', () => {
-            const smallService = new DeckService(5);
+            const smallService = new DeckService(STARTER_DECK_SIZE);
             smallService.initializeStarterDeck();
             expect(smallService.isFull()).toBe(true);
         });
@@ -180,13 +161,10 @@ describe('DeckService', () => {
 
     describe('resetDeck', () => {
         it('clears all cards from the deck', () => {
-            // Arrange
             service.initializeStarterDeck();
 
-            // Act
             service.resetDeck();
 
-            // Assert
             expect(service.getCards()).toHaveLength(0);
             expect(service.getSnapshot().size).toBe(0);
         });
@@ -194,15 +172,12 @@ describe('DeckService', () => {
 
     describe('restoreDeck', () => {
         it('restores deck from saved card array', () => {
-            // Arrange
             service.initializeStarterDeck();
             const savedCards = [...service.getCards()];
             service.resetDeck();
 
-            // Act
             service.restoreDeck(savedCards);
 
-            // Assert
             expect(service.getCards()).toHaveLength(savedCards.length);
             expect(service.getCards()).toEqual(savedCards);
         });
@@ -214,11 +189,10 @@ describe('DeckService', () => {
 
     describe('max size enforcement', () => {
         it('enforces default max size of 20 cards', () => {
-            // Arrange
-            service.initializeStarterDeck(); // 5 cards
+            service.initializeStarterDeck(); // 7 cards
 
-            // Add 15 more to reach 20
-            for (let i = 0; i < 15; i++) {
+            // Add 13 more to reach 20
+            for (let i = 0; i < 20 - STARTER_DECK_SIZE; i++) {
                 const card = createCard({ name: `Extra-${i}`, type: CARD_TYPE.ATTACK, power: i });
                 service.addCard(card);
             }

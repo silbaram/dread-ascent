@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import {
+    CARD_EFFECT_TYPE,
+    CARD_KEYWORD,
+    CARD_RARITY,
+    CARD_TYPE,
+} from '../../../../src/domain/entities/Card';
 import { ITEM_RARITY } from '../../../../src/domain/entities/Item';
 import {
     RunPersistenceService,
@@ -57,9 +63,44 @@ function createSnapshot(): RunPersistenceSnapshot {
             },
         ],
         deck: [
-            { id: 'card-1', name: 'Slash', type: 'ATTACK', power: 8 },
-            { id: 'card-2', name: 'Thrust', type: 'ATTACK', power: 8 },
-            { id: 'card-3', name: 'Shield Block', type: 'GUARD', power: 5 },
+            {
+                id: 'card-1',
+                name: 'Strike',
+                type: CARD_TYPE.ATTACK,
+                power: 6,
+                cost: 1,
+                keywords: [],
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+                rarity: CARD_RARITY.COMMON,
+            },
+            {
+                id: 'card-2',
+                name: 'Weaken',
+                type: CARD_TYPE.ATTACK,
+                power: 0,
+                cost: 1,
+                keywords: [],
+                effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+                rarity: CARD_RARITY.COMMON,
+                statusEffect: {
+                    type: 'VULNERABLE',
+                    duration: 2,
+                },
+            },
+            {
+                id: 'card-3',
+                name: 'Last Stand',
+                type: CARD_TYPE.ATTACK,
+                power: 30,
+                cost: 3,
+                keywords: [CARD_KEYWORD.RETAIN],
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+                rarity: CARD_RARITY.RARE,
+                condition: {
+                    type: 'HP_THRESHOLD',
+                    value: 5,
+                },
+            },
         ],
         defeatedEnemyCount: 12,
     };
@@ -69,10 +110,11 @@ describe('RunPersistenceService', () => {
     it('saves and reloads a persisted run snapshot', () => {
         // Arrange
         const storage = new MemoryStorage();
-        const service = new RunPersistenceService(storage);
+        const saveService = new RunPersistenceService(storage);
 
         // Act
-        service.save(createSnapshot());
+        saveService.save(createSnapshot());
+        const service = new RunPersistenceService(storage);
         const snapshot = service.load();
 
         // Assert

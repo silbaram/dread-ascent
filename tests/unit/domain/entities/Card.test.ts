@@ -25,11 +25,15 @@ describe('Card', () => {
         const card = createCard({ name: 'Slash', type: CARD_TYPE.ATTACK, power: 8 });
 
         // Assert
-        expect(card).toEqual({
+        expect(card).toMatchObject({
             id: 'card-1',
             name: 'Slash',
             type: 'ATTACK',
             power: 8,
+            cost: 0,
+            keywords: [],
+            effectType: 'DAMAGE',
+            rarity: 'COMMON',
         });
     });
 
@@ -38,11 +42,15 @@ describe('Card', () => {
         const card = createCard({ name: 'Shield Block', type: CARD_TYPE.GUARD, power: 5 });
 
         // Assert
-        expect(card).toEqual({
+        expect(card).toMatchObject({
             id: 'card-1',
             name: 'Shield Block',
             type: 'GUARD',
             power: 5,
+            cost: 0,
+            keywords: [],
+            effectType: 'BLOCK',
+            rarity: 'COMMON',
         });
     });
 

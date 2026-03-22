@@ -1,4 +1,11 @@
-import { type Card, type CardType, CARD_TYPE } from '../entities/Card';
+import {
+    CARD_EFFECT_TYPE,
+    CARD_KEYWORD,
+    CARD_RARITY,
+    CARD_TYPE,
+    type Card,
+    type CardType,
+} from '../entities/Card';
 import { cloneCombatStats, type CombatStats } from '../entities/CombatStats';
 import {
     EQUIPMENT_SLOT,
@@ -90,7 +97,7 @@ export class RunPersistenceService {
                 experience: snapshot.player.experience,
             },
             inventory: snapshot.inventory.map((item) => this.cloneInventoryItem(item)),
-            deck: snapshot.deck.map((card) => ({ ...card })),
+            deck: snapshot.deck.map((card) => this.cloneCard(card)),
             defeatedEnemyCount: snapshot.defeatedEnemyCount,
         };
     }
@@ -340,13 +347,89 @@ export class RunPersistenceService {
             return undefined;
         }
 
-        return { id, name, type, power };
+        const cost = this.normalizeStat(candidate.cost) ?? 0;
+        const keywords = this.normalizeCardKeywords(candidate.keywords);
+        const effectType = this.normalizeCardEffectType(candidate.effectType)
+            ?? (type === CARD_TYPE.ATTACK ? CARD_EFFECT_TYPE.DAMAGE : CARD_EFFECT_TYPE.BLOCK);
+        const rarity = this.normalizeCardRarity(candidate.rarity) ?? CARD_RARITY.COMMON;
+        const statusEffect = this.normalizeCardStatusEffect(candidate.statusEffect);
+        const condition = this.normalizeCardCondition(candidate.condition);
+
+        return {
+            id,
+            name,
+            type,
+            power,
+            cost,
+            keywords,
+            effectType,
+            rarity,
+            statusEffect,
+            condition,
+        };
     }
 
     private normalizeCardType(type: unknown): CardType | undefined {
         return type === CARD_TYPE.ATTACK || type === CARD_TYPE.GUARD
             ? type
             : undefined;
+    }
+
+    private normalizeCardKeywords(keywords: unknown): Card['keywords'] {
+        if (!Array.isArray(keywords)) {
+            return [];
+        }
+
+        return keywords.filter((keyword): keyword is Card['keywords'][number] =>
+            keyword === CARD_KEYWORD.BLOCK
+            || keyword === CARD_KEYWORD.EXHAUST
+            || keyword === CARD_KEYWORD.RETAIN,
+        );
+    }
+
+    private normalizeCardEffectType(effectType: unknown): Card['effectType'] | undefined {
+        return effectType === CARD_EFFECT_TYPE.DAMAGE
+            || effectType === CARD_EFFECT_TYPE.BLOCK
+            || effectType === CARD_EFFECT_TYPE.STATUS_EFFECT
+            || effectType === CARD_EFFECT_TYPE.FLEE
+            ? effectType
+            : undefined;
+    }
+
+    private normalizeCardRarity(rarity: unknown): Card['rarity'] | undefined {
+        return rarity === CARD_RARITY.COMMON || rarity === CARD_RARITY.RARE
+            ? rarity
+            : undefined;
+    }
+
+    private normalizeCardStatusEffect(statusEffect: unknown): Card['statusEffect'] | undefined {
+        if (!statusEffect || typeof statusEffect !== 'object') {
+            return undefined;
+        }
+
+        const candidate = statusEffect as Partial<NonNullable<Card['statusEffect']>>;
+        const type = typeof candidate.type === 'string' ? candidate.type : undefined;
+        const duration = this.normalizeStat(candidate.duration);
+        if (!type || duration === undefined) {
+            return undefined;
+        }
+
+        return { type, duration };
+    }
+
+    private normalizeCardCondition(condition: unknown): Card['condition'] | undefined {
+        if (!condition || typeof condition !== 'object') {
+            return undefined;
+        }
+
+        const candidate = condition as Partial<NonNullable<Card['condition']>>;
+        const type = typeof candidate.type === 'string' ? candidate.type : undefined;
+        const value = this.normalizeStat(candidate.value);
+        if (!type || value === undefined) {
+            return undefined;
+        }
+
+        return { type, value };
     }
 
     private normalizeCount(value: unknown) {
@@ -384,6 +467,19 @@ export class RunPersistenceService {
                     ...item.equipment,
                     statModifier: { ...item.equipment.statModifier },
                 }
+                : undefined,
+        };
+    }
+
+    private cloneCard(card: Card): Card {
+        return {
+            ...card,
+            keywords: [...card.keywords],
+            statusEffect: card.statusEffect
+                ? { ...card.statusEffect }
+                : undefined,
+            condition: card.condition
+                ? { ...card.condition }
                 : undefined,
         };
     }
