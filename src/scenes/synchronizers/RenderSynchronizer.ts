@@ -7,6 +7,7 @@ import { MapData } from '../../infra/rot/MapGenerator';
 import { RotFovCalculator } from '../../infra/rot/RotFovCalculator';
 import { isWalkableTile } from '../../shared/types/WorldTiles';
 import { GameLocalization } from '../../ui/GameLocalization';
+import { MovementAnimator } from './MovementAnimator';
 
 const MAP_LAYER_DEPTH = 0;
 const PLAYER_SPRITE_DEPTH = 1;
@@ -19,13 +20,23 @@ export class RenderSynchronizer {
     private readonly enemySprites = new Map<string, Phaser.GameObjects.Sprite>();
     private readonly itemLabels = new Map<string, Phaser.GameObjects.Text>();
     private visibilityService?: VisibilityService;
+    private immediateMode = false;
 
     constructor(
         private readonly scene: Phaser.Scene,
         private readonly localization: GameLocalization,
         private readonly tileSize: number,
-        private readonly fovRadius: number
+        private readonly fovRadius: number,
+        private readonly movementAnimator?: MovementAnimator,
     ) {}
+
+    /**
+     * When immediate mode is enabled, synchronizePlayer and synchronizeEnemies
+     * place sprites instantly without animation. Used during buildFloor transitions.
+     */
+    public setImmediateMode(enabled: boolean): void {
+        this.immediateMode = enabled;
+    }
 
     public initializeVisibilityService(mapData: MapData) {
         this.visibilityService = new VisibilityService(
@@ -56,21 +67,35 @@ export class RenderSynchronizer {
         }
     }
 
-    public synchronizePlayer(player: Player) {
-        if (!this.playerSprite) {
+    public synchronizePlayer(player: Player): Promise<void> {
+        const isFirstCreation = !this.playerSprite;
+
+        if (isFirstCreation) {
             this.playerSprite = this.scene.add
                 .sprite(player.position.x * this.tileSize, player.position.y * this.tileSize, 'player')
                 .setOrigin(0);
             this.scene.cameras.main.startFollow(this.playerSprite, true, 0.1, 0.1);
             this.scene.cameras.main.setZoom(1.5);
-        } else {
-            this.playerSprite.setPosition(player.position.x * this.tileSize, player.position.y * this.tileSize);
         }
 
-        this.playerSprite
+        this.playerSprite!
             .setDepth(PLAYER_SPRITE_DEPTH)
             .setVisible(true)
             .setAlpha(1);
+
+        if (isFirstCreation || this.immediateMode || !this.movementAnimator) {
+            this.playerSprite!.setPosition(
+                player.position.x * this.tileSize,
+                player.position.y * this.tileSize,
+            );
+            return Promise.resolve();
+        }
+
+        return new Promise<void>((resolve) => {
+            this.movementAnimator!.moveTo(this.playerSprite!, player.position, {
+                onComplete: resolve,
+            });
+        });
     }
 
     public clearEnemySprites() {
@@ -80,10 +105,22 @@ export class RenderSynchronizer {
         this.enemySprites.clear();
     }
 
-    public synchronizeEnemies(enemies: Enemy[]) {
+    /**
+     * Returns true if the given position is currently visible to the player.
+     */
+    public isPositionVisible(pos: { x: number; y: number }): boolean {
+        if (!this.visibilityService) return false;
+        return this.visibilityService.getState(pos.x, pos.y) === 'visible';
+    }
+
+    public synchronizeEnemies(enemies: Enemy[], options: { duration?: number; immediate?: boolean } = {}): Promise<void> {
+        const animationPromises: Promise<void>[] = [];
+
         for (const enemy of enemies) {
             let sprite = this.enemySprites.get(enemy.id);
-            if (!sprite) {
+            const isFirstCreation = !sprite;
+
+            if (isFirstCreation) {
                 sprite = this.scene.add
                     .sprite(
                         enemy.position.x * this.tileSize,
@@ -93,10 +130,29 @@ export class RenderSynchronizer {
                     .setOrigin(0);
                 this.applyEnemySpriteStyle(sprite, enemy);
                 this.enemySprites.set(enemy.id, sprite);
-            } else {
-                sprite.setPosition(enemy.position.x * this.tileSize, enemy.position.y * this.tileSize);
+                continue;
             }
+
+            const immediate = options.immediate || this.immediateMode || !this.movementAnimator;
+            if (immediate) {
+                sprite!.setPosition(enemy.position.x * this.tileSize, enemy.position.y * this.tileSize);
+                continue;
+            }
+
+            animationPromises.push(
+                new Promise<void>((resolve) => {
+                    this.movementAnimator!.moveTo(sprite!, enemy.position, {
+                        duration: options.duration,
+                        onComplete: resolve,
+                    });
+                }),
+            );
         }
+
+        if (animationPromises.length === 0) {
+            return Promise.resolve();
+        }
+        return Promise.all(animationPromises).then(() => undefined);
     }
 
     public removeEnemySprite(enemyId: string) {
@@ -250,6 +306,13 @@ export class RenderSynchronizer {
             ease: 'Cubic.easeOut',
             onComplete: () => damageLabel.destroy(),
         });
+    }
+
+    /**
+     * Returns true if any movement animation is currently in progress.
+     */
+    public isAnimating(): boolean {
+        return this.movementAnimator?.hasActiveAnimations() ?? false;
     }
 
     public setPlayerDeathStyle() {

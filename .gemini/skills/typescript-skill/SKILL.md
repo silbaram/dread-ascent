@@ -1,5 +1,5 @@
 ---
-name: typescript-style
+name: typescript-skill
 description: >-
   TypeScript 코드를 작성할 때의 코딩 스타일, 컨벤션, 아키텍처 가이드.
   이 스킬은 TypeScript 파일(.ts, .tsx)을 생성하거나 수정할 때 항상 적용한다.
@@ -7,6 +7,7 @@ description: >-
   에러 핸들링 구현, 테스트 작성, 프로젝트 구조 설계 시 반드시 참조.
   "코드 스타일", "컨벤션", "타입스크립트", "TS", "코드 품질" 등의 키워드에도 반응.
 ---
+
 
 # TypeScript Style Guide for ADA
 

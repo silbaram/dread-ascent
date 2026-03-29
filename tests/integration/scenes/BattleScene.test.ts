@@ -110,6 +110,9 @@ interface TestScene {
         label: string;
         sourceCardId?: string;
     };
+    damagePopupController: {
+        showBatch: ReturnType<typeof vi.fn>;
+    };
     enemyIntentText?: {
         setText: ReturnType<typeof vi.fn>;
         setAlpha: ReturnType<typeof vi.fn>;
@@ -206,6 +209,9 @@ describe('BattleScene block lifecycle', () => {
         scene.battleLogLines = [];
         scene.enemyAttackBuff = 0;
         scene.currentEnemyIntent = undefined;
+        scene.damagePopupController = {
+            showBatch: vi.fn(),
+        };
         scene.enemyIntentText = {
             setText: vi.fn(),
             setAlpha: vi.fn(),
@@ -418,6 +424,7 @@ describe('BattleScene block lifecycle', () => {
             expect.objectContaining({ name: 'Enemy Guard 5' }),
             0,
             5,
+            0,
         );
     });
 
@@ -440,5 +447,122 @@ describe('BattleScene block lifecycle', () => {
         });
         expect(scene.scene.stop).toHaveBeenCalledWith('BattleScene');
         expect(scene.scene.wake).toHaveBeenCalledWith('MainScene');
+    });
+});
+
+describe('BattleScene popup feedback', () => {
+    let BattleScene: BattleSceneModule['BattleScene'];
+
+    beforeAll(async () => {
+        (globalThis as typeof globalThis & { Phaser?: unknown }).Phaser = {
+            Scene: class {
+                constructor(_config?: unknown) {}
+            },
+        };
+        ({ BattleScene } = await import('../../../src/scenes/BattleScene'));
+    });
+
+    afterAll(() => {
+        delete (globalThis as typeof globalThis & { Phaser?: unknown }).Phaser;
+    });
+
+    function createFallbackText() {
+        return {
+            setOrigin: vi.fn().mockReturnThis(),
+            setAlpha: vi.fn().mockReturnThis(),
+            destroy: vi.fn(),
+        };
+    }
+
+    it('shows blocked and damage popups together near the enemy HP anchor', () => {
+        const fallbackText = createFallbackText();
+        const scene = new BattleScene() as unknown as {
+            damagePopupController: { showBatch: ReturnType<typeof vi.fn> };
+            add: { text: ReturnType<typeof vi.fn> };
+            effectText?: { destroy: ReturnType<typeof vi.fn> };
+        };
+        scene.damagePopupController = { showBatch: vi.fn() };
+        scene.add = {
+            text: vi.fn(() => fallbackText),
+        };
+
+        (BattleScene.prototype as unknown as {
+            showEffectText: (
+                card: ReturnType<typeof createCard>,
+                effect: {
+                    damageDealt: number;
+                    damageBlocked: number;
+                    blockGained: number;
+                    fled: boolean;
+                },
+            ) => void;
+        }).showEffectText.call(
+            scene,
+            createCard({
+                name: 'Strike',
+                type: CARD_TYPE.ATTACK,
+                power: 6,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            }),
+            {
+                damageDealt: 3,
+                damageBlocked: 5,
+                blockGained: 0,
+                fled: false,
+            },
+        );
+
+        expect(scene.damagePopupController.showBatch).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'enemy-hp' }),
+            [
+                { type: 'blocked', value: 5 },
+                { type: 'damage', value: 3 },
+            ],
+        );
+        expect(scene.add.text).toHaveBeenCalledWith(
+            400,
+            230,
+            'Strike: strike',
+            expect.objectContaining({ fontSize: '14px' }),
+        );
+        expect(fallbackText.setAlpha).toHaveBeenCalledWith(0.78);
+    });
+
+    it('shows player-side poison popups when turn-end poison damage resolves', () => {
+        const scene = new BattleScene() as unknown as {
+            statusEffectService: StatusEffectService;
+            playerState: { health: number; maxHealth: number; block: number };
+            enemyState: { health: number; maxHealth: number; block: number };
+            playerStatusEffects: StatusEffectState;
+            enemyStatusEffects: StatusEffectState;
+            damagePopupController: { showBatch: ReturnType<typeof vi.fn> };
+            appendBattleLog: ReturnType<typeof vi.fn>;
+            appendStatusEventLogs: ReturnType<typeof vi.fn>;
+            sceneData: { enemyName: string };
+        };
+        scene.statusEffectService = new StatusEffectService();
+        scene.playerState = { health: 100, maxHealth: 100, block: 0 };
+        scene.enemyState = { health: 12, maxHealth: 12, block: 0 };
+        scene.playerStatusEffects = scene.statusEffectService.createState();
+        scene.enemyStatusEffects = {
+            vulnerable: 0,
+            weak: 0,
+            poison: 3,
+        };
+        scene.damagePopupController = { showBatch: vi.fn() };
+        scene.appendBattleLog = vi.fn();
+        scene.appendStatusEventLogs = vi.fn();
+        scene.sceneData = { enemyName: 'Enemy' };
+
+        (BattleScene.prototype as unknown as {
+            resolveTurnEndStatusEffects: (actor: 'player' | 'enemy') => void;
+        }).resolveTurnEndStatusEffects.call(scene, 'enemy');
+
+        expect(scene.enemyState.health).toBe(9);
+        expect(scene.damagePopupController.showBatch).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'enemy-hp' }),
+            [{ type: 'poison', value: 3 }],
+        );
+        expect(scene.appendBattleLog).toHaveBeenCalledWith('Enemy takes 3 poison');
     });
 });

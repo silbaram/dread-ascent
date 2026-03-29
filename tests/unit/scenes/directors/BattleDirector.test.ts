@@ -64,7 +64,7 @@ describe('BattleDirector', () => {
         const player = new Player({ x: 2, y: 2 });
         const renderSynchronizer = {
             spawnFloatingDamage: vi.fn(),
-            synchronizeEnemies: vi.fn(),
+            synchronizeEnemies: vi.fn().mockReturnValue(Promise.resolve()),
         } as unknown as RenderSynchronizer;
         const director = createBattleDirector(enemy, renderSynchronizer);
         const enemyTurn: TurnActor = {
@@ -81,5 +81,51 @@ describe('BattleDirector', () => {
         expect(outcome.logs).toHaveLength(1);
         expect(outcome.logs[0]?.tone).toBe('travel');
         expect(enemy.position.x + enemy.position.y).toBe(1);
+    });
+
+    it('returns animationPromise from synchronizeEnemies when enemy moves', () => {
+        // Arrange
+        const animationDone = Promise.resolve();
+        const enemy = createEnemy({ x: 0, y: 0 });
+        const player = new Player({ x: 2, y: 2 });
+        const renderSynchronizer = {
+            spawnFloatingDamage: vi.fn(),
+            synchronizeEnemies: vi.fn().mockReturnValue(animationDone),
+        } as unknown as RenderSynchronizer;
+        const director = createBattleDirector(enemy, renderSynchronizer);
+        const enemyTurn: TurnActor = {
+            id: enemy.id,
+            kind: 'enemy',
+            label: 'Enemy 1',
+        };
+
+        // Act
+        const outcome = director.resolveEnemyTurn(enemyTurn, player, createMapData());
+
+        // Assert
+        expect(outcome.animationPromise).toBe(animationDone);
+    });
+
+    it('does not set animationPromise when enemy attacks', () => {
+        // Arrange: place enemy adjacent to player so it attacks
+        const enemy = createEnemy({ x: 1, y: 1 });
+        const player = new Player({ x: 1, y: 0 });
+        const renderSynchronizer = {
+            spawnFloatingDamage: vi.fn(),
+            synchronizeEnemies: vi.fn().mockReturnValue(Promise.resolve()),
+        } as unknown as RenderSynchronizer;
+        const director = createBattleDirector(enemy, renderSynchronizer);
+        const enemyTurn: TurnActor = {
+            id: enemy.id,
+            kind: 'enemy',
+            label: 'Enemy 1',
+        };
+
+        // Act
+        const outcome = director.resolveEnemyTurn(enemyTurn, player, createMapData());
+
+        // Assert
+        expect(outcome.animationPromise).toBeUndefined();
+        expect(outcome.logs[0]?.tone).toBe('danger');
     });
 });

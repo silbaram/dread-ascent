@@ -22,6 +22,8 @@ export interface BattleOutcome {
     type: 'none' | 'game-over' | 'victory';
     boss?: Enemy;
     logs: Array<{ line: string; tone: any }>;
+    /** Promise that resolves when the move animation completes. Undefined if no animation was triggered. */
+    animationPromise?: Promise<void>;
 }
 
 export interface CardBattleState {
@@ -203,7 +205,12 @@ export class BattleDirector {
         return { type: 'none', logs };
     }
 
-    public resolveEnemyTurn(enemyTurn: TurnActor, player: Player, mapData: MapData): BattleOutcome {
+    public resolveEnemyTurn(
+        enemyTurn: TurnActor,
+        player: Player,
+        mapData: MapData,
+        animationOptions: { duration?: number; immediate?: boolean } = {},
+    ): BattleOutcome {
         const enemy = this.floorDirector.getEnemyById(enemyTurn.id);
         const outcome: BattleOutcome = { type: 'none', logs: [] };
 
@@ -226,7 +233,7 @@ export class BattleDirector {
 
         switch (action.type) {
             case 'move':
-                this.renderSynchronizer.synchronizeEnemies([enemy]);
+                outcome.animationPromise = this.renderSynchronizer.synchronizeEnemies([enemy], animationOptions);
                 outcome.logs.push({
                     line: action.pursuit === 'player'
                         ? this.localization.formatEnemyAdvances(enemyName)

@@ -14,8 +14,9 @@ import { WORLD_TILE, isWalkableTile } from '../shared/types/WorldTiles';
 import { GameLocalization, MovementDirection } from '../ui/GameLocalization';
 import { type HudLogTone, GameHud } from '../ui/GameHud';
 import { RenderSynchronizer } from './synchronizers/RenderSynchronizer';
+import { MovementAnimator, PhaserTweenFactory } from './synchronizers/MovementAnimator';
 import { FloorDirector } from './directors/FloorDirector';
-import { BattleDirector, BattleOutcome } from './directors/BattleDirector';
+import { BattleDirector, type BattleOutcome } from './directors/BattleDirector';
 import { BattleScene, type BattleSceneData, type BattleSceneResult } from './BattleScene';
 import { OverlayController } from './controllers/OverlayController';
 import { InputController, InputDelegate } from './controllers/InputController';
@@ -24,6 +25,8 @@ import { ITEM_RARITY, type InventoryItem, type ItemDefinition } from '../domain/
 import type { CombatStatModifier } from '../domain/entities/CombatStats';
 import { Position } from '../domain/entities/Player';
 import { Enemy } from '../domain/entities/Enemy';
+import type { TurnActor } from '../domain/services/TurnQueueService';
+import type { MapData } from '../infra/rot/MapGenerator';
 
 export class MainScene extends Phaser.Scene implements InputDelegate {
     private playerEntity?: Player;
@@ -31,6 +34,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     private tileSize: number = 32;
     private fovRadius: number = 8;
     private selectedInventoryItemId?: string;
+    private isAnimatingMovement = false;
 
     private readonly combatService = new CombatService();
     private readonly cardBattleService = new CardBattleService();
@@ -70,7 +74,9 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     }
 
     private initializeComponents() {
-        this.renderSynchronizer = new RenderSynchronizer(this, this.localization, this.tileSize, this.fovRadius);
+        const tweenFactory = new PhaserTweenFactory(this);
+        const movementAnimator = new MovementAnimator(tweenFactory, this.tileSize);
+        this.renderSynchronizer = new RenderSynchronizer(this, this.localization, this.tileSize, this.fovRadius, movementAnimator);
         this.floorDirector = new FloorDirector(
             this.floorProgression,
             this.enemySpawner,
@@ -128,12 +134,14 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             this.playerEntity.moveTo(mapData.playerSpawn.x, mapData.playerSpawn.y);
         }
 
+        this.renderSynchronizer.setImmediateMode(true);
         this.renderSynchronizer.synchronizePlayer(this.playerEntity);
         const entities = this.floorDirector.spawnEntities(floor.number);
         this.renderSynchronizer.clearEnemySprites();
         this.renderSynchronizer.synchronizeEnemies(entities.enemies);
         this.renderSynchronizer.clearItemLabels();
         this.renderSynchronizer.synchronizeItems(entities.items);
+        this.renderSynchronizer.setImmediateMode(false);
 
         this.battleDirector.initializeTurnQueue(this.localization.getPlayerLabel());
         this.renderSynchronizer.updateVisibility(this.playerEntity.position, mapData, entities.enemies, entities.items);
@@ -189,7 +197,8 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         if (!isWalkableTile(targetTile)) return;
 
         this.playerEntity.moveTo(newX, newY);
-        this.renderSynchronizer.synchronizePlayer(this.playerEntity);
+        this.beginAnimationLock();
+        const playerAnimationDone = this.renderSynchronizer.synchronizePlayer(this.playerEntity);
         this.renderSynchronizer.updateVisibility(this.playerEntity.position, mapData, this.floorDirector.getEnemyEntities(), this.floorDirector.getFieldItems());
 
         const pickupLog = this.collectItemAtPlayerPosition();
@@ -197,11 +206,13 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         if (targetTile === WORLD_TILE.STAIRS) {
             this.pushTurnLog(this.localization.formatPlayerClimbsStairs());
             this.advanceToNextFloor();
+            playerAnimationDone.then(() => this.endAnimationLock());
             return;
         }
 
         if (targetTile === WORLD_TILE.REST) {
             this.completePlayerTurn(this.localization.formatPlayerStepsIntoSanctuary());
+            playerAnimationDone.then(() => this.endAnimationLock());
             return;
         }
 
@@ -209,6 +220,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             this.localization.formatPlayerMoved(this.describeDirection(dx, dy)),
             pickupLog ? [pickupLog] : [],
         );
+        playerAnimationDone.then(() => this.endAnimationLock());
     }
 
     public onToggleInventory() {
@@ -228,9 +240,20 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     public isTitleScreenOpen() { return this.overlayController.getState().isTitleScreenOpen; }
     public isSanctuaryOpen() { return this.overlayController.getState().isSanctuaryOpen; }
     public isInventoryOpen() { return this.overlayController.getState().isInventoryOpen; }
-    public isPlayerTurn() {
+    public isPlayerTurn(): boolean {
         const state = this.overlayController.getState();
         return !state.isGameOver && !state.isVictory && this.battleDirector.isPlayerTurn();
+    }
+    public isAnimating(): boolean {
+        return this.isAnimatingMovement;
+    }
+
+    private beginAnimationLock(): void {
+        this.isAnimatingMovement = true;
+    }
+
+    private endAnimationLock(): void {
+        this.isAnimatingMovement = false;
     }
 
     private launchBattleScene(player: Player, enemy: Enemy): void {
@@ -401,7 +424,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.pendingCardDrop = null;
     }
 
-    private completePlayerTurn(logLine: string, extraLogs: Array<{ line: string; tone: HudLogTone }> = []) {
+    private async completePlayerTurn(logLine: string, extraLogs: Array<{ line: string; tone: HudLogTone }> = []): Promise<void> {
         if (!this.playerEntity) return;
 
         if (logLine) this.pushTurnLog(logLine);
@@ -413,16 +436,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         const mapData = this.floorDirector.getMapData();
         if (!mapData) return;
 
-        for (const enemyTurn of resolution.enemyTurns) {
-            const outcome = this.battleDirector.resolveEnemyTurn(enemyTurn, this.playerEntity, mapData);
-            for (const log of outcome.logs) {
-                this.pushTurnLog(log.line, log.tone);
-            }
-            if (outcome.type === 'game-over') {
-                this.handlePlayerDeath();
-                break;
-            }
-        }
+        await this.executeEnemyTurns(resolution.enemyTurns, this.playerEntity, mapData);
 
         this.renderSynchronizer.updateVisibility(this.playerEntity.position, mapData, this.floorDirector.getEnemyEntities(), this.floorDirector.getFieldItems());
         this.refreshTurnStatus();
@@ -430,6 +444,49 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         const state = this.overlayController.getState();
         if (!state.isGameOver) {
             this.pushTurnLog(this.localization.formatRoundActorTurn(resolution.round, resolution.nextActor.label));
+        }
+    }
+
+    /**
+     * Processes each enemy turn sequentially, awaiting move animations before
+     * proceeding to the next enemy. Attack and wait actions resolve immediately.
+     * Stops early if the player dies (game over).
+     */
+    private async executeEnemyTurns(enemyTurns: readonly TurnActor[], player: Player, mapData: MapData): Promise<void> {
+        this.beginAnimationLock();
+        try {
+            const visibleEnemies = enemyTurns.filter(turn => {
+                const enemy = this.floorDirector.getEnemyById(turn.id);
+                return enemy && this.renderSynchronizer.isPositionVisible(enemy.position);
+            });
+
+            // If many enemies are visible, speed up the animation to keep the game flow.
+            const duration = visibleEnemies.length >= 5 ? 100 : 150;
+
+            for (const enemyTurn of enemyTurns) {
+                const enemy = this.floorDirector.getEnemyById(enemyTurn.id);
+                const isVisible = enemy && this.renderSynchronizer.isPositionVisible(enemy.position);
+
+                const outcome = this.battleDirector.resolveEnemyTurn(enemyTurn, player, mapData, {
+                    duration,
+                    immediate: !isVisible, // Skip animation for enemies the player can't see
+                });
+
+                if (outcome.animationPromise) {
+                    await outcome.animationPromise;
+                }
+
+                for (const log of outcome.logs) {
+                    this.pushTurnLog(log.line, log.tone);
+                }
+
+                if (outcome.type === 'game-over') {
+                    this.handlePlayerDeath();
+                    return;
+                }
+            }
+        } finally {
+            this.endAnimationLock();
         }
     }
 

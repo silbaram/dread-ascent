@@ -9,6 +9,7 @@ export interface InputDelegate {
     isSanctuaryOpen: () => boolean;
     isInventoryOpen: () => boolean;
     isPlayerTurn: () => boolean;
+    isAnimating: () => boolean;
 }
 
 export class InputController {
@@ -47,7 +48,7 @@ export class InputController {
             return;
         }
 
-        if (this.delegate.isInventoryOpen() || !this.delegate.isPlayerTurn()) return;
+        if (this.delegate.isInventoryOpen() || !this.delegate.isPlayerTurn() || this.delegate.isAnimating()) return;
 
         let dx = 0;
         let dy = 0;

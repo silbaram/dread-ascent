@@ -34,6 +34,12 @@ import {
     type StatusEffectEvent,
     type StatusEffectState,
 } from '../domain/services/StatusEffectService';
+import {
+    DamagePopupController,
+    type DamagePopupAnchor,
+    type DamagePopupAnchorId,
+    type DamagePopupRequest,
+} from './effects/DamagePopup';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,6 +83,7 @@ const HP_BAR_WIDTH = 200;
 const HP_BAR_HEIGHT = 20;
 const ENEMY_HP_BAR_Y = 78;
 const PLAYER_HP_BAR_Y = 303;
+const EFFECT_TEXT_Y = 230;
 const HP_LOW_THRESHOLD = 0.3;
 const CARD_PLAY_ANIM_MS = 300;
 const ENEMY_TURN_DELAY_MS = 800;
@@ -98,6 +105,12 @@ const LOG_PANEL_X = 670;
 const LOG_PANEL_Y = 210;
 const LOG_PANEL_WIDTH = 190;
 const LOG_PANEL_HEIGHT = 168;
+const ENEMY_HP_POPUP_Y = ENEMY_HP_BAR_Y - 10;
+const PLAYER_HP_POPUP_Y = PLAYER_HP_BAR_Y - 10;
+const ENEMY_PANEL_POPUP_X = ENEMY_PANEL_X + 150;
+const ENEMY_PANEL_POPUP_Y = ENEMY_PANEL_Y + 18;
+const PLAYER_PANEL_POPUP_X = PLAYER_PANEL_X + 150;
+const PLAYER_PANEL_POPUP_Y = PLAYER_PANEL_Y + 18;
 
 // Colors
 const COLOR_BG = 0x1a1a2e;
@@ -164,6 +177,7 @@ export class BattleScene extends Phaser.Scene {
     private enemyStatusText?: Phaser.GameObjects.Text;
     private battleLogText?: Phaser.GameObjects.Text;
     private enemyIntentText?: Phaser.GameObjects.Text;
+    private damagePopupController!: DamagePopupController;
 
     private isInputLocked = false;
 
@@ -223,6 +237,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     create(): void {
+        this.damagePopupController = new DamagePopupController(this);
         this.createBackground();
         this.createHpBars();
         this.createTurnDisplay();
@@ -894,7 +909,12 @@ export class BattleScene extends Phaser.Scene {
         }
 
         // 적 행동 텍스트
-        this.showEnemyActionText(enemyCard, effectResult.damageDealt, effectResult.blockGained);
+        this.showEnemyActionText(
+            enemyCard,
+            effectResult.damageDealt,
+            effectResult.blockGained,
+            effectResult.damageBlocked,
+        );
 
         this.time.delayedCall(ENEMY_TURN_DELAY_MS, () => {
             this.clearEffectText();
@@ -928,74 +948,89 @@ export class BattleScene extends Phaser.Scene {
     // Effect Text
     // -----------------------------------------------------------------------
 
-    private showEffectText(card: Card, effect: { damageDealt: number; blockGained: number; fled: boolean }): void {
+    private showEffectText(card: Card, effect: {
+        damageDealt: number;
+        damageBlocked?: number;
+        blockGained: number;
+        fled: boolean;
+        statusApplied?: {
+            type: string;
+            duration: number;
+        };
+    }): void {
         this.clearEffectText();
 
-        let text: string;
-        let color: string;
+        this.showPopupBatch('enemy-hp', [
+            ...(effect.damageBlocked && effect.damageBlocked > 0
+                ? [{ type: 'blocked', value: effect.damageBlocked } satisfies DamagePopupRequest]
+                : []),
+            ...(effect.damageDealt > 0
+                ? [{ type: 'damage', value: effect.damageDealt } satisfies DamagePopupRequest]
+                : []),
+        ]);
+        this.showPopupBatch('player-hp', effect.blockGained > 0
+            ? [{ type: 'block_gain', value: effect.blockGained }]
+            : []);
 
         if (effect.fled) {
-            text = '💨 Fled!';
-            color = '#66ffaa';
-        } else if (effect.damageDealt > 0) {
-            text = `⚔️ ${card.name}: ${effect.damageDealt} DMG`;
-            color = '#ff6666';
-        } else if (effect.blockGained > 0) {
-            text = `🛡️ ${card.name}: +${effect.blockGained} Block`;
-            color = '#6699ff';
-        } else {
-            text = `${card.name} used`;
-            color = '#aaaaaa';
+            this.createFallbackEffectText(`${card.name}: retreat`, '#66ffaa');
+            return;
         }
 
-        this.effectText = this.add.text(SCENE_CENTER_X, 230, text, {
-            fontSize: '18px',
-            color,
-            fontFamily: 'monospace',
-            fontStyle: 'bold',
-            stroke: '#000000',
-            strokeThickness: 2,
-        }).setOrigin(0.5);
+        if (effect.damageDealt > 0 || (effect.damageBlocked ?? 0) > 0) {
+            this.createFallbackEffectText(`${card.name}: strike`, '#ff8f8f');
+            return;
+        }
+
+        if (effect.blockGained > 0) {
+            this.createFallbackEffectText(`${card.name}: +${effect.blockGained} Block`, '#6eb6ff');
+            return;
+        }
+
+        if (effect.statusApplied) {
+            this.createFallbackEffectText(
+                `${card.name}: ${this.getStatusLabel(effect.statusApplied.type)}`,
+                effect.statusApplied.type === STATUS_EFFECT_TYPE.POISON ? '#c483ff' : '#d3b0ff',
+            );
+            return;
+        }
+
+        this.createFallbackEffectText(`${card.name} used`, '#9aafc5');
     }
 
-    private showEnemyActionText(card: Card, damage: number, blockGained: number): void {
+    private showEnemyActionText(card: Card, damage: number, blockGained: number, damageBlocked = 0): void {
         this.clearEffectText();
 
-        let text: string;
-        let color: string;
+        this.showPopupBatch('player-hp', [
+            ...(damageBlocked > 0
+                ? [{ type: 'blocked', value: damageBlocked } satisfies DamagePopupRequest]
+                : []),
+            ...(damage > 0
+                ? [{ type: 'damage', value: damage } satisfies DamagePopupRequest]
+                : []),
+        ]);
+        this.showPopupBatch('enemy-hp', blockGained > 0
+            ? [{ type: 'block_gain', value: blockGained }]
+            : []);
 
-        if (damage > 0) {
-            text = `💥 Enemy ${card.name}: ${damage} DMG`;
-            color = '#ff4444';
-        } else if (blockGained > 0) {
-            text = `🛡️ Enemy gains +${blockGained} Block`;
-            color = '#ff8866';
-        } else {
-            text = `Enemy: ${card.name}`;
-            color = '#ff8888';
+        if (damage > 0 || damageBlocked > 0) {
+            this.createFallbackEffectText(`Enemy ${card.name}: attack`, '#ff8f8f');
+            return;
         }
 
-        this.effectText = this.add.text(SCENE_CENTER_X, 230, text, {
-            fontSize: '18px',
-            color,
-            fontFamily: 'monospace',
-            fontStyle: 'bold',
-            stroke: '#000000',
-            strokeThickness: 2,
-        }).setOrigin(0.5);
+        if (blockGained > 0) {
+            this.createFallbackEffectText(`Enemy ${card.name}: +${blockGained} Block`, '#6eb6ff');
+            return;
+        }
+
+        this.createFallbackEffectText(`Enemy ${card.name}`, '#ffb0b0');
     }
 
     private showEnemyBuffText(intent: BuffIntent): void {
         this.clearEffectText();
 
-        this.effectText = this.add.text(SCENE_CENTER_X, 230, `⬆️ Enemy gains +${intent.amount} ATK`, {
-            fontSize: '18px',
-            color: '#ffaa66',
-            fontFamily: 'monospace',
-            fontStyle: 'bold',
-            stroke: '#000000',
-            strokeThickness: 2,
-        }).setOrigin(0.5);
+        this.showPopupBatch('enemy-panel', [{ type: 'buff', value: intent.amount }]);
+        this.createFallbackEffectText(`Enemy buffs +${intent.amount} ATK`, '#ffb05e');
     }
 
     private clearEffectText(): void {
@@ -1022,9 +1057,44 @@ export class BattleScene extends Phaser.Scene {
 
         if (statusResult.poisonDamage > 0) {
             this.appendBattleLog(`${label} takes ${statusResult.poisonDamage} poison`);
+            this.showPopupBatch(isPlayer ? 'player-hp' : 'enemy-hp', [
+                { type: 'poison', value: statusResult.poisonDamage },
+            ]);
         }
 
         this.appendStatusEventLogs(statusResult.events);
+    }
+
+    private createFallbackEffectText(text: string, color: string): void {
+        this.effectText = this.add.text(SCENE_CENTER_X, EFFECT_TEXT_Y, text, {
+            fontSize: '14px',
+            color,
+            fontFamily: 'monospace',
+            fontStyle: 'bold',
+            stroke: '#000000',
+            strokeThickness: 2,
+        }).setOrigin(0.5).setAlpha(0.78);
+    }
+
+    private showPopupBatch(anchorId: DamagePopupAnchorId, requests: readonly DamagePopupRequest[]): void {
+        if (requests.length === 0) {
+            return;
+        }
+
+        this.damagePopupController.showBatch(this.getPopupAnchor(anchorId), requests);
+    }
+
+    private getPopupAnchor(anchorId: DamagePopupAnchorId): DamagePopupAnchor {
+        switch (anchorId) {
+            case 'enemy-hp':
+                return { id: anchorId, x: SCENE_CENTER_X, y: ENEMY_HP_POPUP_Y };
+            case 'player-hp':
+                return { id: anchorId, x: SCENE_CENTER_X, y: PLAYER_HP_POPUP_Y };
+            case 'enemy-panel':
+                return { id: anchorId, x: ENEMY_PANEL_POPUP_X, y: ENEMY_PANEL_POPUP_Y };
+            case 'player-panel':
+                return { id: anchorId, x: PLAYER_PANEL_POPUP_X, y: PLAYER_PANEL_POPUP_Y };
+        }
     }
 
     private appendStatusEventLogs(events: readonly StatusEffectEvent[]): void {

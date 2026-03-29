@@ -26,6 +26,8 @@ export class VisibilityService {
         );
     }
 
+    private lastSnapshot?: VisibilitySnapshot;
+
     recalculate(origin: GridPosition, radius: number): VisibilitySnapshot {
         const visibleTiles = Array.from({ length: this.height }, () =>
             Array.from({ length: this.width }, () => false),
@@ -41,7 +43,7 @@ export class VisibilityService {
             this.exploredTiles[position.y][position.x] = true;
         }
 
-        return {
+        const snapshot = {
             tiles: visibleTiles.map((row, y) =>
                 row.map((isVisible, x) => {
                     if (isVisible) {
@@ -52,6 +54,15 @@ export class VisibilityService {
                 }),
             ),
         };
+        this.lastSnapshot = snapshot;
+        return snapshot;
+    }
+
+    public getState(x: number, y: number): VisibilityState {
+        if (!this.lastSnapshot || !this.isWithinBounds(x, y)) {
+            return 'hidden';
+        }
+        return this.lastSnapshot.tiles[y][x];
     }
 
     private isWithinBounds(x: number, y: number) {
