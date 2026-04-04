@@ -1,369 +1,127 @@
 # Architecture
 
-Dread Ascent는 **도메인 로직과 렌더링을 엄격히 분리**하는 계층형 아키텍처를 사용합니다.
+## 한눈에 보기
 
----
+`Dread Ascent`는 "도메인 규칙"과 "런타임 표현"을 분리하는 구조입니다.
 
-## 계층 구조
+```text
+main.ts
+  ├─ MainScene      탐험, 층 진행, 필드 입력, 저장/오버레이 연결
+  ├─ BattleScene    카드 전투 전용 씬
+  └─ GameHud        DOM HUD와 오버레이
 
-```
-┌────────────────────────────────────┐
-│           scenes/                  │  ← 입력 수신, 렌더링 반영
-│         (Phaser Scene)             │     외부 라이브러리 사용 허용
-└──────────────┬─────────────────────┘
-               │ snapshot, commands
-┌──────────────▼─────────────────────┐
-│           domain/                  │  ← 순수 게임 규칙
-│    (entities, services, systems)   │     Phaser / rot-js 의존 금지
-└──────────────┬─────────────────────┘
-               │ interface 구현
-┌──────────────▼─────────────────────┐
-│            infra/                  │  ← 외부 라이브러리 어댑터
-│         (rot/, firebase/)          │     도메인 인터페이스를 구현
-└────────────────────────────────────┘
-```
+domain/
+  ├─ entities/      카드, 플레이어, 적, 아이템, 스탯
+  └─ services/      전투, 드로우, 상태이상, 저장, 메타 진행
 
-### 핵심 원칙
+infra/rot/
+  └─ ROT.js 어댑터  맵, FOV, 경로 탐색, 턴 스케줄
 
-- **`domain/`** 계층은 Phaser, rot-js, Firebase 등 외부 의존성을 가지지 않는다.
-- **`scenes/`** 계층은 도메인의 스냅샷을 받아 화면에 반영하는 역할만 한다.
-- **`infra/`** 계층은 도메인이 정의한 인터페이스를 외부 라이브러리로 구현한다.
-
----
-
-## 구현된 컴포넌트 (Sprint 001-011)
-
-### `domain/entities/CombatStats`
-
-전투와 이동에 공통으로 쓰이는 기본 스탯 정의.
-
-- `health`, `maxHealth`, `attack`, `defense`와 함께 `movementSpeed`를 실제 필드로 유지한다
-- `CombatStatModifier`도 `movementSpeed`를 지원해 장비/업그레이드/보정값을 같은 구조로 적용할 수 있다
-- 기준값은 `movementSpeed=100`이며, 이동 애니메이션 duration 정책의 기준점으로 사용한다
-
-```typescript
-import { BASE_PLAYER_STATS, DEFAULT_MOVEMENT_SPEED } from './domain/entities/CombatStats';
-
-console.log(BASE_PLAYER_STATS.movementSpeed); // 100
-console.log(DEFAULT_MOVEMENT_SPEED); // 100
+scenes/
+  ├─ controllers/   입력과 오버레이 제어
+  ├─ directors/     씬이 조립하는 고수준 진행 로직
+  ├─ effects/       데미지 팝업 등 표현 요소
+  └─ synchronizers/ 엔티티 상태를 렌더와 동기화
 ```
 
----
+## 런타임 구성
 
-### `domain/entities/Player`
+진입점은 [main.ts](/Users/qoo10/projects/dread-ascent/src/main.ts)입니다.
 
-플레이어의 그리드 위치를 관리하는 순수 도메인 엔티티.
+- `GameLocalization` 생성
+- `GameHud` 생성
+- Phaser 게임 초기화
+- 씬 배열에 `MainScene`, `BattleScene` 등록
 
-- 위치와 함께 전투 스탯(`health`, `maxHealth`, `attack`, `defense`, `movementSpeed`) 및 누적 경험치(`experience`)를 유지한다
-- `reset()`, `restore()`, `applyStatModifier()`가 `movementSpeed`를 함께 반영해 런 진행 중 이동 체감이 보존된다
-- `applyDamage()`, `gainExperience()`, `isDead()`로 전투/진행 상태를 직접 갱신한다
+실행 중 역할 분리:
 
-```typescript
-import { Player, Position } from './domain/entities/Player';
+- `MainScene`
+  필드 탐험, 층 생성, 적 조우, 아이템, 런 상태, 타이틀/성소/인벤토리/결과 화면 연결
+- `BattleScene`
+  카드 전투 턴 루프, 에너지/드로우/상태이상/적 intent/UI 패널 처리
+- `GameHud`
+  DOM 기반 상단 HUD, 타이틀 오버레이, 성소, 카드 모음집, 인벤토리, 보상, 결과 화면
 
-const player = new Player({ x: 5, y: 3 });
-player.moveTo(6, 3);
-console.log(player.position); // { x: 6, y: 3 }
-```
+## 디렉터리 역할
 
----
+### `src/domain`
 
-### `domain/entities/Enemy`
+- `entities/`
+  카드, 적, 플레이어, 아이템, 전투 스탯 같은 데이터 모델
+- `services/`
+  카드 효과, 상태이상, 덱 관리, 아이템, 층 진행, 영혼 파편, 메타 업그레이드 같은 규칙 로직
 
-적의 위치와 전투 스탯을 보관하는 도메인 엔티티.
+이 레이어는 Phaser에 기대지 않는 순수 TypeScript 로직이 중심입니다.
 
-- `id`, `label`, `position`, `stats`를 유지한다
-- `experienceReward`와 `lastKnownPlayerPosition`을 포함해 보상과 추적 상태를 표현한다
-- `applyDamage()`와 `isDead()`로 전투 결과를 반영한다
+### `src/scenes`
 
-```typescript
-import { Enemy } from './domain/entities/Enemy';
+- `MainScene.ts`
+  탐험 루프의 중심
+- `BattleScene.ts`
+  카드 전투 전용 씬
+- `controllers/`
+  `InputController`, `OverlayController`
+- `directors/`
+  `FloorDirector`, `BattleDirector`
+- `synchronizers/`
+  `RenderSynchronizer`, `MovementAnimator`, 이동 duration 정책
 
-const enemy = new Enemy(
-    'enemy-1',
-    'Enemy 1',
-    { x: 12, y: 8 },
-    { health: 100, maxHealth: 100, attack: 10, defense: 5, movementSpeed: 100 },
-);
-```
+### `src/infra/rot`
 
----
+ROT.js에 의존하는 구현을 모읍니다.
 
-### `domain/services/VisibilityService`
+- `MapGenerator`
+- `RotFovCalculator`
+- `RotPathFinder`
+- `RotTurnScheduler`
 
-FOV 계산 결과와 탐험 이력을 관리하는 도메인 서비스.
+### `src/ui`
 
-- 생성 시 맵 크기와 `FieldOfViewCalculator` 구현체를 주입받는다.
-- `recalculate(origin, radius)` 호출 시 `VisibilitySnapshot`을 반환한다.
-- 탐험한 타일은 시야에서 벗어나도 `explored` 상태로 유지된다.
+- `GameHud.ts`
+  DOM HUD와 오버레이 렌더러
+- `GameLocalization.ts`
+  한/영 로케일 텍스트와 저장
+- `gameHud.css`
+  HUD 스타일
 
-```typescript
-import { VisibilityService } from './domain/services/VisibilityService';
-import { RotFovCalculator } from './infra/rot/RotFovCalculator';
+### `src/shared`
 
-const calculator = new RotFovCalculator((x, y) => tiles[y][x] === 0);
-const service = new VisibilityService(40, 30, calculator);
+- `types/`
+  공용 타입
+- `utils/`
+  셔플, 위치 키, 서명 숫자 등 범용 유틸
 
-// 플레이어 이동 후 호출
-const snapshot = service.recalculate({ x: 10, y: 8 }, 8);
+### `src/app`
 
-// snapshot.tiles[y][x] === 'visible' | 'explored' | 'hidden'
-```
+현재 저장소에는 디렉터리만 있고 활성 파일은 없습니다.
+향후 앱 레벨 bootstrap/config 확장 슬롯으로 보는 편이 맞습니다.
 
-**`FieldOfViewCalculator` 인터페이스** (테스트 시 교체 가능):
+## 주요 데이터 흐름
 
-```typescript
-export interface FieldOfViewCalculator {
-    computeVisibleTiles(origin: GridPosition, radius: number): GridPosition[];
-}
-```
+### 탐험
 
----
+1. `InputController`가 이동 입력을 받음
+2. `MainScene`가 이동/충돌/적 조우 판정
+3. `FloorDirector`, `RenderSynchronizer`, `BattleDirector`가 후속 처리
+4. `GameHud`와 오버레이 상태를 갱신
+5. 필요하면 `RunPersistenceService`로 현재 런 저장
 
-### `domain/services/FloorProgressionService`
+### 전투
 
-현재 층 번호와 다음 층의 유형(`normal` / `safe`)을 결정하는 순수 도메인 서비스.
+1. 적과 조우하면 `BattleScene` 실행
+2. `DrawCycleService`, `EnergyService`, `CardEffectService`, `StatusEffectService`로 턴 처리
+3. 결과를 `BattleSceneResult`로 `MainScene`에 반환
+4. `MainScene`가 적 제거, 보상, 경험치, 종료 상태를 정리
 
-- 시작 상태는 항상 `1층 / normal`
-- `advance()` 호출 시 층수를 1 증가시키고, 일정 확률(`25%`)로 휴식 층을 선택한다
-- 난수 의존성을 `RandomSource` 인터페이스로 분리해 단위 테스트에서 제어할 수 있다
+### 메타 진행
 
-```typescript
-import { FloorProgressionService } from './domain/services/FloorProgressionService';
+1. `OverlayController`가 타이틀/성소/결과 UI 상태 관리
+2. `SoulShardService`, `MetaProgressionService`, `CardCollectionService`가 메타 데이터 제공
+3. `GameHud`가 타이틀 오버레이와 성소 목록을 렌더
 
-const floors = new FloorProgressionService();
+## 현재 구조에서 알아둘 점
 
-floors.getSnapshot(); // { number: 1, type: 'normal' }
-floors.advance(); // { number: 2, type: 'normal' | 'safe' }
-```
-
----
-
-### `domain/services/EnemySpawnerService`
-
-현재 층 정보와 방 목록을 바탕으로 적을 배치하고 층수 기반 스탯을 계산하는 도메인 서비스.
-
-- 시작 방을 제외한 방들에서만 적을 고른다
-- `safe` 층에서는 적을 생성하지 않는다
-- 적 스탯은 층수에 따라 선형 증가하며, `movementSpeed`는 기준값을 유지한다
-- 난수 의존성을 분리해 테스트에서 스폰 위치를 고정할 수 있다
-
-```typescript
-import { EnemySpawnerService } from './domain/services/EnemySpawnerService';
-
-const spawner = new EnemySpawnerService();
-const enemies = spawner.spawn({
-    floorNumber: 3,
-    floorType: 'normal',
-    tiles,
-    rooms,
-    blockedPositions: [playerSpawn, stairsPosition],
-});
-```
-
----
-
-### `domain/services/RunPersistenceService`
-
-런 상태를 로컬 저장소에 저장하고 복원하는 도메인 서비스.
-
-- 플레이어 스냅샷의 `CombatStats`를 그대로 저장/복원하며, `movementSpeed`가 없던 과거 데이터도 기본값으로 보정한다
-- 저장 포맷은 `status`, `floor`, `player`, `inventory`, `deck`, `defeatedEnemyCount`를 유지한다
-- 유효하지 않은 스냅샷은 복원하지 않고 `undefined`를 반환한다
-
-```typescript
-import { RunPersistenceService } from './domain/services/RunPersistenceService';
-
-const persistence = new RunPersistenceService();
-const snapshot = persistence.load();
-```
-
----
-
-### `domain/services/CardCollectionService`
-
-이전 하강에서 확보한 카드 카탈로그를 로컬 저장소에 누적 기록하고 타이틀 카드 모음집에 공급하는 도메인 서비스.
-
-- `CardCatalog` 템플릿을 기준으로 전체 카드 목록과 해금 상태를 스냅샷으로 만든다
-- 덱 카드 인스턴스를 `catalogId`로 역추적해 중복 없이 누적 저장한다
-- 컬렉션 저장은 활성 런 저장과 분리된 메타 진행 데이터로 취급한다
-
-```typescript
-import { CardCollectionService } from './domain/services/CardCollectionService';
-
-const collection = new CardCollectionService();
-const snapshot = collection.getSnapshot();
-```
-
----
-
-### `domain/services/EnemyAiService`
-
-적 개체의 시야 판정, 추적, 마지막 목격 위치 기억, 공격 선택을 담당하는 도메인 서비스.
-
-- `FieldOfViewCalculator`와 `PathFinder` 인터페이스를 주입받아 외부 라이브러리 의존을 격리한다
-- 플레이어가 보이면 추적하고, 보이지 않으면 마지막 위치까지 수색한다
-- 인접 시 이동 대신 `attack` 행동을 반환하고 실제 데미지 처리는 다음 Task로 넘긴다
-
-```typescript
-import { EnemyAiService } from './domain/services/EnemyAiService';
-
-const ai = new EnemyAiService(pathFinder, fovCalculator, 8);
-const action = ai.decide(enemy, player.position);
-```
-
----
-
-### `domain/services/CombatService`
-
-전투 공식, 크리티컬 판정, 남은 체력 계산을 담당하는 도메인 서비스.
-
-- 시스템 문서의 `damage = max(1, attack - defense)` 공식을 적용한다
-- `critRate`, `critMultiplier`를 주입 가능한 난수 소스로 평가한다
-- 실제 체력 감소 반영은 엔티티(`Player`, `Enemy`)가 담당하고, 서비스는 계산 결과를 반환한다
-
-```typescript
-import { CombatService } from './domain/services/CombatService';
-
-const combat = new CombatService();
-const result = combat.resolveAttack(player.stats, enemy.stats);
-```
-
----
-
-### `ui/GameHud`
-
-Phaser 캔버스와 분리된 HTML/CSS HUD 오버레이 컴포넌트.
-
-- 상단 카드에 `Floor`, `Health`, `Experience`, `Turn`, `Enemies`, `State`를 표시한다
-- 하단 `Tower Feed` 로그에 최근 6개의 메시지를 유지한다
-- 메시지 톤(`combat`, `danger`, `item`, `travel`, `system`)에 따라 시각적 강조를 다르게 적용한다
-- `MainScene`이 전달하는 상태 스냅샷과 로그 이벤트만 렌더링하고 게임 규칙은 포함하지 않는다
-
-```typescript
-import { GameHud } from './ui/GameHud';
-
-const hud = new GameHud(document.getElementById('hud-root')!);
-hud.updateStatus({
-    floorNumber: 2,
-    floorType: 'Normal',
-    health: 34,
-    maxHealth: 40,
-    experience: 25,
-    activeTurn: 'Round 2 · Player',
-    enemyCount: 3,
-    isGameOver: false,
-});
-hud.pushLog('Player hits Enemy 1 for 4 damage.', 'combat');
-```
-
----
-
-### `infra/rot/MapGenerator`
-
-rot-js 기반으로 현재 층 유형에 맞는 맵 데이터를 생성하는 인프라 클래스.
-
-```typescript
-import { MapGenerator } from './infra/rot/MapGenerator';
-
-const mapData = MapGenerator.generate(40, 30, { floorType: 'normal' });
-// mapData.tiles[y][x] === 0 (floor) | 1 (wall) | 2 (stairs) | 3 (rest)
-// mapData.playerSpawn / mapData.stairsPosition / mapData.restPoints 제공
-```
-
-**생성 규칙**
-
-- `normal` 층: rot-js `Digger`로 일반 던전을 만들고, 시작 방과 가장 먼 방 쪽에 계단을 배치한다
-- `safe` 층: 적이 없는 단일 성소 레이아웃을 만들고, 중앙에 휴식 지점(`REST`)과 출구 계단을 둔다
-
----
-
-### `infra/rot/RotFovCalculator`
-
-`FieldOfViewCalculator` 인터페이스를 rot-js `ROT.FOV.PreciseShadowcasting`으로 구현하는 어댑터.
-
-```typescript
-import { RotFovCalculator } from './infra/rot/RotFovCalculator';
-
-const calculator = new RotFovCalculator((x, y) => tiles[y][x] === 0);
-const visibleTiles = calculator.computeVisibleTiles({ x: 10, y: 8 }, 8);
-// [{ x: 10, y: 8 }, { x: 11, y: 8 }, ...]
-```
-
----
-
-### `infra/rot/RotPathFinder`
-
-`PathFinder` 인터페이스를 rot.js `ROT.Path.AStar`로 구현하는 어댑터.
-
-```typescript
-import { RotPathFinder } from './infra/rot/RotPathFinder';
-
-const pathFinder = new RotPathFinder((x, y) => tiles[y][x] === 0);
-const path = pathFinder.findPath({ x: 1, y: 1 }, { x: 8, y: 4 });
-```
-
----
-
-### `scenes/synchronizers/MovementDurationPolicy`
-
-스프라이트 이동 애니메이션의 duration을 `movementSpeed`에 맞춰 계산하는 브리지.
-
-- `movementSpeed=100`을 기준으로 `150ms`를 반환한다
-- `75ms ~ 300ms` 범위로 clamp하여 극단적인 값이 화면을 깨지 않도록 한다
-- visible enemy가 5명 이상일 때는 `100ms` 상한을 추가로 적용해 다수 적 이동 최적화와 합성한다
-- `SpriteMovementDurationPolicy`는 sprite-instance와 stat 값을 연결해 `MovementAnimator`가 도메인 스탯을 직접 알 필요가 없도록 한다
-
-```typescript
-import {
-    getComposedEnemyMovementDurationMs,
-    getMovementDurationMs,
-} from './scenes/synchronizers/MovementDurationPolicy';
-
-console.log(getMovementDurationMs(100)); // 150
-console.log(getComposedEnemyMovementDurationMs(150, 5)); // 100
-```
-
----
-
-### `scenes/MainScene`
-
-게임의 메인 씬. 입력 처리와 렌더링만 담당한다.
-
-**책임**:
-1. `FloorProgressionService` 스냅샷에 따라 현재 층 맵을 생성하고 렌더링
-2. 키보드 입력 → `Player.moveTo()` 호출
-3. `EnemySpawnerService` 결과를 적 스프라이트와 턴 큐 actor로 반영하고, `movementSpeed`를 렌더링 브리지에 바인딩
-4. 플레이어가 적 방향으로 이동하면 `CombatService`를 통해 범프 공격을 수행
-5. 플레이어 턴 종료 후 각 적에 대해 `EnemyAiService`를 실행해 이동/공격을 처리하고, `movementSpeed` 기반 duration 정책을 적용한다
-6. 이동 후 `VisibilityService.recalculate()` 호출
-7. 계단 타일 진입 시 다음 층으로 전환하고 턴 큐를 재초기화
-8. 스냅샷 기반으로 타일과 적 스프라이트의 표시 상태를 업데이트
-9. `GameHud`에 DOM HUD 상태와 메시지 로그를 전달
-
-**책임 아님**: FOV 계산, 탐험 상태 저장, 충돌 규칙 정의, movementSpeed 수치 산정 자체
-
----
-
-## 렌더링 설정
-
-| 항목 | 값 |
-|------|-----|
-| 캔버스 크기 | 800 × 600 |
-| 타일 크기 | 32 × 32 px |
-| 맵 크기 | 40 × 30 타일 (1280 × 960 px) |
-| 카메라 줌 | 1.5× |
-| FOV 반경 | 8 타일 |
-
----
-
-## 테스트 전략
-
-| 계층 | 테스트 유형 | 도구 |
-|------|------------|------|
-| `domain/` | 단위 테스트 | Vitest |
-| `infra/` | 통합 테스트 | Vitest (예정) |
-| `ui/` | 단위 테스트 | Vitest |
-| `scenes/` | E2E 스모크 | Playwright (예정) |
-
-도메인 계층은 외부 의존성 없이 테스트 가능하므로, `FieldOfViewCalculator` 같은 인터페이스를 테스트용 구현체로 교체하여 단위 테스트를 작성한다. HUD처럼 브라우저 DOM이 필요한 UI 계층은 가벼운 가짜 `HTMLElement`로 상태 반영과 로그 누적만 검증한다.
+- `BattleDirector`는 아직 남아 있는 보조 전투 경로입니다.
+  덱이 비어 있을 때 `MainScene`에서 이 경로로 폴백할 수 있습니다.
+- 세부 밸런스와 상태 전이는 `ai-dev-team/artifacts/contracts/`의 계약 파일과 함께 관리됩니다.
+- `docs/`는 입문용 요약이고, 세부 계약/시스템 의도는 내부 아티팩트 문서를 참조합니다.

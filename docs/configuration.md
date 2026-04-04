@@ -1,103 +1,96 @@
 # Configuration
 
-Dread Ascent의 게임 시스템 설정과 밸런스 값을 설명합니다. 대부분의 값은 소스 코드 내 상수로 정의되어 있습니다.
+이 문서는 현재 코드에 박혀 있는 주요 런타임/밸런스/저장 설정을 빠르게 찾기 위한 요약입니다.
 
-## 1. Inventory & Items
+## 런타임
 
-- **`DEFAULT_INVENTORY_SLOT_CAPACITY`**: 12
-  - 플레이어가 소지할 수 있는 아이템의 최대 개수입니다.
-- **`DEFAULT_MAX_ITEMS_PER_FLOOR`**: 3
-  - 층마다 스폰되는 무작위 아이템의 최대 개수입니다. (안전 층 제외)
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| 화면 크기 | `800 x 600` | `src/main.ts` |
+| 렌더러 | `Phaser.AUTO` | `src/main.ts` |
+| 픽셀 아트 | `true` | `src/main.ts` |
+| 등록 씬 | `MainScene`, `BattleScene` | `src/main.ts` |
 
-### Item Rarity & Scaling
-아이템 등급에 따라 장비의 기본 능력치가 배율로 적용됩니다.
-- **COMMON**: 1.0x (기본)
-- **RARE**: 1.25x
-- **LEGENDARY**: 1.6x
+## 전투 리소스
 
----
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| 최대 에너지 | `3` | `COMBAT_RESOURCE_BALANCE.maxEnergy` |
+| 턴당 기본 드로우 | `5` | `COMBAT_RESOURCE_BALANCE.cardsPerTurn` |
+| 최대 손패 | `10` | `COMBAT_RESOURCE_BALANCE.maxHandSize` |
+| 카드 보상 오퍼 수 | `3` | `COMBAT_RESOURCE_BALANCE.rewardOfferSize` |
 
-## 2. Card Battle & Deck Management
+## 시작 덱과 덱 상한
 
-카드 배틀의 덱 구성 및 적의 카드 템플릿과 관련된 설정입니다.
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| 시작 덱 | `Strike x4`, `Fortify x3` | `STARTER_DECK_COMPOSITION` |
+| 최대 덱 크기 | `20` | `DECK_MAX_SIZE` |
 
-### Deck Constants
-- **`DECK_MAX_SIZE`**: 20 (임시 최대 덱 크기)
-- **`HAND_SIZE`**: 3 (매 라운드 뽑는 카드의 수)
-- **`STARTER_DECK_TEMPLATE`**: 런 시작 시 플레이어에게 주어지는 기본 카드 구성
-  - 공격(Attack) 3장 (기본 파워 8)
-  - 수비(Guard) 2장 (기본 파워 5)
+## 카드 드롭
 
-### Card Drop & Scaling
-적 처치 시 카드 획득과 관련된 설정입니다.
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| 일반 적 드롭 확률 | `0.3` | `NORMAL_DROP_RATE` |
+| 엘리트 적 드롭 확률 | `0.6` | `ELITE_DROP_RATE` |
+| 보스 드롭 확률 | `1.0` | `BOSS_DROP_RATE` |
 
-- **`NORMAL_DROP_RATE`**: 0.3 (30%)
-- **`ELITE_DROP_RATE`**: 0.6 (60%)
-- **`BOSS_DROP_RATE`**: 1.0 (100%, 확정 드롭)
-- **`BASE_DROP_CARD_POWER`**: 5 (드롭 카드의 기본 파워)
-- **`POWER_SCALING_PER_FLOOR`**: 0.5 (층당 카드 파워 증가량)
-  - 공식: `round(BASE_DROP_CARD_POWER + floorNumber * 0.5)`
+보상 오퍼 구성:
 
----
+- 1장: 현재 덱 방향성 아키타입
+- 1장: 중립 카드
+- 1장: 랜덤 슬롯
 
-## 3. Enemy & Difficulty Scaling
+## 층 진행
 
-층이 올라갈수록 적들의 기본 능력치가 상승하며, 아키타입에 따라 추가 보너스가 부여됩니다.
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| 안전지대 확률 | `0.25` | `DEFAULT_SAFE_FLOOR_CHANCE` |
+| 보스층 번호 | `100` | `BOSS_FLOOR_NUMBER` |
 
-### 기본 스케일링 (층당 증가량)
-- **체력**: +10 HP
-- **공격력**: +1 ATK
-- **방어력**: +1 DEF
-- **경험치**: +5 EXP (기본 25)
+## 인벤토리
 
-### 아키타입 (Enemy Archetypes)
-| ID | 이름 | 출현 층 | 보너스 (HP/ATK/DEF) |
-|----|------|---------|---------------------|
-| `ash-crawler` | Ash Crawler | 1 ~ 45F | +0 / +0 / +0 |
-| `blade-raider` | Blade Raider | 20 ~ 80F | +20 / +2 / +0 |
-| `dread-sentinel` | Dread Sentinel | 50 ~ 99F | +40 / +1 / +3 |
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| 층당 기본 아이템 수 | `3` | `DEFAULT_MAX_ITEMS_PER_FLOOR` |
+| 인벤토리 슬롯 | `12` | `DEFAULT_INVENTORY_SLOT_CAPACITY` |
 
-### 특수 등급 (Elite & Boss)
-- **Elite (확률 10%)**: 체력 1.5x, 공격 +4, 방어 +3, 경험치 2.0x.
-- **Final Boss (100F)**: 체력 2.0x, 공격 +18, 방어 +12, 경험치 4.0x.
+## 상태이상
 
----
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| Vulnerable 배율 | `1.5` | `STATUS_EFFECT_BALANCE.vulnerableDamageMultiplier` |
+| Weak 배율 | `0.75` | `STATUS_EFFECT_BALANCE.weakDamageMultiplier` |
+| Frail Block 배율 | `0.75` | `STATUS_EFFECT_BALANCE.frailBlockMultiplier` |
+| Poison 스택당 피해 | `1` | `STATUS_EFFECT_BALANCE.poison.damagePerStack` |
+| Poison 턴당 감소 | `1` | `STATUS_EFFECT_BALANCE.poison.stackDecayPerTurn` |
 
-## 4. Floor & Progression
+## 영혼 파편과 메타 진행
 
-- **`BOSS_FLOOR_NUMBER`**: 100
-  - 최종 보스가 확정적으로 등장하는 층입니다.
-- **`SAFE_FLOOR_CHANCE`**: 25%
-  - 다음 층이 적이 없는 '안전 층'일 확률입니다. (보스 층 제외)
+| 항목 | 값 | 위치 |
+|------|-----|------|
+| 층당 영혼 파편 | `10` | `SOUL_SHARDS_PER_FLOOR` |
+| 처치당 영혼 파편 | `3` | `SOUL_SHARDS_PER_DEFEATED_ENEMY` |
 
----
+성소 업그레이드:
 
-## 5. Meta Progression (Sanctuary)
+| 업그레이드 | 효과 | 기본 비용 | 비용 증가 |
+|-----------|------|-----------|-----------|
+| `Vitality` | 시작 HP `+10` | `20` | `+10` |
+| `Ferocity` | 시작 ATK `+2` | `25` | `+15` |
+| `Bulwark` | 시작 DEF `+1` | `20` | `+12` |
 
-영구 강화 시스템의 비용과 보너스 설정입니다.
+## 저장 키
 
-| 항목 | 보너스 (Lv당) | 기본 비용 | 비용 증가폭 | 설명 |
-|------|:------------:|:---------:|:----------:|------|
-| Vitality (HP) | +10 | 20 | +10 | 최대 체력 상승 |
-| Ferocity (ATK) | +2 | 25 | +15 | 기본 공격력 상승 |
-| Bulwark (DEF) | +1 | 20 | +12 | 기본 방어력 상승 |
+| 키 | 내용 |
+|----|------|
+| `dread-ascent.run-state` | 현재 런 상태 |
+| `dread-ascent.soul-shards` | 누적 영혼 파편 |
+| `dread-ascent.meta-progression` | 성소 업그레이드 레벨 |
+| `dread-ascent.card-collection` | 카드 모음집 해금 목록 |
+| `dread-ascent.locale` | 선택한 언어 |
 
----
+## 주의할 점
 
-## 6. Persistence & Storage
-
-브라우저의 `localStorage`를 사용하여 데이터를 영구 저장합니다.
-
-- **Card Collection**: `dread-ascent.card-collection`
-  - 이전 하강에서 한 번이라도 덱에 들어온 카드의 카탈로그 ID를 누적 저장합니다.
-- **Meta Progression**: `dread-ascent.meta-progression`
-- **Run State (Active Game)**: `dread-ascent.run-state`
-  - 현재 진행 중인 게임의 층, 인벤토리, 스탯 정보를 포함합니다.
-
----
-
-## 7. UI 및 조작
-
-- **인벤토리**: `Tab` 또는 `I` 키로 토글합니다.
-- **취소/뒤로**: `Escape` 키를 사용하여 메뉴를 닫거나 이전 화면으로 이동합니다.
-- **아이템 습득**: 아이템이 있는 타일로 이동하면 자동으로 습득합니다. (인벤토리 여유가 있을 때)
+- `ai-dev-team/artifacts/` 문서에 있는 일부 버전/수치는 현재 `package.json` 및 실제 코드와 다를 수 있습니다.
+- 값을 바꿀 때는 `CombatBalance.ts`, 개별 서비스 상수, 계약 파일이 함께 어긋나지 않는지 확인해야 합니다.
