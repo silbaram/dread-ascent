@@ -49,3 +49,7 @@ yarn-error.log*
 # ADA
 ai-dev-team/
 sprints/
+.agents/
+.claude/
+.codex/
+.gemini/
