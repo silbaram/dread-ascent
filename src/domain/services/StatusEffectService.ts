@@ -1,17 +1,17 @@
 // ---------------------------------------------------------------------------
-// Status Effect Service — 상태이상 적용/계산/턴 종료 도메인 로직 (TASK-036)
+// Status Effect Service — 상태이상 적용/계산/턴 종료 도메인 로직
 // ---------------------------------------------------------------------------
 
 import { STATUS_EFFECT_BALANCE } from './CombatBalance';
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 export const STATUS_EFFECT_TYPE = {
     VULNERABLE: 'VULNERABLE',
     WEAK: 'WEAK',
     POISON: 'POISON',
+    STRENGTH: 'STRENGTH',
+    THORNS: 'THORNS',
+    REGENERATION: 'REGENERATION',
+    FRAIL: 'FRAIL',
 } as const;
 
 export type StatusEffectType = (typeof STATUS_EFFECT_TYPE)[keyof typeof STATUS_EFFECT_TYPE];
@@ -25,15 +25,20 @@ export type StatusEventType = (typeof STATUS_EVENT_TYPE)[keyof typeof STATUS_EVE
 
 export const VULNERABLE_MULTIPLIER = STATUS_EFFECT_BALANCE.vulnerableDamageMultiplier;
 export const WEAK_MULTIPLIER = STATUS_EFFECT_BALANCE.weakDamageMultiplier;
+export const POISON_DAMAGE_PER_STACK = STATUS_EFFECT_BALANCE.poison.damagePerStack;
+export const FRAIL_BLOCK_MULTIPLIER = STATUS_EFFECT_BALANCE.frailBlockMultiplier;
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+type DurationStatusKey = 'vulnerable' | 'weak' | 'regeneration' | 'frail';
+type StackStatusKey = 'poison' | 'strength' | 'thorns';
 
 export interface StatusEffectState {
     readonly vulnerable: number;
     readonly weak: number;
     readonly poison: number;
+    readonly strength: number;
+    readonly thorns: number;
+    readonly regeneration: number;
+    readonly frail: number;
 }
 
 export interface StatusEffectCombatant {
@@ -44,12 +49,17 @@ export interface StatusEffectCombatant {
 
 export type StatusEffectApplication =
     | {
-        readonly type: typeof STATUS_EFFECT_TYPE.VULNERABLE | typeof STATUS_EFFECT_TYPE.WEAK;
+        readonly type: typeof STATUS_EFFECT_TYPE.VULNERABLE
+            | typeof STATUS_EFFECT_TYPE.WEAK
+            | typeof STATUS_EFFECT_TYPE.REGENERATION
+            | typeof STATUS_EFFECT_TYPE.FRAIL;
         readonly duration: number;
         readonly target: string;
     }
     | {
-        readonly type: typeof STATUS_EFFECT_TYPE.POISON;
+        readonly type: typeof STATUS_EFFECT_TYPE.POISON
+            | typeof STATUS_EFFECT_TYPE.STRENGTH
+            | typeof STATUS_EFFECT_TYPE.THORNS;
         readonly stacks: number;
         readonly target: string;
     };
@@ -78,11 +88,8 @@ export interface StatusEffectUpdateResult {
 export interface StatusEffectTurnEndResult extends StatusEffectUpdateResult {
     readonly combatant: StatusEffectCombatant;
     readonly poisonDamage: number;
+    readonly regenerationHeal: number;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function normalizeCount(value: number): number {
     if (!Number.isFinite(value)) {
@@ -91,19 +98,43 @@ function normalizeCount(value: number): number {
     return Math.max(0, Math.floor(value));
 }
 
-function decrementCount(
-    value: number,
-    amount: number = STATUS_EFFECT_BALANCE.durationDecayPerTurn,
-): number {
+function decrementCount(value: number, amount: number = STATUS_EFFECT_BALANCE.durationDecayPerTurn): number {
     if (value <= 0) {
         return 0;
     }
     return Math.max(0, value - amount);
 }
 
-// ---------------------------------------------------------------------------
-// Service
-// ---------------------------------------------------------------------------
+function getStatusValue(
+    state: Partial<StatusEffectState>,
+    key: keyof StatusEffectState,
+): number {
+    return normalizeCount(state[key] ?? 0);
+}
+
+function resolveDurationKey(type: DurationStatusKey | StatusEffectType): DurationStatusKey {
+    switch (type) {
+        case STATUS_EFFECT_TYPE.VULNERABLE:
+            return 'vulnerable';
+        case STATUS_EFFECT_TYPE.WEAK:
+            return 'weak';
+        case STATUS_EFFECT_TYPE.REGENERATION:
+            return 'regeneration';
+        default:
+            return 'frail';
+    }
+}
+
+function resolveStackKey(type: StackStatusKey | StatusEffectType): StackStatusKey {
+    switch (type) {
+        case STATUS_EFFECT_TYPE.POISON:
+            return 'poison';
+        case STATUS_EFFECT_TYPE.STRENGTH:
+            return 'strength';
+        default:
+            return 'thorns';
+    }
+}
 
 export class StatusEffectService {
     createState(): StatusEffectState {
@@ -111,31 +142,33 @@ export class StatusEffectService {
             vulnerable: 0,
             weak: 0,
             poison: 0,
+            strength: 0,
+            thorns: 0,
+            regeneration: 0,
+            frail: 0,
         };
     }
 
-    applyStatusEffect(
-        state: StatusEffectState,
-        effect: StatusEffectApplication,
-    ): StatusEffectUpdateResult {
-        if (effect.type === STATUS_EFFECT_TYPE.POISON) {
+    applyStatusEffect(state: StatusEffectState, effect: StatusEffectApplication): StatusEffectUpdateResult {
+        if ('stacks' in effect) {
             const stacks = normalizeCount(effect.stacks);
             if (stacks === 0) {
                 return { statusEffects: state, events: [] };
             }
 
-            const nextPoison = state.poison + stacks;
+            const key = resolveStackKey(effect.type);
+            const nextValue = getStatusValue(state, key) + stacks;
             return {
                 statusEffects: {
                     ...state,
-                    poison: nextPoison,
+                    [key]: nextValue,
                 },
                 events: [
                     {
                         type: STATUS_EVENT_TYPE.APPLY,
                         target: effect.target,
-                        status: STATUS_EFFECT_TYPE.POISON,
-                        value: nextPoison,
+                        status: effect.type,
+                        value: nextValue,
                     },
                 ],
             };
@@ -146,9 +179,8 @@ export class StatusEffectService {
             return { statusEffects: state, events: [] };
         }
 
-        const key = effect.type === STATUS_EFFECT_TYPE.VULNERABLE ? 'vulnerable' : 'weak';
-        const nextDuration = Math.max(state[key], duration);
-
+        const key = resolveDurationKey(effect.type);
+        const nextDuration = Math.max(getStatusValue(state, key), duration);
         return {
             statusEffects: {
                 ...state,
@@ -171,17 +203,30 @@ export class StatusEffectService {
         attackerStatusEffects: StatusEffectState,
         targetStatusEffects: StatusEffectState,
     ): number {
-        let damage = normalizeCount(baseDamage);
+        let damage = normalizeCount(baseDamage + getStatusValue(attackerStatusEffects, 'strength'));
 
-        if (attackerStatusEffects.weak > 0) {
+        if (getStatusValue(attackerStatusEffects, 'weak') > 0) {
             damage = Math.floor(damage * WEAK_MULTIPLIER);
         }
 
-        if (targetStatusEffects.vulnerable > 0) {
+        if (getStatusValue(targetStatusEffects, 'vulnerable') > 0) {
             damage = Math.floor(damage * VULNERABLE_MULTIPLIER);
         }
 
         return damage;
+    }
+
+    calculateBlockGain(baseBlock: number, statusEffects: StatusEffectState): number {
+        const block = normalizeCount(baseBlock);
+        if (getStatusValue(statusEffects, 'frail') === 0) {
+            return block;
+        }
+
+        return Math.floor(block * FRAIL_BLOCK_MULTIPLIER);
+    }
+
+    getThornsDamage(statusEffects: StatusEffectState): number {
+        return getStatusValue(statusEffects, 'thorns');
     }
 
     processTurnEnd(
@@ -190,17 +235,24 @@ export class StatusEffectService {
         target: string,
     ): StatusEffectTurnEndResult {
         const nextStatusEffects: StatusEffectState = {
-            vulnerable: decrementCount(statusEffects.vulnerable),
-            weak: decrementCount(statusEffects.weak),
+            vulnerable: decrementCount(getStatusValue(statusEffects, 'vulnerable')),
+            weak: decrementCount(getStatusValue(statusEffects, 'weak')),
             poison: decrementCount(
-                statusEffects.poison,
+                getStatusValue(statusEffects, 'poison'),
                 STATUS_EFFECT_BALANCE.poison.stackDecayPerTurn,
             ),
+            strength: getStatusValue(statusEffects, 'strength'),
+            thorns: getStatusValue(statusEffects, 'thorns'),
+            regeneration: decrementCount(
+                getStatusValue(statusEffects, 'regeneration'),
+                STATUS_EFFECT_BALANCE.regeneration.stackDecayPerTurn,
+            ),
+            frail: decrementCount(getStatusValue(statusEffects, 'frail')),
         };
 
         const events: StatusEffectEvent[] = [];
 
-        if (statusEffects.vulnerable > 0 && nextStatusEffects.vulnerable === 0) {
+        if (getStatusValue(statusEffects, 'vulnerable') > 0 && nextStatusEffects.vulnerable === 0) {
             events.push({
                 type: STATUS_EVENT_TYPE.EXPIRE,
                 target,
@@ -208,7 +260,7 @@ export class StatusEffectService {
             });
         }
 
-        if (statusEffects.weak > 0 && nextStatusEffects.weak === 0) {
+        if (getStatusValue(statusEffects, 'weak') > 0 && nextStatusEffects.weak === 0) {
             events.push({
                 type: STATUS_EVENT_TYPE.EXPIRE,
                 target,
@@ -216,7 +268,7 @@ export class StatusEffectService {
             });
         }
 
-        if (statusEffects.poison > 0 && nextStatusEffects.poison === 0) {
+        if (getStatusValue(statusEffects, 'poison') > 0 && nextStatusEffects.poison === 0) {
             events.push({
                 type: STATUS_EVENT_TYPE.EXPIRE,
                 target,
@@ -224,27 +276,38 @@ export class StatusEffectService {
             });
         }
 
-        const poisonDamage = statusEffects.poison * STATUS_EFFECT_BALANCE.poison.damagePerStack;
-        if (poisonDamage === 0) {
-            return {
-                combatant,
-                statusEffects: nextStatusEffects.vulnerable === statusEffects.vulnerable
-                    && nextStatusEffects.weak === statusEffects.weak
-                    && nextStatusEffects.poison === statusEffects.poison
-                    ? statusEffects
-                    : nextStatusEffects,
-                poisonDamage,
-                events,
-            };
+        if (getStatusValue(statusEffects, 'regeneration') > 0 && nextStatusEffects.regeneration === 0) {
+            events.push({
+                type: STATUS_EVENT_TYPE.EXPIRE,
+                target,
+                status: STATUS_EFFECT_TYPE.REGENERATION,
+            });
         }
+
+        if (getStatusValue(statusEffects, 'frail') > 0 && nextStatusEffects.frail === 0) {
+            events.push({
+                type: STATUS_EVENT_TYPE.EXPIRE,
+                target,
+                status: STATUS_EFFECT_TYPE.FRAIL,
+            });
+        }
+
+        const poisonDamage = getStatusValue(statusEffects, 'poison') * POISON_DAMAGE_PER_STACK;
+        const regenerationHeal = getStatusValue(statusEffects, 'regeneration')
+            * STATUS_EFFECT_BALANCE.regeneration.healPerStack;
+        const nextHealth = Math.min(
+            combatant.maxHealth,
+            Math.max(0, combatant.health - poisonDamage) + regenerationHeal,
+        );
 
         return {
             combatant: {
                 ...combatant,
-                health: Math.max(0, combatant.health - poisonDamage),
+                health: nextHealth,
             },
             statusEffects: nextStatusEffects,
             poisonDamage,
+            regenerationHeal,
             events,
         };
     }

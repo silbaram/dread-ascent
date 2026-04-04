@@ -5,7 +5,11 @@
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { CARD_TYPE, resetCardSequence } from '../../../src/domain/entities/Card';
-import { STARTER_DECK_COMPOSITION } from '../../../src/domain/entities/CardCatalog';
+import {
+    CARD_CATALOG_ID,
+    STARTER_DECK_COMPOSITION,
+    createCardFromCatalog,
+} from '../../../src/domain/entities/CardCatalog';
 import { resolveCardClash } from '../../../src/domain/services/CardBattleResolver';
 import {
     CardBattleService,
@@ -126,6 +130,38 @@ describe('Card Battle Integration', () => {
 
             expect(loaded).toBeDefined();
             expect(loaded!.deck).toEqual([]);
+        });
+
+        it('round-trips expanded cards without losing derived fields', () => {
+            const expandedDeck = [
+                createCardFromCatalog(CARD_CATALOG_ID.SHADOW_CLOAK),
+                createCardFromCatalog(CARD_CATALOG_ID.BLOOD_PRICE),
+                createCardFromCatalog(CARD_CATALOG_ID.BARRICADE),
+            ];
+            const storage = new MemoryStorage();
+            const persistence = new RunPersistenceService(storage);
+
+            const snapshot: RunPersistenceSnapshot = {
+                status: 'active',
+                floor: { number: 3, type: 'normal' },
+                player: {
+                    stats: { health: 84, maxHealth: 100, attack: 10, defense: 5, movementSpeed: 100 },
+                    experience: 12,
+                },
+                inventory: [],
+                deck: expandedDeck,
+                defeatedEnemyCount: 4,
+            };
+
+            persistence.save(snapshot);
+            const loaded = persistence.load();
+
+            expect(loaded?.deck).toEqual(expandedDeck);
+            expect(loaded?.deck[0]).toMatchObject({ drawCount: 1 });
+            expect(loaded?.deck[1]).toMatchObject({ selfDamage: 4, drawCount: 2 });
+            expect(loaded?.deck[2]).toMatchObject({
+                buff: { type: 'BLOCK_PERSIST', value: 1, target: 'SELF' },
+            });
         });
     });
 

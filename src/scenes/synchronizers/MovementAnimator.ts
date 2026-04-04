@@ -121,6 +121,20 @@ export class MovementAnimator {
         return this.activeTweens.size > 0;
     }
 
+    /**
+     * Cancels an active tween without forcing it to complete.
+     * Used when a floor transition or scene reset must place the sprite immediately.
+     */
+    public cancel(sprite: Phaser.GameObjects.Sprite): void {
+        const existing = this.activeTweens.get(sprite);
+        if (!existing) {
+            return;
+        }
+
+        existing.stop();
+        this.activeTweens.delete(sprite);
+    }
+
     private completeExistingTween(sprite: Phaser.GameObjects.Sprite): void {
         const existing = this.activeTweens.get(sprite);
         if (!existing) return;

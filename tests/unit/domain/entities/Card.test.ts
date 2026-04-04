@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+    CARD_ARCHETYPE,
     CARD_TYPE,
     DECK_MAX_SIZE,
     addCardToDeck,
@@ -52,6 +53,26 @@ describe('Card', () => {
             effectType: 'BLOCK',
             rarity: 'COMMON',
         });
+    });
+
+    it('normalizes statusEffects into a primary statusEffect and preserves archetype metadata', () => {
+        const card = createCard({
+            name: 'Crippling Blow',
+            type: CARD_TYPE.ATTACK,
+            power: 8,
+            archetype: CARD_ARCHETYPE.SHADOW_ARTS,
+            statusEffects: [
+                { type: 'WEAK', duration: 1 },
+                { type: 'FRAIL', duration: 1 },
+            ],
+        });
+
+        expect(card.archetype).toBe(CARD_ARCHETYPE.SHADOW_ARTS);
+        expect(card.statusEffect).toEqual({ type: 'WEAK', duration: 1 });
+        expect(card.statusEffects).toEqual([
+            { type: 'WEAK', duration: 1 },
+            { type: 'FRAIL', duration: 1 },
+        ]);
     });
 
     it('generates unique sequential ids', () => {

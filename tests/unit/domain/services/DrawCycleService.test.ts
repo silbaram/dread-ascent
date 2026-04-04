@@ -288,6 +288,39 @@ describe('DrawCycleService', () => {
     });
 
     // -----------------------------------------------------------------------
+    // discardCards
+    // -----------------------------------------------------------------------
+
+    describe('discardCards', () => {
+        it('moves the requested number of cards from the front of the hand to discard', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const cards = buildCards(8);
+            let state = service.initialize(cards);
+            state = service.drawCards(state, 4);
+
+            const discardedIds = state.hand.slice(0, 2).map((card) => card.id);
+            const keptIds = state.hand.slice(2).map((card) => card.id);
+
+            const result = service.discardCards(state, 2);
+
+            expect(result.hand.map((card) => card.id)).toEqual(keptIds);
+            expect(result.discardPile.map((card) => card.id)).toEqual(discardedIds);
+        });
+
+        it('discards the whole hand when the requested count is larger than the hand size', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const cards = buildCards(6);
+            let state = service.initialize(cards);
+            state = service.drawCards(state, 3);
+
+            const result = service.discardCards(state, 9);
+
+            expect(result.hand).toHaveLength(0);
+            expect(result.discardPile).toHaveLength(3);
+        });
+    });
+
+    // -----------------------------------------------------------------------
     // endTurn
     // -----------------------------------------------------------------------
 

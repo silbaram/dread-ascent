@@ -1,8 +1,20 @@
 // ---------------------------------------------------------------------------
-// Card Drop Service — 적 처치 시 카드 드롭 및 덱 추가 (순수 도메인 로직)
+// Card Drop Service — 적 처치 시 카드 보상 오퍼 및 덱 교체 (순수 도메인 로직)
 // ---------------------------------------------------------------------------
 
-import { CARD_TYPE, createCard, type Card, type CardType } from '../entities/Card';
+import {
+    CARD_ARCHETYPE,
+    CARD_RARITY,
+    type Card,
+    type CardArchetype,
+    type CardRarity,
+} from '../entities/Card';
+import {
+    ARCHETYPE_CARD_IDS,
+    createCardFromCatalog,
+    getCardTemplate,
+    type CardCatalogId,
+} from '../entities/CardCatalog';
 import type { EnemyKind } from '../entities/Enemy';
 import type { DeckService } from './DeckService';
 
@@ -19,7 +31,7 @@ export interface DropRandomSource {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** 일반 적 카드 드롭 확률 (PLAN-TBD-002 임시 값) */
+/** 일반 적 카드 드롭 확률 */
 export const NORMAL_DROP_RATE = 0.3;
 
 /** 엘리트 적 카드 드롭 확률 */
@@ -28,40 +40,54 @@ export const ELITE_DROP_RATE = 0.6;
 /** 보스 카드 드롭 확률 */
 export const BOSS_DROP_RATE = 1.0;
 
-/** 드롭 카드 기본 파워 */
-export const BASE_DROP_CARD_POWER = 5;
+const BUILD_ARCHETYPES = [
+    CARD_ARCHETYPE.BLOOD_OATH,
+    CARD_ARCHETYPE.SHADOW_ARTS,
+    CARD_ARCHETYPE.IRON_WILL,
+] as const satisfies readonly CardArchetype[];
 
-/** 층당 파워 스케일링 계수 (PLAN-TBD-003 임시 값) */
-export const POWER_SCALING_PER_FLOOR = 0.5;
+const RARITY_FALLBACK_ORDER = {
+    [CARD_RARITY.COMMON]: [CARD_RARITY.COMMON, CARD_RARITY.UNCOMMON, CARD_RARITY.RARE],
+    [CARD_RARITY.UNCOMMON]: [CARD_RARITY.UNCOMMON, CARD_RARITY.COMMON, CARD_RARITY.RARE],
+    [CARD_RARITY.RARE]: [CARD_RARITY.RARE, CARD_RARITY.UNCOMMON, CARD_RARITY.COMMON],
+} as const satisfies Record<CardRarity, readonly CardRarity[]>;
 
-/** 드롭 카드 이름 — 공격 */
-const ATTACK_CARD_NAMES: readonly string[] = [
-    'Wild Slash',
-    'Reckless Strike',
-    'Savage Blow',
-    'Piercing Thrust',
-];
-
-/** 드롭 카드 이름 — 수비 */
-const GUARD_CARD_NAMES: readonly string[] = [
-    'Iron Guard',
-    'Stalwart Block',
-    'Stone Wall',
-    'Parry Stance',
-];
+const RARITY_FLOOR_BAND_SIZE = 4;
+const COMMON_WEIGHT_STEP = 5;
+const RARE_WEIGHT_STEP = 2;
+const MIN_COMMON_WEIGHT = 40;
+const MAX_RARE_WEIGHT = 20;
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export const CARD_REWARD_SLOT = {
+    ARCHETYPE: 'ARCHETYPE',
+    NEUTRAL: 'NEUTRAL',
+    RANDOM: 'RANDOM',
+} as const;
+
+export type CardRewardSlot = (typeof CARD_REWARD_SLOT)[keyof typeof CARD_REWARD_SLOT];
+
+export interface CardRewardChoice {
+    readonly slot: CardRewardSlot;
+    readonly card: Card;
+    readonly catalogId: CardCatalogId;
+}
+
+export interface CardRewardOffer {
+    readonly choices: readonly CardRewardChoice[];
+    readonly biasArchetype: CardArchetype;
+    readonly rarityBand: CardRarity;
+}
 
 /** 카드 드롭 판정 결과 */
 export type CardDropResult =
     | { readonly dropped: false }
     | {
           readonly dropped: true;
-          readonly card: Card;
-          readonly addedToDeck: boolean;
-          readonly deckFull: boolean;
+          readonly offer: CardRewardOffer;
       };
 
 /** 덱이 가득 찼을 때 교체 처리 결과 */
@@ -74,7 +100,7 @@ export type CardSwapResult =
 // ---------------------------------------------------------------------------
 
 /**
- * 적 처치 시 카드 드롭 확률 판정 및 덱 추가를 담당한다.
+ * 적 처치 시 카드 드롭 확률 판정 및 3장 보상 오퍼 생성을 담당한다.
  * 도메인 순수 로직으로, Phaser 의존 없음.
  */
 export class CardDropService {
@@ -90,14 +116,14 @@ export class CardDropService {
      * @param enemyKind 적 종류 (normal / boss)
      * @param isElite 엘리트 여부
      * @param floorNumber 현재 층 번호
-     * @param deckService 플레이어 덱 서비스
+     * @param deckCards 현재 덱 카드 목록
      * @returns 드롭 결과
      */
     rollCardDrop(
         enemyKind: EnemyKind,
         isElite: boolean,
         floorNumber: number,
-        deckService: DeckService,
+        deckCards: readonly Card[],
     ): CardDropResult {
         const dropRate = this.getDropRate(enemyKind, isElite);
         const roll = this.random.next();
@@ -106,14 +132,94 @@ export class CardDropService {
             return { dropped: false };
         }
 
-        const card = this.generateDropCard(floorNumber);
-        const added = deckService.addCard(card);
-
         return {
             dropped: true,
-            card,
-            addedToDeck: added,
-            deckFull: !added,
+            offer: this.generateRewardOffer(floorNumber, deckCards),
+        };
+    }
+
+    /**
+     * 현재 덱 방향과 층수에 맞는 카드 보상 오퍼를 생성한다.
+     */
+    generateRewardOffer(floorNumber: number, deckCards: readonly Card[]): CardRewardOffer {
+        const biasArchetype = this.detectBiasArchetype(deckCards);
+        const rarityBand = this.rollRewardRarity(floorNumber);
+        const excludedCatalogIds = new Set<CardCatalogId>();
+
+        const choices: CardRewardChoice[] = [
+            this.createChoice(
+                CARD_REWARD_SLOT.ARCHETYPE,
+                ARCHETYPE_CARD_IDS[biasArchetype],
+                rarityBand,
+                excludedCatalogIds,
+            ),
+            this.createChoice(
+                CARD_REWARD_SLOT.NEUTRAL,
+                ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.NEUTRAL],
+                rarityBand,
+                excludedCatalogIds,
+            ),
+            this.createChoice(
+                CARD_REWARD_SLOT.RANDOM,
+                this.getRandomSlotCatalogIds(biasArchetype),
+                rarityBand,
+                excludedCatalogIds,
+            ),
+        ];
+
+        return {
+            choices,
+            biasArchetype,
+            rarityBand,
+        };
+    }
+
+    /**
+     * 현재 덱의 방향성을 감지한다. 방향성이 없으면 빌드 아키타입 중 하나를 시드로 선택한다.
+     */
+    detectBiasArchetype(deckCards: readonly Card[]): CardArchetype {
+        const counts = new Map<CardArchetype, number>(
+            BUILD_ARCHETYPES.map((archetype) => [archetype, 0]),
+        );
+
+        for (const card of deckCards) {
+            if (!counts.has(card.archetype)) {
+                continue;
+            }
+            counts.set(card.archetype, (counts.get(card.archetype) ?? 0) + 1);
+        }
+
+        const dominant = BUILD_ARCHETYPES.reduce<{
+            archetype: CardArchetype;
+            count: number;
+        } | null>((current, archetype) => {
+            const nextCount = counts.get(archetype) ?? 0;
+            if (!current || nextCount > current.count) {
+                return { archetype, count: nextCount };
+            }
+            return current;
+        }, null);
+
+        if (dominant && dominant.count > 0) {
+            return dominant.archetype;
+        }
+
+        return this.pickRandom(BUILD_ARCHETYPES);
+    }
+
+    /**
+     * 층수에 따른 희귀도 가중치를 계산한다.
+     */
+    getRewardRarityWeights(floorNumber: number): Record<CardRarity, number> {
+        const band = Math.max(0, Math.floor((Math.max(1, floorNumber) - 1) / RARITY_FLOOR_BAND_SIZE));
+        const common = Math.max(MIN_COMMON_WEIGHT, 60 - (band * COMMON_WEIGHT_STEP));
+        const rare = Math.min(MAX_RARE_WEIGHT, 10 + (band * RARE_WEIGHT_STEP));
+        const uncommon = 100 - common - rare;
+
+        return {
+            [CARD_RARITY.COMMON]: common,
+            [CARD_RARITY.UNCOMMON]: uncommon,
+            [CARD_RARITY.RARE]: rare,
         };
     }
 
@@ -159,37 +265,99 @@ export class CardDropService {
         return NORMAL_DROP_RATE;
     }
 
-    /**
-     * 층 기반 파워를 계산하여 드롭 카드를 생성한다.
-     * 타입(공격/수비)은 무작위로 결정된다.
-     */
-    generateDropCard(floorNumber: number): Card {
-        const power = this.calculateScaledPower(floorNumber);
-        const type = this.randomCardType();
-        const name = this.randomCardName(type);
+    private rollRewardRarity(floorNumber: number): CardRarity {
+        const weights = this.getRewardRarityWeights(floorNumber);
+        const roll = this.random.next() * 100;
 
-        return createCard({ name, type, power });
+        if (roll < weights[CARD_RARITY.COMMON]) {
+            return CARD_RARITY.COMMON;
+        }
+
+        if (roll < weights[CARD_RARITY.COMMON] + weights[CARD_RARITY.UNCOMMON]) {
+            return CARD_RARITY.UNCOMMON;
+        }
+
+        return CARD_RARITY.RARE;
     }
 
-    /**
-     * 층 기반 파워 스케일링 공식.
-     * basePower + floor * 0.5 (소수점 반올림)
-     */
-    calculateScaledPower(floorNumber: number): number {
-        return Math.round(BASE_DROP_CARD_POWER + floorNumber * POWER_SCALING_PER_FLOOR);
+    private createChoice(
+        slot: CardRewardSlot,
+        preferredCatalogIds: readonly CardCatalogId[],
+        rarityBand: CardRarity,
+        excludedCatalogIds: Set<CardCatalogId>,
+    ): CardRewardChoice {
+        const catalogId = this.selectCatalogId(preferredCatalogIds, rarityBand, excludedCatalogIds);
+        excludedCatalogIds.add(catalogId);
+
+        return {
+            slot,
+            catalogId,
+            card: createCardFromCatalog(catalogId),
+        };
     }
 
-    // -----------------------------------------------------------------------
-    // Private Helpers
-    // -----------------------------------------------------------------------
+    private selectCatalogId(
+        preferredCatalogIds: readonly CardCatalogId[],
+        rarityBand: CardRarity,
+        excludedCatalogIds: ReadonlySet<CardCatalogId>,
+    ): CardCatalogId {
+        for (const fallbackRarity of RARITY_FALLBACK_ORDER[rarityBand]) {
+            const candidates = this.filterCatalogIds(preferredCatalogIds, excludedCatalogIds, fallbackRarity);
+            if (candidates.length > 0) {
+                return this.pickRandom(candidates);
+            }
+        }
 
-    private randomCardType(): CardType {
-        return this.random.next() < 0.5 ? CARD_TYPE.ATTACK : CARD_TYPE.GUARD;
+        const anyPreferred = this.filterCatalogIds(preferredCatalogIds, excludedCatalogIds);
+        if (anyPreferred.length > 0) {
+            return this.pickRandom(anyPreferred);
+        }
+
+        const anyDroppable = this.filterCatalogIds(
+            [...new Set(Object.values(ARCHETYPE_CARD_IDS).flat())],
+            excludedCatalogIds,
+        );
+        if (anyDroppable.length > 0) {
+            return this.pickRandom(anyDroppable);
+        }
+
+        throw new Error('No available card reward candidates.');
     }
 
-    private randomCardName(type: CardType): string {
-        const names = type === CARD_TYPE.ATTACK ? ATTACK_CARD_NAMES : GUARD_CARD_NAMES;
-        const index = Math.floor(this.random.next() * names.length);
-        return names[index];
+    private filterCatalogIds(
+        catalogIds: readonly CardCatalogId[],
+        excludedCatalogIds: ReadonlySet<CardCatalogId>,
+        rarityBand?: CardRarity,
+    ): CardCatalogId[] {
+        return catalogIds.filter((catalogId) => {
+            if (excludedCatalogIds.has(catalogId)) {
+                return false;
+            }
+
+            const template = getCardTemplate(catalogId);
+            if (!template) {
+                return false;
+            }
+
+            if (rarityBand && template.params.rarity !== rarityBand) {
+                return false;
+            }
+
+            return template.params.archetype !== CARD_ARCHETYPE.CURSE;
+        });
+    }
+
+    private getRandomSlotCatalogIds(biasArchetype: CardArchetype): readonly CardCatalogId[] {
+        const preferredArchetypes = BUILD_ARCHETYPES.filter((archetype) => archetype !== biasArchetype);
+        if (preferredArchetypes.length > 0) {
+            return preferredArchetypes.flatMap((archetype) => ARCHETYPE_CARD_IDS[archetype]);
+        }
+
+        return BUILD_ARCHETYPES.flatMap((archetype) => ARCHETYPE_CARD_IDS[archetype]);
+    }
+
+    private pickRandom<T>(values: readonly T[]): T {
+        const index = Math.min(values.length - 1, Math.floor(this.random.next() * values.length));
+        return values[index];
     }
 }

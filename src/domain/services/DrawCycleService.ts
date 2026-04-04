@@ -149,6 +149,28 @@ export class DrawCycleService {
     }
 
     /**
+     * 손패에서 지정 수만큼 카드를 버린다.
+     * 현재 UI에는 선택 플로우가 없으므로 손패 앞쪽부터 순서대로 처리한다.
+     */
+    discardCards(state: DrawCycleState, count: number): DrawCycleState {
+        const discardCount = Math.max(0, Math.floor(count));
+        if (discardCount === 0 || state.hand.length === 0) {
+            return state;
+        }
+
+        const discardedCards = state.hand.slice(0, discardCount);
+        if (discardedCards.length === 0) {
+            return state;
+        }
+
+        return {
+            ...state,
+            hand: state.hand.slice(discardedCards.length),
+            discardPile: [...state.discardPile, ...discardedCards],
+        };
+    }
+
+    /**
      * 턴 종료 시 손패를 정리한다.
      * - Retain 키워드가 있는 카드는 손패에 유지한다.
      * - 그 외 카드는 버림패로 이동한다.

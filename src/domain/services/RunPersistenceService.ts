@@ -1,12 +1,21 @@
 import {
+    CARD_ARCHETYPE,
     CARD_EFFECT_TYPE,
     CARD_KEYWORD,
     CARD_RARITY,
     CARD_TYPE,
+    createCard,
     type Card,
+    type CardArchetype,
+    type CardCondition,
     type CardType,
 } from '../entities/Card';
-import { cloneCombatStats, type CombatStats } from '../entities/CombatStats';
+import {
+    DEFAULT_MOVEMENT_SPEED,
+    cloneCombatStats,
+    type CombatStats,
+} from '../entities/CombatStats';
+import { STATUS_EFFECT_TYPE } from './StatusEffectService';
 import {
     EQUIPMENT_SLOT,
     ITEM_RARITY,
@@ -35,6 +44,34 @@ export interface RunPersistenceSnapshot {
 }
 
 export const RUN_PERSISTENCE_STORAGE_KEY = 'dread-ascent.run-state';
+
+const CARD_CONDITION_TYPES = [
+    'HP_THRESHOLD',
+    'MISSING_HEALTH_DAMAGE',
+    'TURN_DAMAGE_TAKEN_AT_LEAST',
+] as const satisfies readonly CardCondition['type'][];
+
+const CARD_SCALING_SOURCES = [
+    'MISSING_HEALTH',
+    'USER_BLOCK',
+    'TARGET_DEBUFF_COUNT',
+    'TURN_DAMAGE_TAKEN',
+] as const;
+
+const CARD_BUFF_TYPES = [
+    STATUS_EFFECT_TYPE.VULNERABLE,
+    STATUS_EFFECT_TYPE.WEAK,
+    STATUS_EFFECT_TYPE.POISON,
+    STATUS_EFFECT_TYPE.STRENGTH,
+    STATUS_EFFECT_TYPE.THORNS,
+    STATUS_EFFECT_TYPE.REGENERATION,
+    STATUS_EFFECT_TYPE.FRAIL,
+    'BLOCK_PERSIST',
+    'ENEMY_ATTACK_DOWN',
+    'STRENGTH_ON_SELF_DAMAGE',
+    'POISON_MULTIPLIER',
+    'APPLY_POISON_PER_TURN',
+] as const;
 
 export class RunPersistenceService {
     private hasCachedLoad = false;
@@ -190,6 +227,7 @@ export class RunPersistenceService {
         const health = this.normalizeStat(candidate.health);
         const attack = this.normalizeStat(candidate.attack);
         const defense = this.normalizeStat(candidate.defense);
+        const movementSpeed = this.normalizePositiveStat(candidate.movementSpeed) ?? DEFAULT_MOVEMENT_SPEED;
         if (maxHealth === undefined || health === undefined || attack === undefined || defense === undefined) {
             return undefined;
         }
@@ -199,6 +237,7 @@ export class RunPersistenceService {
             maxHealth,
             attack,
             defense,
+            movementSpeed,
         };
     }
 
@@ -349,13 +388,27 @@ export class RunPersistenceService {
 
         const cost = this.normalizeStat(candidate.cost) ?? 0;
         const keywords = this.normalizeCardKeywords(candidate.keywords);
-        const effectType = this.normalizeCardEffectType(candidate.effectType)
-            ?? (type === CARD_TYPE.ATTACK ? CARD_EFFECT_TYPE.DAMAGE : CARD_EFFECT_TYPE.BLOCK);
+        const effectType = this.normalizeCardEffectType(candidate.effectType);
         const rarity = this.normalizeCardRarity(candidate.rarity) ?? CARD_RARITY.COMMON;
+        const archetype = this.normalizeCardArchetype(candidate.archetype);
+        if (candidate.statusEffect !== undefined && this.hasInvalidCardStatusEffect(candidate.statusEffect)) {
+            return undefined;
+        }
         const statusEffect = this.normalizeCardStatusEffect(candidate.statusEffect);
+        if (candidate.statusEffects !== undefined && this.hasInvalidCardStatusEffects(candidate.statusEffects)) {
+            return undefined;
+        }
+        const statusEffects = this.normalizeCardStatusEffects(candidate.statusEffects, statusEffect);
+        if (candidate.condition !== undefined && this.hasInvalidCardCondition(candidate.condition)) {
+            return undefined;
+        }
         const condition = this.normalizeCardCondition(candidate.condition);
+        if (candidate.effectPayload !== undefined && this.hasInvalidCardEffectPayload(candidate.effectPayload)) {
+            return undefined;
+        }
+        const effectPayload = this.normalizeCardEffectPayload(candidate.effectPayload);
 
-        return {
+        return createCard({
             id,
             name,
             type,
@@ -364,13 +417,27 @@ export class RunPersistenceService {
             keywords,
             effectType,
             rarity,
+            archetype: archetype ?? CARD_ARCHETYPE.NEUTRAL,
             statusEffect,
+            statusEffects,
             condition,
-        };
+            secondaryPower: this.normalizeStat(candidate.secondaryPower),
+            drawCount: this.normalizeStat(candidate.drawCount),
+            healAmount: this.normalizeStat(candidate.healAmount),
+            hitCount: this.normalizeStat(candidate.hitCount),
+            discardCount: this.normalizeStat(candidate.discardCount),
+            selfDamage: this.normalizeStat(candidate.selfDamage),
+            buff: this.normalizeCardBuff(candidate.buff),
+            effectPayload,
+        });
     }
 
     private normalizeCardType(type: unknown): CardType | undefined {
-        return type === CARD_TYPE.ATTACK || type === CARD_TYPE.GUARD
+        return type === CARD_TYPE.ATTACK
+            || type === CARD_TYPE.GUARD
+            || type === CARD_TYPE.SKILL
+            || type === CARD_TYPE.POWER
+            || type === CARD_TYPE.CURSE
             ? type
             : undefined;
     }
@@ -383,7 +450,10 @@ export class RunPersistenceService {
         return keywords.filter((keyword): keyword is Card['keywords'][number] =>
             keyword === CARD_KEYWORD.BLOCK
             || keyword === CARD_KEYWORD.EXHAUST
-            || keyword === CARD_KEYWORD.RETAIN,
+            || keyword === CARD_KEYWORD.RETAIN
+            || keyword === CARD_KEYWORD.INNATE
+            || keyword === CARD_KEYWORD.ETHEREAL
+            || keyword === CARD_KEYWORD.UNPLAYABLE,
         );
     }
 
@@ -392,14 +462,61 @@ export class RunPersistenceService {
             || effectType === CARD_EFFECT_TYPE.BLOCK
             || effectType === CARD_EFFECT_TYPE.STATUS_EFFECT
             || effectType === CARD_EFFECT_TYPE.FLEE
+            || effectType === CARD_EFFECT_TYPE.DRAW
+            || effectType === CARD_EFFECT_TYPE.HEAL
+            || effectType === CARD_EFFECT_TYPE.MULTI_HIT
+            || effectType === CARD_EFFECT_TYPE.DAMAGE_BLOCK
+            || effectType === CARD_EFFECT_TYPE.BUFF
+            || effectType === CARD_EFFECT_TYPE.DISCARD_EFFECT
+            || effectType === CARD_EFFECT_TYPE.CONDITIONAL
             ? effectType
             : undefined;
     }
 
     private normalizeCardRarity(rarity: unknown): Card['rarity'] | undefined {
-        return rarity === CARD_RARITY.COMMON || rarity === CARD_RARITY.RARE
+        return rarity === CARD_RARITY.COMMON
+            || rarity === CARD_RARITY.UNCOMMON
+            || rarity === CARD_RARITY.RARE
             ? rarity
             : undefined;
+    }
+
+    private normalizeCardArchetype(archetype: unknown): CardArchetype | undefined {
+        return archetype === CARD_ARCHETYPE.NEUTRAL
+            || archetype === CARD_ARCHETYPE.BLOOD_OATH
+            || archetype === CARD_ARCHETYPE.SHADOW_ARTS
+            || archetype === CARD_ARCHETYPE.IRON_WILL
+            || archetype === CARD_ARCHETYPE.CURSE
+            ? archetype
+            : undefined;
+    }
+
+    private normalizeCardStatusType(type: unknown): NonNullable<Card['statusEffect']>['type'] | undefined {
+        return type === STATUS_EFFECT_TYPE.VULNERABLE
+            || type === STATUS_EFFECT_TYPE.WEAK
+            || type === STATUS_EFFECT_TYPE.POISON
+            || type === STATUS_EFFECT_TYPE.STRENGTH
+            || type === STATUS_EFFECT_TYPE.THORNS
+            || type === STATUS_EFFECT_TYPE.REGENERATION
+            || type === STATUS_EFFECT_TYPE.FRAIL
+            ? type
+            : undefined;
+    }
+
+    private hasInvalidCardStatusEffect(statusEffect: unknown): boolean {
+        return statusEffect !== undefined && this.normalizeCardStatusEffect(statusEffect) === undefined;
+    }
+
+    private hasInvalidCardStatusEffects(statusEffects: unknown): boolean {
+        if (statusEffects === undefined) {
+            return false;
+        }
+
+        if (!Array.isArray(statusEffects)) {
+            return true;
+        }
+
+        return statusEffects.some((statusEffect) => this.normalizeCardStatusEffect(statusEffect) === undefined);
     }
 
     private normalizeCardStatusEffect(statusEffect: unknown): Card['statusEffect'] | undefined {
@@ -408,13 +525,43 @@ export class RunPersistenceService {
         }
 
         const candidate = statusEffect as Partial<NonNullable<Card['statusEffect']>>;
-        const type = typeof candidate.type === 'string' ? candidate.type : undefined;
+        const type = this.normalizeCardStatusType(candidate.type);
         const duration = this.normalizeStat(candidate.duration);
-        if (!type || duration === undefined) {
+        const stacks = this.normalizeStat(candidate.stacks);
+        const amount = this.normalizeStat(candidate.amount);
+        if (!type) {
             return undefined;
         }
 
-        return { type, duration };
+        if (duration === undefined && stacks === undefined && amount === undefined) {
+            return undefined;
+        }
+
+        return {
+            type,
+            duration,
+            stacks,
+            amount,
+        };
+    }
+
+    private normalizeCardStatusEffects(
+        statusEffects: unknown,
+        fallbackStatusEffect?: Card['statusEffect'],
+    ): Card['statusEffects'] | undefined {
+        if (!Array.isArray(statusEffects)) {
+            return fallbackStatusEffect ? [fallbackStatusEffect] : undefined;
+        }
+
+        const normalized = statusEffects
+            .map((statusEffect) => this.normalizeCardStatusEffect(statusEffect))
+            .filter((statusEffect): statusEffect is NonNullable<Card['statusEffect']> => !!statusEffect);
+
+        if (normalized.length > 0) {
+            return normalized;
+        }
+
+        return fallbackStatusEffect ? [fallbackStatusEffect] : undefined;
     }
 
     private normalizeCardCondition(condition: unknown): Card['condition'] | undefined {
@@ -423,13 +570,160 @@ export class RunPersistenceService {
         }
 
         const candidate = condition as Partial<NonNullable<Card['condition']>>;
-        const type = typeof candidate.type === 'string' ? candidate.type : undefined;
+        const type = this.normalizeCardConditionType(candidate.type);
         const value = this.normalizeStat(candidate.value);
         if (!type || value === undefined) {
             return undefined;
         }
 
         return { type, value };
+    }
+
+    private normalizeCardConditionType(type: unknown): CardCondition['type'] | undefined {
+        return typeof type === 'string'
+            && (CARD_CONDITION_TYPES as readonly string[]).includes(type)
+            ? type as CardCondition['type']
+            : undefined;
+    }
+
+    private hasInvalidCardCondition(condition: unknown): boolean {
+        return condition !== undefined && this.normalizeCardCondition(condition) === undefined;
+    }
+
+    private normalizeCardEffectPayload(effectPayload: unknown): Card['effectPayload'] | undefined {
+        if (!effectPayload || typeof effectPayload !== 'object') {
+            return undefined;
+        }
+
+        const candidate = effectPayload as NonNullable<Card['effectPayload']>;
+        const drawCount = this.normalizeStat(candidate.drawCount);
+        const healAmount = this.normalizeStat(candidate.healAmount);
+        const blockAmount = this.normalizeStat(candidate.blockAmount);
+        const hitCount = this.normalizeStat(candidate.hitCount);
+        const discardCount = this.normalizeStat(candidate.discardCount);
+        const selfDamage = this.normalizeStat(candidate.selfDamage);
+        const energyChange = this.normalizeOptionalStat(candidate.energyChange);
+        const scaling = candidate.scaling && typeof candidate.scaling === 'object'
+            ? {
+                source: this.normalizeCardScalingSource(candidate.scaling.source),
+                multiplier: this.normalizeOptionalStat(candidate.scaling.multiplier),
+            }
+            : undefined;
+        const buff = this.normalizeCardBuff(candidate.buff);
+        const statusEffects = this.normalizeCardStatusEffects(candidate.statusEffects);
+
+        const hasPayload = drawCount !== undefined
+            || healAmount !== undefined
+            || blockAmount !== undefined
+            || hitCount !== undefined
+            || discardCount !== undefined
+            || selfDamage !== undefined
+            || energyChange !== undefined
+            || (scaling?.source !== undefined)
+            || (buff?.type !== undefined && buff.value !== undefined)
+            || (statusEffects !== undefined && statusEffects.length > 0);
+
+        if (!hasPayload) {
+            return undefined;
+        }
+
+        return {
+            drawCount,
+            healAmount,
+            blockAmount,
+            hitCount,
+            discardCount,
+            selfDamage,
+            energyChange,
+            scaling: scaling?.source
+                ? {
+                    source: scaling.source,
+                    multiplier: scaling.multiplier ?? 1,
+                }
+                : undefined,
+            buff: buff?.type !== undefined && buff.value !== undefined
+                ? {
+                    type: buff.type,
+                    value: buff.value,
+                    duration: buff.duration,
+                    target: buff.target,
+                }
+                : undefined,
+            statusEffects,
+        };
+    }
+
+    private normalizeCardScalingSource(source: unknown): string | undefined {
+        return typeof source === 'string'
+            && (CARD_SCALING_SOURCES as readonly string[]).includes(source)
+            ? source
+            : undefined;
+    }
+
+    private normalizeCardBuff(buff: unknown): Card['buff'] | undefined {
+        if (!buff || typeof buff !== 'object') {
+            return undefined;
+        }
+
+        const candidate = buff as NonNullable<Card['buff']>;
+        const type = typeof candidate.type === 'string'
+            && (CARD_BUFF_TYPES as readonly string[]).includes(candidate.type)
+            ? candidate.type
+            : undefined;
+        const value = this.normalizeStat(candidate.value);
+        const duration = this.normalizeStat(candidate.duration);
+        const target = candidate.target === 'SELF' || candidate.target === 'TARGET'
+            ? candidate.target
+            : undefined;
+        if (!type || value === undefined) {
+            return undefined;
+        }
+
+        return {
+            type,
+            value,
+            duration,
+            target,
+        };
+    }
+
+    private hasInvalidCardEffectPayload(effectPayload: unknown): boolean {
+        if (effectPayload === undefined) {
+            return false;
+        }
+
+        if (!effectPayload || typeof effectPayload !== 'object') {
+            return true;
+        }
+
+        const candidate = effectPayload as {
+            scaling?: unknown;
+            buff?: unknown;
+            statusEffects?: unknown;
+        };
+
+        if (candidate.scaling !== undefined) {
+            if (!candidate.scaling || typeof candidate.scaling !== 'object') {
+                return true;
+            }
+            const scaling = candidate.scaling as { source?: unknown; multiplier?: unknown };
+            if (
+                this.normalizeCardScalingSource(scaling.source) === undefined
+                || this.normalizeOptionalStat(scaling.multiplier) === undefined
+            ) {
+                return true;
+            }
+        }
+
+        if (candidate.buff !== undefined && this.normalizeCardBuff(candidate.buff) === undefined) {
+            return true;
+        }
+
+        if (candidate.statusEffects !== undefined && this.hasInvalidCardStatusEffects(candidate.statusEffects)) {
+            return true;
+        }
+
+        return false;
     }
 
     private normalizeCount(value: unknown) {
@@ -472,15 +766,9 @@ export class RunPersistenceService {
     }
 
     private cloneCard(card: Card): Card {
-        return {
+        return createCard({
             ...card,
-            keywords: [...card.keywords],
-            statusEffect: card.statusEffect
-                ? { ...card.statusEffect }
-                : undefined,
-            condition: card.condition
-                ? { ...card.condition }
-                : undefined,
-        };
+            id: card.id,
+        });
     }
 }

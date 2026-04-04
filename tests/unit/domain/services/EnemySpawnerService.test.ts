@@ -92,6 +92,7 @@ describe('EnemySpawnerService', () => {
         )).toBe(true);
         expect(enemies.every((enemy) => enemy.archetypeId === 'ash-crawler')).toBe(true);
         expect(enemies.every((enemy) => enemy.isElite() === false)).toBe(true);
+        expect(enemies.every((enemy) => enemy.stats.movementSpeed === 100)).toBe(true);
         expect(new Set(enemies.map((enemy) => `${enemy.position.x},${enemy.position.y}`)).size).toBe(2);
     });
 
@@ -173,6 +174,7 @@ describe('EnemySpawnerService', () => {
         expect(enemies[0]?.archetypeId).toBe('final-boss');
         expect(enemies[0]?.label).toBe('Final Boss');
         expect(enemies[0]?.position).toEqual({ x: 2, y: 6 });
+        expect(enemies[0]?.stats.movementSpeed).toBe(100);
     });
 
     it('rejects negative enemy limits', () => {

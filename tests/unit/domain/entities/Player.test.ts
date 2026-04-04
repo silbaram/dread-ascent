@@ -33,6 +33,7 @@ describe('Player', () => {
             maxHealth: 80,
             attack: 13,
             defense: 7,
+            movementSpeed: 100,
         });
     });
 
@@ -44,6 +45,7 @@ describe('Player', () => {
         player.applyStatModifier({
             attack: 4,
             defense: 2,
+            movementSpeed: 10,
         });
 
         // Act
@@ -52,6 +54,7 @@ describe('Player', () => {
             maxHealth: 120,
             attack: 14,
             defense: 7,
+            movementSpeed: 135,
         });
 
         // Assert
@@ -60,6 +63,7 @@ describe('Player', () => {
             maxHealth: 120,
             attack: 14,
             defense: 7,
+            movementSpeed: 135,
         });
         expect(player.experience).toBe(0);
     });
@@ -74,6 +78,7 @@ describe('Player', () => {
             maxHealth: 120,
             attack: 16,
             defense: 9,
+            movementSpeed: 88,
         }, 88);
 
         // Assert
@@ -82,7 +87,20 @@ describe('Player', () => {
             maxHealth: 120,
             attack: 16,
             defense: 9,
+            movementSpeed: 88,
         });
         expect(player.experience).toBe(88);
+    });
+
+    it('applies additive movement speed modifiers with a minimum of one', () => {
+        // Arrange
+        const player = new Player({ x: 1, y: 1 });
+
+        // Act
+        const stats = player.applyStatModifier({ movementSpeed: -150 });
+
+        // Assert
+        expect(stats.movementSpeed).toBe(1);
+        expect(player.stats.movementSpeed).toBe(1);
     });
 });

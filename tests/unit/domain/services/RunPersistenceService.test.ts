@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+    CARD_ARCHETYPE,
     CARD_EFFECT_TYPE,
     CARD_KEYWORD,
     CARD_RARITY,
@@ -38,6 +39,7 @@ function createSnapshot(): RunPersistenceSnapshot {
                 maxHealth: 110,
                 attack: 14,
                 defense: 8,
+                movementSpeed: 100,
             },
             experience: 55,
         },
@@ -101,6 +103,21 @@ function createSnapshot(): RunPersistenceSnapshot {
                     value: 5,
                 },
             },
+            {
+                id: 'card-4',
+                name: 'Blood Price',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 1,
+                keywords: [],
+                effectType: CARD_EFFECT_TYPE.DRAW,
+                rarity: CARD_RARITY.UNCOMMON,
+                archetype: CARD_ARCHETYPE.BLOOD_OATH,
+                effectPayload: {
+                    drawCount: 2,
+                    selfDamage: 4,
+                },
+            },
         ],
         defeatedEnemyCount: 12,
     };
@@ -118,7 +135,25 @@ describe('RunPersistenceService', () => {
         const snapshot = service.load();
 
         // Assert
-        expect(snapshot).toEqual(createSnapshot());
+        expect(snapshot).toBeDefined();
+        expect(snapshot).toMatchObject({
+            ...createSnapshot(),
+            deck: expect.arrayContaining([
+                expect.objectContaining({ id: 'card-1', name: 'Strike', type: CARD_TYPE.ATTACK }),
+                expect.objectContaining({
+                    id: 'card-2',
+                    name: 'Weaken',
+                    statusEffect: { type: 'VULNERABLE', duration: 2 },
+                }),
+                expect.objectContaining({
+                    id: 'card-4',
+                    name: 'Blood Price',
+                    type: CARD_TYPE.SKILL,
+                    effectPayload: { drawCount: 2, selfDamage: 4 },
+                }),
+            ]),
+        });
+        expect(snapshot?.deck).toHaveLength(createSnapshot().deck.length);
         expect(service.hasActiveRun()).toBe(true);
     });
 
@@ -147,5 +182,232 @@ describe('RunPersistenceService', () => {
         // Assert
         expect(service.load()?.status).toBe('game-over');
         expect(service.hasActiveRun()).toBe(false);
+    });
+
+    it('defaults missing movementSpeed from older save data to the baseline value', () => {
+        // Arrange
+        const storage = new MemoryStorage();
+        const legacySnapshot = createSnapshot();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...legacySnapshot,
+            player: {
+                ...legacySnapshot.player,
+                stats: {
+                    health: legacySnapshot.player.stats.health,
+                    maxHealth: legacySnapshot.player.stats.maxHealth,
+                    attack: legacySnapshot.player.stats.attack,
+                    defense: legacySnapshot.player.stats.defense,
+                },
+            },
+        }));
+        const service = new RunPersistenceService(storage);
+
+        // Act
+        const snapshot = service.load();
+
+        // Assert
+        expect(snapshot?.player.stats.movementSpeed).toBe(100);
+        expect(service.hasActiveRun()).toBe(true);
+    });
+
+    it('drops invalid expanded card enums while keeping valid legacy cards', () => {
+        const storage = new MemoryStorage();
+        const snapshot = createSnapshot();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...snapshot,
+            deck: [
+                ...snapshot.deck,
+                {
+                    id: 'card-invalid',
+                    name: 'Broken Card',
+                    type: 'NOT_A_REAL_TYPE',
+                    power: 1,
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const loaded = service.load();
+
+        expect(loaded?.deck).toHaveLength(snapshot.deck.length);
+        expect(loaded?.deck.at(-1)?.name).toBe('Blood Price');
+    });
+
+    it('defaults missing optional card fields when loading legacy card entries', () => {
+        const storage = new MemoryStorage();
+        const snapshot = createSnapshot();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...snapshot,
+            deck: [
+                {
+                    id: 'legacy-attack',
+                    name: 'Legacy Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 8,
+                },
+                {
+                    id: 'card-invalid',
+                    name: 'Broken Legacy',
+                    power: 2,
+                    type: 'INVALID_TYPE',
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const loaded = service.load();
+
+        expect(loaded?.deck).toHaveLength(1);
+        expect(loaded?.deck[0]).toMatchObject({
+            id: 'legacy-attack',
+            name: 'Legacy Strike',
+            type: CARD_TYPE.ATTACK,
+            power: 8,
+            cost: 0,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+            rarity: CARD_RARITY.COMMON,
+            archetype: CARD_ARCHETYPE.NEUTRAL,
+            keywords: [],
+        });
+    });
+
+    it('loads legacy snapshots without deck field as empty deck', () => {
+        const storage = new MemoryStorage();
+        const snapshot = createSnapshot();
+        const { deck, ...snapshotWithoutDeck } = snapshot;
+
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify(snapshotWithoutDeck));
+        const service = new RunPersistenceService(storage);
+
+        const loaded = service.load();
+
+        expect(loaded?.deck).toEqual([]);
+        expect(service.hasActiveRun()).toBe(true);
+    });
+
+    it('reconstructs derived expanded card fields from persisted payload data', () => {
+        const storage = new MemoryStorage();
+        const snapshot = createSnapshot();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...snapshot,
+            deck: [
+                {
+                    id: 'shadow-cloak',
+                    name: 'Shadow Cloak',
+                    type: CARD_TYPE.GUARD,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                    rarity: CARD_RARITY.UNCOMMON,
+                    archetype: CARD_ARCHETYPE.SHADOW_ARTS,
+                    effectPayload: { drawCount: 1 },
+                },
+                {
+                    id: 'blood-shield',
+                    name: 'Blood Shield',
+                    type: CARD_TYPE.GUARD,
+                    power: 12,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                    rarity: CARD_RARITY.UNCOMMON,
+                    archetype: CARD_ARCHETYPE.BLOOD_OATH,
+                    effectPayload: { selfDamage: 3 },
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const loaded = service.load();
+
+        expect(loaded?.deck[0]).toMatchObject({
+            name: 'Shadow Cloak',
+            drawCount: 1,
+            effectPayload: { drawCount: 1 },
+        });
+        expect(loaded?.deck[1]).toMatchObject({
+            name: 'Blood Shield',
+            selfDamage: 3,
+            effectPayload: { selfDamage: 3 },
+        });
+    });
+
+    it('uses type-specific default effect types for legacy expanded cards', () => {
+        const storage = new MemoryStorage();
+        const snapshot = createSnapshot();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...snapshot,
+            deck: [
+                {
+                    id: 'legacy-skill',
+                    name: 'Legacy Skill',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                },
+                {
+                    id: 'legacy-power',
+                    name: 'Legacy Power',
+                    type: CARD_TYPE.POWER,
+                    power: 0,
+                },
+                {
+                    id: 'legacy-curse',
+                    name: 'Legacy Curse',
+                    type: CARD_TYPE.CURSE,
+                    power: 0,
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const loaded = service.load();
+
+        expect(loaded?.deck.map((card) => card.effectType)).toEqual([
+            CARD_EFFECT_TYPE.DRAW,
+            CARD_EFFECT_TYPE.BUFF,
+            CARD_EFFECT_TYPE.CONDITIONAL,
+        ]);
+    });
+
+    it('drops cards with invalid nested payload enums instead of loading corrupted effects', () => {
+        const storage = new MemoryStorage();
+        const snapshot = createSnapshot();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...snapshot,
+            deck: [
+                {
+                    id: 'broken-buff',
+                    name: 'Broken Buff',
+                    type: CARD_TYPE.POWER,
+                    power: 0,
+                    effectType: CARD_EFFECT_TYPE.BUFF,
+                    effectPayload: {
+                        buff: { type: 'NOT_REAL', value: 2, target: 'SELF' },
+                    },
+                },
+                {
+                    id: 'broken-scaling',
+                    name: 'Broken Scaling',
+                    type: CARD_TYPE.ATTACK,
+                    power: 0,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    effectPayload: {
+                        scaling: { source: 'NOPE', multiplier: 2 },
+                    },
+                },
+                {
+                    id: 'valid-card',
+                    name: 'Valid Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 7,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const loaded = service.load();
+
+        expect(loaded?.deck).toHaveLength(1);
+        expect(loaded?.deck[0].name).toBe('Valid Strike');
     });
 });

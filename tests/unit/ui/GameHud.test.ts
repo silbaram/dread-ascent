@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { CardCollectionSnapshot } from '../../../src/domain/services/CardCollectionService';
+import type { CardRewardOffer } from '../../../src/domain/services/CardDropService';
 import { GameLocalization } from '../../../src/ui/GameLocalization';
 import { GameHud } from '../../../src/ui/GameHud';
 
@@ -20,6 +22,7 @@ const HUD_ROLES = [
     'title-soul-shards',
     'title-continue',
     'title-message',
+    'title-collection',
     'title-sanctuary',
     'gameover-overlay',
     'gameover-floor',
@@ -39,6 +42,9 @@ const HUD_ROLES = [
     'card-swap-overlay',
     'card-swap-new',
     'card-swap-list',
+    'reward-offer-overlay',
+    'reward-offer-copy',
+    'reward-offer-list',
 ] as const;
 
 class FakeElement {
@@ -124,6 +130,142 @@ function createHud(localization = new GameLocalization()) {
     return { root, hud, localization };
 }
 
+function createRunOverlayHandlers(overrides: Partial<Parameters<GameHud['setRunOverlayHandlers']>[0]> = {}) {
+    return {
+        onContinueRun: vi.fn(),
+        onReturnToTitle: vi.fn(),
+        onStartNewRun: vi.fn(),
+        onOpenCardCollection: vi.fn(),
+        onCloseCardCollection: vi.fn(),
+        onOpenSanctuary: vi.fn(),
+        onCloseSanctuary: vi.fn(),
+        onPurchaseUpgrade: vi.fn(),
+        ...overrides,
+    };
+}
+
+function createClosestTarget(selector: string) {
+    const element = new FakeElement() as FakeElement & {
+        closest: (query: string) => FakeElement | null;
+    };
+    element.closest = (query: string) => (query === selector ? element : null);
+    return element;
+}
+
+function createRewardOffer(isDeckFull = false): CardRewardOffer & { isDeckFull?: boolean } {
+    return {
+        choices: [
+            {
+                slot: 'ARCHETYPE',
+                catalogId: 'QUICK_DRAW' as never,
+                card: {
+                    id: 'reward-1',
+                    name: 'Quick Draw',
+                    type: 'SKILL',
+                    archetype: 'NEUTRAL',
+                    power: 0,
+                    cost: 1,
+                    keywords: [],
+                    effectType: 'DRAW',
+                    rarity: 'COMMON',
+                    effectPayload: { drawCount: 2 },
+                },
+            },
+            {
+                slot: 'NEUTRAL',
+                catalogId: 'VENOM_STRIKE' as never,
+                card: {
+                    id: 'reward-2',
+                    name: 'Venom Strike',
+                    type: 'ATTACK',
+                    archetype: 'SHADOW_ARTS',
+                    power: 4,
+                    cost: 1,
+                    keywords: [],
+                    effectType: 'DAMAGE',
+                    rarity: 'COMMON',
+                    statusEffect: { type: 'POISON', duration: 3 },
+                },
+            },
+            {
+                slot: 'RANDOM',
+                catalogId: 'IRON_GUARD' as never,
+                card: {
+                    id: 'reward-3',
+                    name: 'Iron Guard',
+                    type: 'GUARD',
+                    archetype: 'IRON_WILL',
+                    power: 10,
+                    cost: 2,
+                    keywords: [],
+                    effectType: 'BLOCK',
+                    rarity: 'COMMON',
+                },
+            },
+        ],
+        biasArchetype: 'NEUTRAL' as never,
+        rarityBand: 'COMMON',
+        isDeckFull,
+    };
+}
+
+function createCardCollectionSnapshot(): CardCollectionSnapshot {
+    return {
+        totalCards: 3,
+        unlockedCards: 2,
+        entries: [
+            {
+                catalogId: 'QUICK_DRAW' as never,
+                isUnlocked: true,
+                card: {
+                    id: 'collection-1',
+                    name: 'Quick Draw',
+                    type: 'SKILL',
+                    archetype: 'NEUTRAL',
+                    power: 0,
+                    cost: 1,
+                    keywords: [],
+                    effectType: 'DRAW',
+                    rarity: 'COMMON',
+                    effectPayload: { drawCount: 2 },
+                },
+            },
+            {
+                catalogId: 'VENOM_STRIKE' as never,
+                isUnlocked: true,
+                card: {
+                    id: 'collection-2',
+                    name: 'Venom Strike',
+                    type: 'ATTACK',
+                    archetype: 'SHADOW_ARTS',
+                    power: 4,
+                    cost: 1,
+                    keywords: [],
+                    effectType: 'DAMAGE',
+                    rarity: 'COMMON',
+                    statusEffect: { type: 'POISON', duration: 3 },
+                },
+            },
+            {
+                catalogId: 'BARRICADE' as never,
+                isUnlocked: false,
+                card: {
+                    id: 'collection-3',
+                    name: 'Barricade',
+                    type: 'POWER',
+                    archetype: 'IRON_WILL',
+                    power: 0,
+                    cost: 3,
+                    keywords: [],
+                    effectType: 'BUFF',
+                    rarity: 'RARE',
+                    buff: { type: 'BLOCK_PERSIST', value: 1 },
+                },
+            },
+        ],
+    };
+}
+
 describe('GameHud', () => {
     afterEach(() => {
         vi.useRealTimers();
@@ -163,6 +305,18 @@ describe('GameHud', () => {
         expect(root.innerHTML).toContain('class="game-hud__dock"');
         expect(root.innerHTML).toContain('class="game-hud__log-shell"');
         expect(root.innerHTML).not.toContain('class="game-hud__bottom"');
+    });
+
+    it('tracks when the fixed HUD chrome should be hidden for the dedicated battle scene', () => {
+        const { root, hud } = createHud();
+
+        expect(root.dataset.viewportMode).toBe('field');
+
+        hud.setViewportMode('battle-scene');
+        expect(root.dataset.viewportMode).toBe('battle-scene');
+
+        hud.setViewportMode('field');
+        expect(root.dataset.viewportMode).toBe('field');
     });
 
     it('keeps only the fifty most recent log entries in the message feed', () => {
@@ -390,6 +544,7 @@ describe('GameHud', () => {
             totalSoulShards: 233,
             canContinueRun: true,
             isSanctuaryOpen: true,
+            isCardCollectionOpen: false,
             sanctuaryMessage: 'Need 5 more Soul Shards for Ferocity.',
             sanctuaryMessageTone: 'danger',
             upgrades: [
@@ -418,6 +573,7 @@ describe('GameHud', () => {
                     affordable: false,
                 },
             ],
+            cardCollection: createCardCollectionSnapshot(),
         });
 
         // Assert
@@ -444,11 +600,30 @@ describe('GameHud', () => {
             totalSoulShards: 0,
             canContinueRun: false,
             isSanctuaryOpen: false,
+            isCardCollectionOpen: false,
             upgrades: [],
+            cardCollection: createCardCollectionSnapshot(),
         });
 
         // Assert
         expect(root.disabledFor('title-continue')).toBe(true);
+    });
+
+    it('handles text-node clicks on the game over return button', () => {
+        // Arrange
+        const { hud } = createHud();
+        const handlers = createRunOverlayHandlers();
+        hud.setRunOverlayHandlers(handlers);
+        const buttonTarget = createClosestTarget('[data-role="gameover-return-title"]');
+        const textTarget = { parentElement: buttonTarget };
+
+        // Act
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
+            target: textTarget,
+        } as Event);
+
+        // Assert
+        expect(handlers.onReturnToTitle).toHaveBeenCalledOnce();
     });
 
     it('rerenders static UI copy when the locale changes', () => {
@@ -470,5 +645,119 @@ describe('GameHud', () => {
         expect(root.textFor('inventory-capacity')).toBe('0 / 12칸');
         expect(root.textFor('inventory-use')).toBe('사용');
         expect(root.htmlFor('inventory-list')).toContain('인벤토리가 비어 있습니다');
+    });
+
+    it('renders the card collection panel on the title overlay', () => {
+        const { root, hud, localization } = createHud();
+
+        hud.updateTitleScreen({
+            isOpen: true,
+            totalSoulShards: 144,
+            canContinueRun: true,
+            isSanctuaryOpen: false,
+            isCardCollectionOpen: true,
+            upgrades: [],
+            cardCollection: createCardCollectionSnapshot(),
+        });
+
+        expect(root.datasetFor('title-collection').open).toBe('true');
+        expect(root.htmlFor('title-collection')).toContain('Card Collection');
+        expect(root.htmlFor('title-collection')).toContain('Quick Draw');
+        expect(root.htmlFor('title-collection')).toContain('Venom Strike');
+        expect(root.htmlFor('title-collection')).toContain('Recovered 2 of 3 cards from previous descents.');
+        expect(root.htmlFor('title-collection')).toContain('Draw 2 cards');
+        expect(root.htmlFor('title-collection')).toContain('Locked');
+
+        localization.setLocale('ko');
+
+        expect(root.htmlFor('title-collection')).toContain('카드 모음집');
+        expect(root.htmlFor('title-collection')).toContain('이전 하강에서 확보한 카드 2 / 3장');
+        expect(root.htmlFor('title-collection')).toContain('카드 2장 뽑기');
+        expect(root.htmlFor('title-collection')).toContain('잠김');
+    });
+
+    it('routes title collection open and close clicks', () => {
+        const { hud } = createHud();
+        const handlers = createRunOverlayHandlers();
+        hud.setRunOverlayHandlers(handlers);
+
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
+            target: createClosestTarget('[data-role="title-open-collection"]'),
+        } as Event);
+        expect(handlers.onOpenCardCollection).toHaveBeenCalledOnce();
+
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
+            target: createClosestTarget('[data-role="title-close-collection"]'),
+        } as Event);
+        expect(handlers.onCloseCardCollection).toHaveBeenCalledOnce();
+    });
+
+    it('renders the reward offer overlay with three card choices and skip copy', () => {
+        const { root, hud } = createHud();
+        const callback = vi.fn();
+
+        hud.showCardRewardOverlay(createRewardOffer(false), callback);
+
+        expect(root.datasetFor('reward-offer-overlay').open).toBe('true');
+        expect(root.textFor('reward-offer-copy')).toBe('Pick one card to add to your deck, or skip the offer.');
+        expect(root.htmlFor('reward-offer-list')).toContain('Quick Draw');
+        expect(root.htmlFor('reward-offer-list')).toContain('Venom Strike');
+        expect(root.htmlFor('reward-offer-list')).toContain('Iron Guard');
+        expect(root.htmlFor('reward-offer-list')).toContain('Cost 1 · Skill');
+        expect(root.htmlFor('reward-offer-list')).toContain('Draw 2 cards');
+        expect(root.htmlFor('reward-offer-list')).toContain('Deal 4 damage · Apply Poison 3');
+        expect(root.htmlFor('reward-offer-list')).toContain('Gain 10 block');
+    });
+
+    it('renders deck full reward offer copy with the card effect summary', () => {
+        const { root, hud, localization } = createHud();
+        const callback = vi.fn();
+
+        const offer = createRewardOffer(true);
+        offer.choices = [offer.choices[0]];
+        offer.choices[0] = {
+            ...offer.choices[0],
+            card: {
+                id: 'reward-1',
+                name: 'Blood Price',
+                type: 'SKILL',
+                archetype: 'BLOOD_OATH',
+                power: 0,
+                cost: 1,
+                keywords: [],
+                effectType: 'DRAW',
+                rarity: 'UNCOMMON',
+                effectPayload: { drawCount: 2, selfDamage: 4 },
+            },
+        };
+        hud.showCardRewardOverlay(offer, callback);
+
+        expect(root.textFor('reward-offer-copy')).toBe('Deck full. Pick a reward to enter card swap.');
+        expect(root.htmlFor('reward-offer-list')).toContain('Draw 2 cards · Lose 4 HP');
+
+        localization.setLocale('ko');
+
+        expect(root.textFor('reward-offer-copy')).toBe('덱이 가득 찼습니다. 보상 카드를 고르면 카드 교체로 넘어갑니다.');
+        expect(root.htmlFor('reward-offer-list')).toContain('코스트 1 · 스킬');
+        expect(root.htmlFor('reward-offer-list')).toContain('카드 2장 뽑기 · HP 4 소모');
+    });
+
+    it('routes reward offer clicks to select and skip callbacks, then closes itself', () => {
+        const { hud } = createHud();
+        const callback = vi.fn();
+        const offer = createRewardOffer(false);
+        offer.choices = [offer.choices[0]];
+        hud.showCardRewardOverlay(offer, callback);
+
+        const rewardTarget = createClosestTarget('[data-reward-card-id]') as FakeElement & { dataset: Record<string, string> };
+        rewardTarget.dataset.rewardCardId = 'reward-1';
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({ target: rewardTarget } as Event);
+        expect(callback).toHaveBeenCalledWith('reward-1');
+
+        hud.showCardRewardOverlay(createRewardOffer(false), callback);
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
+            target: createClosestTarget('[data-role="reward-offer-skip"]'),
+        } as Event);
+        expect(callback).toHaveBeenCalledWith(null);
     });
 });

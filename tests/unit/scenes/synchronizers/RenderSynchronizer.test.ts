@@ -4,6 +4,12 @@ import { Player } from '../../../../src/domain/entities/Player';
 import type { MapData } from '../../../../src/infra/rot/MapGenerator';
 import { RenderSynchronizer } from '../../../../src/scenes/synchronizers/RenderSynchronizer';
 import { MovementAnimator, type TweenFactory } from '../../../../src/scenes/synchronizers/MovementAnimator';
+import {
+    MOVEMENT_DURATION_BASELINE_MS,
+    MOVEMENT_DURATION_MAX_MS,
+    MOVEMENT_DURATION_MIN_MS,
+    SpriteMovementDurationPolicy,
+} from '../../../../src/scenes/synchronizers/MovementDurationPolicy';
 import { WORLD_TILE } from '../../../../src/shared/types/WorldTiles';
 import { GameLocalization } from '../../../../src/ui/GameLocalization';
 
@@ -96,6 +102,8 @@ interface FakeTweenRecord {
         onComplete?: () => void;
     };
     triggerComplete: () => void;
+    stopCalled: boolean;
+    completeCalled: boolean;
 }
 
 function createFakeTweenFactory(): { factory: TweenFactory; tweens: FakeTweenRecord[] } {
@@ -106,11 +114,16 @@ function createFakeTweenFactory(): { factory: TweenFactory; tweens: FakeTweenRec
             const record: FakeTweenRecord = {
                 config: { ...config },
                 triggerComplete: () => config.onComplete?.(),
+                stopCalled: false,
+                completeCalled: false,
             };
             tweens.push(record);
             return {
-                stop: () => {},
-                complete: () => { config.onComplete?.(); },
+                stop: () => { (record as { stopCalled: boolean }).stopCalled = true; },
+                complete: () => {
+                    (record as { completeCalled: boolean }).completeCalled = true;
+                    config.onComplete?.();
+                },
             };
         },
     };
@@ -181,7 +194,13 @@ function createMapData(): MapData {
 const TILE_SIZE = 32;
 
 function createEnemy(id: string, x: number, y: number): Enemy {
-    return new Enemy(id, 'Test Enemy', { x, y }, { health: 10, attack: 2, defense: 1 }, 5);
+    return new Enemy(
+        id,
+        'Test Enemy',
+        { x, y },
+        { health: 10, maxHealth: 10, attack: 2, defense: 1, movementSpeed: 100 },
+        5,
+    );
 }
 
 function createSynchronizerWithAnimator(): {
@@ -191,13 +210,15 @@ function createSynchronizerWithAnimator(): {
 } {
     const scene = new FakeScene();
     const { factory, tweens } = createFakeTweenFactory();
-    const animator = new MovementAnimator(factory, TILE_SIZE);
+    const movementDurationPolicy = new SpriteMovementDurationPolicy();
+    const animator = new MovementAnimator(factory, TILE_SIZE, movementDurationPolicy);
     const synchronizer = new RenderSynchronizer(
         scene as unknown as Phaser.Scene,
         new GameLocalization(),
         TILE_SIZE,
         8,
         animator,
+        movementDurationPolicy,
     );
     return { synchronizer, scene, tweens };
 }
@@ -271,8 +292,30 @@ describe('RenderSynchronizer', () => {
             expect(tweens).toHaveLength(1);
             expect(tweens[0].config.x).toBe(3 * TILE_SIZE);
             expect(tweens[0].config.y).toBe(2 * TILE_SIZE);
+            expect(tweens[0].config.duration).toBe(MOVEMENT_DURATION_BASELINE_MS);
 
             // Resolve the animation
+            tweens[0].triggerComplete();
+            await promise;
+        });
+
+        it('derives player movement duration from movementSpeed', async () => {
+            // Arrange
+            const { synchronizer, tweens } = createSynchronizerWithAnimator();
+            const player = new Player(
+                { x: 1, y: 1 },
+                { health: 100, maxHealth: 100, attack: 10, defense: 5, movementSpeed: 200 },
+            );
+            synchronizer.synchronizePlayer(player);
+
+            // Act
+            player.moveTo(2, 1);
+            const promise = synchronizer.synchronizePlayer(player);
+
+            // Assert
+            expect(tweens).toHaveLength(1);
+            expect(tweens[0].config.duration).toBe(MOVEMENT_DURATION_MIN_MS);
+
             tweens[0].triggerComplete();
             await promise;
         });
@@ -328,6 +371,29 @@ describe('RenderSynchronizer', () => {
             expect(sprite.y).toBe(3 * TILE_SIZE);
         });
 
+        it('cancels an in-flight player tween before immediate floor placement', () => {
+            // Arrange
+            const { synchronizer, scene, tweens } = createSynchronizerWithAnimator();
+            const player = new Player({ x: 1, y: 1 });
+            synchronizer.synchronizePlayer(player);
+
+            player.moveTo(5, 1);
+            synchronizer.synchronizePlayer(player);
+            expect(tweens).toHaveLength(1);
+
+            // Act
+            synchronizer.setImmediateMode(true);
+            player.moveTo(2, 1);
+            synchronizer.synchronizePlayer(player);
+
+            // Assert
+            const sprite = scene.sprites[0];
+            expect(tweens[0].stopCalled).toBe(true);
+            expect(sprite.x).toBe(2 * TILE_SIZE);
+            expect(sprite.y).toBe(1 * TILE_SIZE);
+            expect(synchronizer.isAnimating()).toBe(false);
+        });
+
         it('resumes animation after immediate mode is disabled', async () => {
             // Arrange
             const { synchronizer, tweens } = createSynchronizerWithAnimator();
@@ -377,6 +443,55 @@ describe('RenderSynchronizer', () => {
             expect(tweens).toHaveLength(1);
             expect(tweens[0].config.x).toBe(3 * TILE_SIZE);
             expect(tweens[0].config.y).toBe(4 * TILE_SIZE);
+            expect(tweens[0].config.duration).toBe(MOVEMENT_DURATION_BASELINE_MS);
+
+            tweens[0].triggerComplete();
+            await promise;
+        });
+
+        it('derives visible enemy movement duration from movementSpeed when no override is passed', async () => {
+            // Arrange
+            const { synchronizer, tweens } = createSynchronizerWithAnimator();
+            const enemy = new Enemy(
+                'e1',
+                'Slow Enemy',
+                { x: 2, y: 3 },
+                { health: 10, attack: 2, defense: 1, movementSpeed: 50 },
+                5,
+            );
+            synchronizer.synchronizeEnemies([enemy]);
+
+            // Act
+            enemy.moveTo(3, 4);
+            const promise = synchronizer.synchronizeEnemies([enemy]);
+
+            // Assert
+            expect(tweens).toHaveLength(1);
+            expect(tweens[0].config.duration).toBe(MOVEMENT_DURATION_MAX_MS);
+
+            tweens[0].triggerComplete();
+            await promise;
+        });
+
+        it('keeps explicit enemy duration overrides ahead of the movementSpeed policy', async () => {
+            // Arrange
+            const { synchronizer, tweens } = createSynchronizerWithAnimator();
+            const enemy = new Enemy(
+                'e1',
+                'Fast Enemy',
+                { x: 2, y: 3 },
+                { health: 10, attack: 2, defense: 1, movementSpeed: 300 },
+                5,
+            );
+            synchronizer.synchronizeEnemies([enemy]);
+
+            // Act
+            enemy.moveTo(3, 4);
+            const promise = synchronizer.synchronizeEnemies([enemy], { duration: 100 });
+
+            // Assert
+            expect(tweens).toHaveLength(1);
+            expect(tweens[0].config.duration).toBe(100);
 
             tweens[0].triggerComplete();
             await promise;

@@ -1,5 +1,13 @@
-import type { Card } from '../domain/entities/Card';
+import {
+    CARD_EFFECT_TYPE,
+    CARD_TYPE,
+    type Card,
+    type CardBuffEffect,
+    type CardStatusEffect,
+} from '../domain/entities/Card';
 import type { InventoryItem } from '../domain/entities/Item';
+import type { CardCollectionSnapshot } from '../domain/services/CardCollectionService';
+import type { CardRewardOffer } from '../domain/services/CardDropService';
 import type {
     MetaUpgradeSnapshot,
     PermanentUpgradeKey,
@@ -9,6 +17,7 @@ import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
 import { GameLocalization } from './GameLocalization';
 
 export type HudLogTone = 'combat' | 'danger' | 'item' | 'travel' | 'system';
+export type HudViewportMode = 'field' | 'battle-scene';
 
 export interface HudStatusSnapshot {
     floorNumber: number;
@@ -71,9 +80,11 @@ export interface TitleOverlaySnapshot {
     totalSoulShards: number;
     canContinueRun: boolean;
     isSanctuaryOpen: boolean;
+    isCardCollectionOpen: boolean;
     sanctuaryMessage?: string;
     sanctuaryMessageTone?: HudLogTone;
     upgrades: MetaUpgradeSnapshot[];
+    cardCollection: CardCollectionSnapshot;
 }
 
 export interface RunOverlayHandlers {
@@ -82,7 +93,15 @@ export interface RunOverlayHandlers {
     onStartNewRun: () => void;
     onOpenSanctuary: () => void;
     onCloseSanctuary: () => void;
+    onOpenCardCollection: () => void;
+    onCloseCardCollection: () => void;
     onPurchaseUpgrade: (key: PermanentUpgradeKey) => void;
+}
+
+export interface RewardOfferOverlaySnapshot {
+    isOpen: boolean;
+    offeredCards: Card[];
+    isDeckFull: boolean;
 }
 
 export class GameHud {
@@ -123,8 +142,14 @@ export class GameHud {
         totalSoulShards: 0,
         canContinueRun: false,
         isSanctuaryOpen: false,
+        isCardCollectionOpen: false,
         sanctuaryMessageTone: 'system',
         upgrades: [],
+        cardCollection: {
+            totalCards: 0,
+            unlockedCards: 0,
+            entries: [],
+        },
     };
     private statusSnapshot?: HudStatusSnapshot;
     private inventorySnapshot: InventoryOverlaySnapshot = {
@@ -153,6 +178,7 @@ export class GameHud {
     private titleContinueButton!: HTMLButtonElement;
     private titleMessage!: HTMLElement;
     private titleSanctuary!: HTMLElement;
+    private titleCollection!: HTMLElement;
     private gameOverOverlay!: HTMLElement;
     private gameOverFloorValue!: HTMLElement;
     private gameOverKillsValue!: HTMLElement;
@@ -170,17 +196,28 @@ export class GameHud {
     private inventoryDropButton!: HTMLButtonElement;
     private cardSwapOverlay!: HTMLElement;
     private cardSwapCallback?: (removeCardId: string | null) => void;
+    private rewardOfferOverlay!: HTMLElement;
+    private rewardOfferList!: HTMLElement;
+    private rewardOfferSnapshot: RewardOfferOverlaySnapshot = {
+        isOpen: false,
+        offeredCards: [],
+        isDeckFull: false,
+    };
+    private rewardOfferCallback?: (selectedCardId: string | null) => void;
+    private viewportMode: HudViewportMode = 'field';
 
     constructor(
         private readonly root: HTMLElement,
         private readonly localization: GameLocalization = new GameLocalization(),
     ) {
         this.renderShell();
+        this.applyViewportMode();
         this.root.addEventListener('click', (event) => {
             this.handleClick(event);
         });
         this.localization.subscribe(() => {
             this.renderShell();
+            this.applyViewportMode();
             this.renderAll();
         });
         this.renderAll();
@@ -189,6 +226,11 @@ export class GameHud {
     updateStatus(snapshot: HudStatusSnapshot) {
         this.statusSnapshot = { ...snapshot };
         this.renderStatus();
+    }
+
+    setViewportMode(mode: HudViewportMode) {
+        this.viewportMode = mode;
+        this.applyViewportMode();
     }
 
     private renderShell() {
@@ -280,11 +322,15 @@ export class GameHud {
                             <button class="game-hud__title-action" type="button" data-role="title-start">
                                 ${ui.newRunLabel}
                             </button>
+                            <button class="game-hud__title-action game-hud__title-action--secondary" type="button" data-role="title-open-collection">
+                                ${ui.cardCollectionLabel}
+                            </button>
                             <button class="game-hud__title-action game-hud__title-action--secondary" type="button" data-role="title-open-sanctuary">
                                 ${ui.sanctuaryLabel}
                             </button>
                         </div>
                         <p class="game-hud__title-message" data-role="title-message"></p>
+                        <div class="game-hud__title-collection" data-role="title-collection" data-open="false"></div>
                         <div class="game-hud__title-sanctuary" data-role="title-sanctuary" data-open="false"></div>
                     </div>
                 </section>
@@ -391,9 +437,24 @@ export class GameHud {
                         </button>
                     </div>
                 </section>
+                <section class="game-hud__card-swap-overlay" data-role="reward-offer-overlay" data-open="false">
+                    <div class="game-hud__card-swap-panel">
+                        <span class="game-hud__eyebrow">${ui.rewardOfferEyebrow}</span>
+                        <strong class="game-hud__title">${ui.rewardOfferTitle}</strong>
+                        <p class="game-hud__title-copy" data-role="reward-offer-copy"></p>
+                        <div class="game-hud__card-swap-list" data-role="reward-offer-list"></div>
+                        <button class="game-hud__title-action game-hud__title-action--secondary" type="button" data-role="reward-offer-skip">
+                            ${ui.rewardOfferSkipLabel}
+                        </button>
+                    </div>
+                </section>
             </div>
         `;
         this.bindElements();
+    }
+
+    private applyViewportMode() {
+        this.root.dataset.viewportMode = this.viewportMode;
     }
 
     private bindElements() {
@@ -414,6 +475,7 @@ export class GameHud {
         this.titleSoulShardsValue = this.requireRole('title-soul-shards');
         this.titleContinueButton = this.requireRole<HTMLButtonElement>('title-continue');
         this.titleMessage = this.requireRole('title-message');
+        this.titleCollection = this.requireRole('title-collection');
         this.titleSanctuary = this.requireRole('title-sanctuary');
         this.gameOverOverlay = this.requireRole('gameover-overlay');
         this.gameOverFloorValue = this.requireRole('gameover-floor');
@@ -431,6 +493,8 @@ export class GameHud {
         this.inventoryUseButton = this.requireRole<HTMLButtonElement>('inventory-use');
         this.inventoryDropButton = this.requireRole<HTMLButtonElement>('inventory-drop');
         this.cardSwapOverlay = this.requireRole('card-swap-overlay');
+        this.rewardOfferOverlay = this.requireRole('reward-offer-overlay');
+        this.rewardOfferList = this.requireRole('reward-offer-list');
     }
 
     private renderAll() {
@@ -442,6 +506,7 @@ export class GameHud {
         this.renderBossPanel();
         this.renderInventory();
         this.renderEventBanner();
+        this.renderRewardOfferOverlay();
     }
 
     private renderStatus() {
@@ -552,6 +617,16 @@ export class GameHud {
         this.titleSnapshot = {
             ...snapshot,
             upgrades: snapshot.upgrades.map((upgrade) => ({ ...upgrade })),
+            cardCollection: {
+                ...snapshot.cardCollection,
+                entries: snapshot.cardCollection.entries.map((entry) => ({
+                    ...entry,
+                    card: {
+                        ...entry.card,
+                        keywords: [...entry.card.keywords],
+                    },
+                })),
+            },
         };
         this.renderTitleOverlay();
     }
@@ -618,6 +693,10 @@ export class GameHud {
         this.titleMessage.textContent = this.titleSnapshot.sanctuaryMessage ?? '';
         this.titleMessage.dataset.visible = this.titleSnapshot.sanctuaryMessage ? 'true' : 'false';
         this.titleMessage.dataset.tone = this.titleSnapshot.sanctuaryMessageTone ?? 'system';
+        this.titleCollection.dataset.open = this.titleSnapshot.isCardCollectionOpen ? 'true' : 'false';
+        this.titleCollection.innerHTML = this.titleSnapshot.isCardCollectionOpen
+            ? this.renderCardCollectionPanel()
+            : '';
         this.titleSanctuary.dataset.open = this.titleSnapshot.isSanctuaryOpen ? 'true' : 'false';
         this.titleSanctuary.innerHTML = this.titleSnapshot.isSanctuaryOpen
             ? `
@@ -674,6 +753,53 @@ export class GameHud {
                 </div>
             `
             : '';
+    }
+
+    private renderCardCollectionPanel() {
+        const { ui } = this.localization.getBundle();
+        const { cardCollection } = this.titleSnapshot;
+
+        return `
+            <div class="game-hud__collection-header">
+                <div>
+                    <span class="game-hud__eyebrow">${ui.cardCollectionEyebrow}</span>
+                    <strong class="game-hud__title">${ui.cardCollectionTitle}</strong>
+                    <p class="game-hud__collection-copy">
+                        ${this.escapeHtml(ui.cardCollectionSummary(cardCollection.unlockedCards, cardCollection.totalCards))}
+                    </p>
+                </div>
+                <button
+                    class="game-hud__title-action game-hud__title-action--secondary"
+                    type="button"
+                    data-role="title-close-collection"
+                >
+                    ${ui.cardCollectionBackLabel}
+                </button>
+            </div>
+            <div class="game-hud__collection-grid">
+                ${cardCollection.entries.map((entry) => {
+                    if (!entry.isUnlocked) {
+                        return `
+                            <article class="game-hud__collection-card game-hud__collection-card--locked">
+                                <span class="game-hud__eyebrow">${ui.cardCollectionLockedLabel}</span>
+                                <strong class="game-hud__title">???</strong>
+                                <p class="game-hud__collection-meta">${this.escapeHtml(ui.cardCollectionLockedCopy)}</p>
+                            </article>
+                        `;
+                    }
+
+                    return `
+                        <article class="game-hud__collection-card" data-rarity="${entry.card.rarity}">
+                            <span class="game-hud__eyebrow">${this.escapeHtml(this.getCardArchetypeLabel(entry.card))}</span>
+                            <strong class="game-hud__title">${this.escapeHtml(entry.card.name)}</strong>
+                            <p class="game-hud__collection-meta">${this.escapeHtml(this.describeRewardCardMeta(entry.card))}</p>
+                            <p class="game-hud__collection-meta">${this.escapeHtml(this.getCardRarityLabel(entry.card))}</p>
+                            <p class="game-hud__collection-effect">${this.escapeHtml(this.describeRewardCardEffect(entry.card))}</p>
+                        </article>
+                    `;
+                }).join('')}
+            </div>
+        `;
     }
 
     private renderGameOverOverlay() {
@@ -778,8 +904,8 @@ export class GameHud {
     }
 
     private handleClick(event: Event) {
-        const target = event.target;
-        if (!(target instanceof HTMLElement)) {
+        const target = this.resolveClickTarget(event.target);
+        if (!target) {
             return;
         }
 
@@ -820,6 +946,16 @@ export class GameHud {
             return;
         }
 
+        if (target.closest('[data-role="title-open-collection"]')) {
+            this.runOverlayHandlers?.onOpenCardCollection();
+            return;
+        }
+
+        if (target.closest('[data-role="title-close-collection"]')) {
+            this.runOverlayHandlers?.onCloseCardCollection();
+            return;
+        }
+
         if (target.closest('[data-role="title-open-sanctuary"]')) {
             this.runOverlayHandlers?.onOpenSanctuary();
             return;
@@ -856,7 +992,34 @@ export class GameHud {
         const swapSlot = target.closest<HTMLElement>('[data-swap-card-id]');
         if (swapSlot?.dataset.swapCardId) {
             this.handleCardSwapSelection(swapSlot.dataset.swapCardId);
+            return;
         }
+
+        if (target.closest('[data-role="reward-offer-skip"]')) {
+            this.handleRewardOfferSelection(null);
+            return;
+        }
+
+        const rewardCard = target.closest<HTMLElement>('[data-reward-card-id]');
+        if (rewardCard?.dataset.rewardCardId) {
+            this.handleRewardOfferSelection(rewardCard.dataset.rewardCardId);
+        }
+    }
+
+    private resolveClickTarget(target: EventTarget | null): HTMLElement | null {
+        if (this.isElementLike(target)) {
+            return target;
+        }
+
+        const parentElement = (target as { parentElement?: unknown } | null)?.parentElement;
+        return this.isElementLike(parentElement) ? parentElement : null;
+    }
+
+    private isElementLike(value: unknown): value is HTMLElement {
+        return typeof value === 'object'
+            && value !== null
+            && 'dataset' in value
+            && typeof (value as { closest?: unknown }).closest === 'function';
     }
 
     /** 덱이 가득 찬 상태에서 카드 교체 오버레이를 표시한다. */
@@ -896,6 +1059,79 @@ export class GameHud {
         }
 
         this.cardSwapOverlay.dataset.open = 'true';
+    }
+
+    updateRewardOffer(snapshot: RewardOfferOverlaySnapshot): void {
+        this.rewardOfferSnapshot = {
+            ...snapshot,
+            offeredCards: snapshot.offeredCards.map((card) => ({ ...card, keywords: [...card.keywords] })),
+        };
+        this.renderRewardOfferOverlay();
+    }
+
+    showCardRewardOverlay(
+        offer: CardRewardOffer,
+        callback: (selectedCardId: string | null) => void,
+    ): void {
+        const offerWithMeta = offer as CardRewardOffer & { isDeckFull?: boolean };
+        this.rewardOfferCallback = callback;
+        this.updateRewardOffer({
+            isOpen: true,
+            offeredCards: offer.choices.map((choice) => choice.card),
+            isDeckFull: offerWithMeta.isDeckFull ?? false,
+        });
+    }
+
+    hideCardRewardOverlay(): void {
+        this.rewardOfferSnapshot = {
+            isOpen: false,
+            offeredCards: [],
+            isDeckFull: false,
+        };
+        this.renderRewardOfferOverlay();
+    }
+
+    private handleRewardOfferSelection(selectedCardId: string | null): void {
+        this.hideCardRewardOverlay();
+        const callback = this.rewardOfferCallback;
+        this.rewardOfferCallback = undefined;
+        callback?.(selectedCardId);
+    }
+
+    private renderRewardOfferOverlay(): void {
+        const { ui } = this.localization.getBundle();
+        this.rewardOfferOverlay.dataset.open = this.rewardOfferSnapshot.isOpen ? 'true' : 'false';
+
+        const copyElement = this.root.querySelector<HTMLElement>('[data-role="reward-offer-copy"]');
+        if (copyElement) {
+            copyElement.textContent = this.rewardOfferSnapshot.isDeckFull
+                ? ui.rewardOfferDeckFullCopy
+                : ui.rewardOfferCopy;
+        }
+
+        this.rewardOfferList.innerHTML = this.rewardOfferSnapshot.offeredCards.map((card) => {
+            const icon = card.type === CARD_TYPE.ATTACK
+                ? '⚔️'
+                : card.type === CARD_TYPE.GUARD
+                    ? '🛡️'
+                    : card.type === CARD_TYPE.POWER
+                        ? '✦'
+                        : card.type === CARD_TYPE.CURSE
+                            ? '☠'
+                            : '✧';
+
+            return `
+                <button
+                    class="game-hud__card-swap-slot"
+                    type="button"
+                    data-reward-card-id="${card.id}"
+                >
+                    <span>${icon} ${this.escapeHtml(card.name)}</span>
+                    <span>${this.escapeHtml(this.describeRewardCardMeta(card))}</span>
+                    <span>${this.escapeHtml(this.describeRewardCardEffect(card))}</span>
+                </button>
+            `;
+        }).join('');
     }
 
     private handleCardSwapSelection(cardId: string | null): void {
@@ -956,6 +1192,310 @@ export class GameHud {
         }
 
         return ui.noDirectUseLabel;
+    }
+
+    private describeRewardCardMeta(card: Card) {
+        const costLabel = this.localization.getLocale() === 'ko'
+            ? `코스트 ${card.cost}`
+            : `Cost ${card.cost}`;
+
+        return `${costLabel} · ${this.getRewardCardTypeLabel(card.type)}`;
+    }
+
+    private describeRewardCardEffect(card: Card) {
+        const locale = this.localization.getLocale();
+        const suffixes = this.getRewardCardSuffixes(card);
+        const joinWithSuffixes = (base: string) => [
+            base,
+            ...suffixes,
+        ].join(' · ');
+
+        switch (card.effectType) {
+            case CARD_EFFECT_TYPE.DAMAGE:
+                return joinWithSuffixes(
+                    locale === 'ko'
+                        ? `피해 ${card.power}`
+                        : `Deal ${card.power} damage`,
+                );
+            case CARD_EFFECT_TYPE.BLOCK: {
+                const blockAmount = card.secondaryPower ?? card.effectPayload?.blockAmount ?? card.power;
+                return joinWithSuffixes(
+                    locale === 'ko'
+                        ? `방어 ${blockAmount}`
+                        : `Gain ${blockAmount} block`,
+                );
+            }
+            case CARD_EFFECT_TYPE.STATUS_EFFECT: {
+                const statusLabel = this.describeRewardStatusEffects(this.getRewardStatusEffects(card));
+                if (statusLabel) {
+                    return joinWithSuffixes(statusLabel);
+                }
+                return locale === 'ko' ? '상태이상 부여' : 'Apply status effect';
+            }
+            case CARD_EFFECT_TYPE.FLEE:
+                return locale === 'ko' ? '전투 이탈' : 'Escape battle';
+            case CARD_EFFECT_TYPE.DRAW: {
+                const drawCount = card.drawCount ?? card.effectPayload?.drawCount;
+                return joinWithSuffixes(
+                    drawCount && drawCount > 0
+                        ? locale === 'ko'
+                            ? `카드 ${drawCount}장 뽑기`
+                            : `Draw ${drawCount} cards`
+                        : locale === 'ko'
+                            ? '카드 뽑기'
+                            : 'Draw cards',
+                );
+            }
+            case CARD_EFFECT_TYPE.HEAL: {
+                const healAmount = card.healAmount ?? card.effectPayload?.healAmount;
+                return joinWithSuffixes(
+                    healAmount && healAmount > 0
+                        ? locale === 'ko'
+                            ? `HP ${healAmount} 회복`
+                            : `Restore ${healAmount} HP`
+                        : locale === 'ko'
+                            ? '체력 회복'
+                            : 'Restore health',
+                );
+            }
+            case CARD_EFFECT_TYPE.MULTI_HIT: {
+                const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
+                return joinWithSuffixes(
+                    locale === 'ko'
+                        ? `피해 ${card.power} x${hitCount}`
+                        : `Hit ${hitCount} times for ${card.power}`,
+                );
+            }
+            case CARD_EFFECT_TYPE.DAMAGE_BLOCK: {
+                const blockAmount = card.secondaryPower ?? card.effectPayload?.blockAmount ?? 0;
+                return joinWithSuffixes(
+                    locale === 'ko'
+                        ? `피해 ${card.power} · 방어 ${blockAmount}`
+                        : `Deal ${card.power} damage · Gain ${blockAmount} block`,
+                );
+            }
+            case CARD_EFFECT_TYPE.BUFF: {
+                const buff = card.buff ?? card.effectPayload?.buff;
+                if (buff) {
+                    return joinWithSuffixes(this.describeRewardBuff(buff));
+                }
+                return locale === 'ko' ? '지속 효과' : 'Persistent effect';
+            }
+            case CARD_EFFECT_TYPE.DISCARD_EFFECT: {
+                const discardCount = card.discardCount ?? card.effectPayload?.discardCount ?? 1;
+                const drawCount = card.drawCount ?? card.effectPayload?.drawCount ?? 0;
+                return joinWithSuffixes(
+                    locale === 'ko'
+                        ? `카드 ${discardCount}장 버리고 ${drawCount}장 뽑기`
+                        : `Discard ${discardCount}, draw ${drawCount}`,
+                );
+            }
+            case CARD_EFFECT_TYPE.CONDITIONAL:
+                return joinWithSuffixes(
+                    locale === 'ko'
+                        ? '조건부 효과'
+                        : 'Conditional payoff',
+                );
+            default:
+                return locale === 'ko' ? `위력 ${card.power}` : `Power ${card.power}`;
+        }
+    }
+
+    private getRewardCardTypeLabel(type: Card['type']) {
+        if (this.localization.getLocale() === 'ko') {
+            switch (type) {
+                case CARD_TYPE.ATTACK:
+                    return '공격';
+                case CARD_TYPE.GUARD:
+                    return '방어';
+                case CARD_TYPE.SKILL:
+                    return '스킬';
+                case CARD_TYPE.POWER:
+                    return '파워';
+                case CARD_TYPE.CURSE:
+                    return '저주';
+                default:
+                    return type;
+            }
+        }
+
+        return type === CARD_TYPE.GUARD ? 'Guard' : type.charAt(0) + type.slice(1).toLowerCase();
+    }
+
+    private getCardRarityLabel(card: Card) {
+        if (this.localization.getLocale() === 'ko') {
+            switch (card.rarity) {
+                case 'COMMON':
+                    return '일반';
+                case 'UNCOMMON':
+                    return '언커먼';
+                case 'RARE':
+                    return '레어';
+                default:
+                    return card.rarity;
+            }
+        }
+
+        switch (card.rarity) {
+            case 'COMMON':
+                return 'Common';
+            case 'UNCOMMON':
+                return 'Uncommon';
+            case 'RARE':
+                return 'Rare';
+            default:
+                return card.rarity;
+        }
+    }
+
+    private getCardArchetypeLabel(card: Card) {
+        if (this.localization.getLocale() === 'ko') {
+            switch (card.archetype) {
+                case 'BLOOD_OATH':
+                    return '핏빛 서약';
+                case 'SHADOW_ARTS':
+                    return '그림자 술식';
+                case 'IRON_WILL':
+                    return '강철 의지';
+                case 'CURSE':
+                    return '저주';
+                default:
+                    return '중립';
+            }
+        }
+
+        switch (card.archetype) {
+            case 'BLOOD_OATH':
+                return 'Blood Oath';
+            case 'SHADOW_ARTS':
+                return 'Shadow Arts';
+            case 'IRON_WILL':
+                return 'Iron Will';
+            case 'CURSE':
+                return 'Curse';
+            default:
+                return 'Neutral';
+        }
+    }
+
+    private getRewardStatusEffects(card: Card): readonly CardStatusEffect[] {
+        if (card.statusEffects && card.statusEffects.length > 0) {
+            return card.statusEffects;
+        }
+
+        if (card.effectPayload?.statusEffects && card.effectPayload.statusEffects.length > 0) {
+            return card.effectPayload.statusEffects;
+        }
+
+        return card.statusEffect ? [card.statusEffect] : [];
+    }
+
+    private describeRewardStatusEffects(statusEffects: readonly CardStatusEffect[]) {
+        if (statusEffects.length === 0) {
+            return '';
+        }
+
+        return statusEffects.map((statusEffect) => {
+            const amount = statusEffect.stacks ?? statusEffect.amount ?? statusEffect.duration;
+            const statusLabel = this.getRewardStatusLabel(statusEffect.type);
+            if (!amount || amount <= 0) {
+                return this.localization.getLocale() === 'ko'
+                    ? `${statusLabel} 부여`
+                    : `Apply ${statusLabel}`;
+            }
+
+            return this.localization.getLocale() === 'ko'
+                ? `${statusLabel} ${amount} 부여`
+                : `Apply ${statusLabel} ${amount}`;
+        }).join(' · ');
+    }
+
+    private getRewardStatusLabel(status: string) {
+        if (this.localization.getLocale() === 'ko') {
+            switch (status) {
+                case 'VULNERABLE':
+                    return '취약';
+                case 'WEAK':
+                    return '약화';
+                case 'POISON':
+                    return '독';
+                case 'FRAIL':
+                    return '허약';
+                default:
+                    return status;
+            }
+        }
+
+        switch (status) {
+            case 'VULNERABLE':
+                return 'Vulnerable';
+            case 'WEAK':
+                return 'Weak';
+            case 'POISON':
+                return 'Poison';
+            case 'FRAIL':
+                return 'Frail';
+            default:
+                return status;
+        }
+    }
+
+    private describeRewardBuff(buff: CardBuffEffect) {
+        if (this.localization.getLocale() === 'ko') {
+            switch (buff.type) {
+                case 'STRENGTH':
+                    return `힘 +${buff.value}`;
+                case 'BLOCK_PERSIST':
+                    return '방어 유지';
+                case 'ENEMY_ATTACK_DOWN':
+                    return `적 공격 -${buff.value}`;
+                case 'STRENGTH_ON_SELF_DAMAGE':
+                    return `자해 시 힘 +${buff.value}`;
+                case 'POISON_MULTIPLIER':
+                    return `독 배율 x${buff.value}`;
+                case 'APPLY_POISON_PER_TURN':
+                    return `턴마다 독 ${buff.value}`;
+                default:
+                    return `${buff.type} ${buff.value}`;
+            }
+        }
+
+        switch (buff.type) {
+            case 'STRENGTH':
+                return `Strength +${buff.value}`;
+            case 'BLOCK_PERSIST':
+                return 'Retain block';
+            case 'ENEMY_ATTACK_DOWN':
+                return `Enemy attack -${buff.value}`;
+            case 'STRENGTH_ON_SELF_DAMAGE':
+                return `Gain ${buff.value} Strength on self-damage`;
+            case 'POISON_MULTIPLIER':
+                return `Double poison x${buff.value}`;
+            case 'APPLY_POISON_PER_TURN':
+                return `Apply ${buff.value} poison each turn`;
+            default:
+                return `${buff.type} ${buff.value}`;
+        }
+    }
+
+    private getRewardCardSuffixes(card: Card) {
+        const suffixes: string[] = [];
+        const selfDamage = card.selfDamage ?? card.effectPayload?.selfDamage ?? 0;
+        const statusEffects = this.getRewardStatusEffects(card);
+
+        if (card.effectType === CARD_EFFECT_TYPE.DAMAGE && statusEffects.length > 0) {
+            suffixes.push(this.describeRewardStatusEffects(statusEffects));
+        }
+
+        if (selfDamage > 0) {
+            suffixes.push(
+                this.localization.getLocale() === 'ko'
+                    ? `HP ${selfDamage} 소모`
+                    : `Lose ${selfDamage} HP`,
+            );
+        }
+
+        return suffixes;
     }
 
     private escapeHtml(value: string) {

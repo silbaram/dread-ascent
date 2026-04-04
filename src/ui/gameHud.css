@@ -53,6 +53,12 @@ body {
     pointer-events: none;
 }
 
+#hud-root[data-viewport-mode="battle-scene"] .game-hud__top,
+#hud-root[data-viewport-mode="battle-scene"] .game-hud__dock,
+#hud-root[data-viewport-mode="battle-scene"] .game-hud__event-banner {
+    display: none;
+}
+
 .game-hud {
     display: grid;
     min-height: 100vh;
@@ -293,6 +299,25 @@ body {
     pointer-events: auto;
 }
 
+.game-hud__card-swap-overlay {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgba(5, 8, 12, 0.76);
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 120ms ease;
+    pointer-events: none;
+}
+
+.game-hud__card-swap-overlay[data-open="true"] {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+}
+
 .game-hud__inventory-panel {
     width: min(920px, 100%);
     border: 1px solid rgba(246, 173, 85, 0.3);
@@ -306,7 +331,8 @@ body {
 
 .game-hud__title-panel,
 .game-hud__gameover-panel,
-.game-hud__victory-panel {
+.game-hud__victory-panel,
+.game-hud__card-swap-panel {
     width: min(720px, 100%);
     border: 1px solid rgba(246, 173, 85, 0.32);
     border-radius: 30px;
@@ -319,6 +345,7 @@ body {
 }
 
 .game-hud__title-panel {
+    width: min(980px, 100%);
     text-align: center;
 }
 
@@ -327,6 +354,49 @@ body {
     border-color: rgba(110, 231, 183, 0.34);
     background:
         linear-gradient(180deg, rgba(16, 30, 27, 0.98), rgba(6, 12, 16, 0.96));
+}
+
+.game-hud__card-swap-panel {
+    display: grid;
+    gap: 16px;
+}
+
+.game-hud__card-swap-new {
+    display: grid;
+    gap: 10px;
+}
+
+.game-hud__card-swap-highlight {
+    display: grid;
+    gap: 6px;
+    border: 1px solid rgba(110, 231, 183, 0.22);
+    border-radius: 20px;
+    padding: 16px 18px;
+    background: rgba(110, 231, 183, 0.06);
+}
+
+.game-hud__card-swap-list {
+    display: grid;
+    gap: 12px;
+}
+
+.game-hud__card-swap-slot {
+    display: grid;
+    gap: 6px;
+    width: 100%;
+    border: 1px solid rgba(246, 173, 85, 0.24);
+    border-radius: 18px;
+    padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--hud-text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.game-hud__card-swap-slot:hover {
+    border-color: rgba(110, 231, 183, 0.38);
+    background: rgba(110, 231, 183, 0.08);
 }
 
 .game-hud__title--hero {
@@ -401,9 +471,82 @@ body {
     text-align: left;
 }
 
+.game-hud__title-collection {
+    display: none;
+    margin-top: 18px;
+    border: 1px solid rgba(110, 231, 183, 0.18);
+    border-radius: 24px;
+    padding: 20px;
+    background: rgba(255, 255, 255, 0.03);
+    text-align: left;
+}
+
+.game-hud__title-collection[data-open="true"] {
+    display: grid;
+    gap: 18px;
+}
+
 .game-hud__title-sanctuary[data-open="true"] {
     display: grid;
     gap: 18px;
+}
+
+.game-hud__collection-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.game-hud__collection-copy {
+    margin: 10px 0 0;
+    color: var(--hud-muted);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.game-hud__collection-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+    max-height: 52vh;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.game-hud__collection-card {
+    display: grid;
+    gap: 8px;
+    min-height: 188px;
+    border: 1px solid rgba(246, 173, 85, 0.18);
+    border-radius: 20px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.game-hud__collection-card[data-rarity="UNCOMMON"] {
+    border-color: rgba(125, 211, 252, 0.28);
+}
+
+.game-hud__collection-card[data-rarity="RARE"] {
+    border-color: rgba(250, 204, 21, 0.34);
+    background: rgba(250, 204, 21, 0.06);
+}
+
+.game-hud__collection-card--locked {
+    border-style: dashed;
+    opacity: 0.72;
+}
+
+.game-hud__collection-meta,
+.game-hud__collection-effect {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.game-hud__collection-meta {
+    color: var(--hud-muted);
 }
 
 .game-hud__sanctuary-header {
@@ -773,6 +916,11 @@ body {
         grid-template-columns: 1fr;
     }
 
+    .game-hud__collection-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        max-height: 48vh;
+    }
+
     .game-hud__inventory-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -784,6 +932,18 @@ body {
 
     .game-hud__gameover-stats {
         grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .game-hud__collection-header {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
+    .game-hud__collection-grid {
+        grid-template-columns: 1fr;
+        max-height: 44vh;
     }
 }
 

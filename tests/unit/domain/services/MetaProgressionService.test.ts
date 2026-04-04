@@ -39,6 +39,7 @@ describe('MetaProgressionService', () => {
             maxHealth: 120,
             attack: 12,
             defense: 8,
+            movementSpeed: 100,
         });
     });
 

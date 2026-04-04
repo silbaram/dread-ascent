@@ -36,6 +36,13 @@ interface LocaleBundle {
         sanctuaryLabel: string;
         sanctuaryEyebrow: string;
         sanctuaryBackLabel: string;
+        cardCollectionLabel: string;
+        cardCollectionEyebrow: string;
+        cardCollectionTitle: string;
+        cardCollectionBackLabel: string;
+        cardCollectionLockedLabel: string;
+        cardCollectionLockedCopy: string;
+        cardCollectionSummary: (unlockedCards: number, totalCards: number) => string;
         levelLabel: string;
         currentLabel: string;
         nextLabel: string;
@@ -76,6 +83,14 @@ interface LocaleBundle {
         equipLabel: string;
         unequipLabel: string;
         dropLabel: string;
+        rewardOfferEyebrow: string;
+        rewardOfferTitle: string;
+        rewardOfferCopy: string;
+        rewardOfferDeckFullCopy: string;
+        rewardOfferPickLabel: string;
+        rewardOfferSwapLabel: string;
+        rewardOfferSkipLabel: string;
+        rewardOfferPowerLabel: string;
         floorSuffix: string;
         slotCapacity: (usedSlots: number, slotCapacity: number) => string;
     };
@@ -129,6 +144,14 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             sanctuaryLabel: 'Sanctuary',
             sanctuaryEyebrow: 'Meta Shop',
             sanctuaryBackLabel: 'Back',
+            cardCollectionLabel: 'Card Archive',
+            cardCollectionEyebrow: 'Archive',
+            cardCollectionTitle: 'Card Collection',
+            cardCollectionBackLabel: 'Back',
+            cardCollectionLockedLabel: 'Locked',
+            cardCollectionLockedCopy: 'Win more descents to uncover this card.',
+            cardCollectionSummary: (unlockedCards, totalCards) =>
+                `Recovered ${unlockedCards} of ${totalCards} cards from previous descents.`,
             levelLabel: 'Level',
             currentLabel: 'Current',
             nextLabel: 'Next',
@@ -169,6 +192,14 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             equipLabel: 'Equip',
             unequipLabel: 'Unequip',
             dropLabel: 'Drop',
+            rewardOfferEyebrow: 'Card Reward',
+            rewardOfferTitle: 'Choose a Reward',
+            rewardOfferCopy: 'Pick one card to add to your deck, or skip the offer.',
+            rewardOfferDeckFullCopy: 'Deck full. Pick a reward to enter card swap.',
+            rewardOfferPickLabel: 'Add to Deck',
+            rewardOfferSwapLabel: 'Open Swap',
+            rewardOfferSkipLabel: 'Skip Reward',
+            rewardOfferPowerLabel: 'Power',
             floorSuffix: 'F',
             slotCapacity: (usedSlots, slotCapacity) => `${usedSlots} / ${slotCapacity} slots`,
         },
@@ -292,6 +323,14 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             sanctuaryLabel: '성소',
             sanctuaryEyebrow: '메타 상점',
             sanctuaryBackLabel: '뒤로',
+            cardCollectionLabel: '카드 모음집',
+            cardCollectionEyebrow: '기록 보관소',
+            cardCollectionTitle: '카드 모음집',
+            cardCollectionBackLabel: '뒤로',
+            cardCollectionLockedLabel: '잠김',
+            cardCollectionLockedCopy: '더 많은 하강에서 이 카드를 해금하세요.',
+            cardCollectionSummary: (unlockedCards, totalCards) =>
+                `이전 하강에서 확보한 카드 ${unlockedCards} / ${totalCards}장`,
             levelLabel: '레벨',
             currentLabel: '현재',
             nextLabel: '다음',
@@ -332,6 +371,14 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             equipLabel: '장착',
             unequipLabel: '해제',
             dropLabel: '버리기',
+            rewardOfferEyebrow: '카드 보상',
+            rewardOfferTitle: '보상 선택',
+            rewardOfferCopy: '덱에 추가할 카드 1장을 고르거나 보상을 건너뜁니다.',
+            rewardOfferDeckFullCopy: '덱이 가득 찼습니다. 보상 카드를 고르면 카드 교체로 넘어갑니다.',
+            rewardOfferPickLabel: '덱에 추가',
+            rewardOfferSwapLabel: '교체 열기',
+            rewardOfferSkipLabel: '보상 건너뛰기',
+            rewardOfferPowerLabel: '위력',
             floorSuffix: '층',
             slotCapacity: (usedSlots, slotCapacity) => `${usedSlots} / ${slotCapacity}칸`,
         },

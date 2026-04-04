@@ -1,5 +1,8 @@
 import { Enemy, type EnemyArchetypeId } from '../entities/Enemy';
-import type { CombatStats } from '../entities/CombatStats';
+import {
+    DEFAULT_MOVEMENT_SPEED,
+    type CombatStats,
+} from '../entities/CombatStats';
 import type { Position } from '../entities/Player';
 import type { FloorType } from './FloorProgressionService';
 import { positionToKey } from '../../shared/utils/positionKey';
@@ -43,6 +46,7 @@ export const BASE_ENEMY_STATS: CombatStats = {
     maxHealth: 100,
     attack: 10,
     defense: 5,
+    movementSpeed: DEFAULT_MOVEMENT_SPEED,
 };
 
 export const DEFAULT_MAX_ENEMIES_PER_FLOOR = 3;
@@ -201,6 +205,7 @@ export class EnemySpawnerService {
                 + (floorOffset * ENEMY_DEFENSE_PER_FLOOR)
                 + (archetype.statModifier.defense ?? 0)
                 + (isElite ? ELITE_DEFENSE_BONUS : 0),
+            movementSpeed: BASE_ENEMY_STATS.movementSpeed,
         };
     }
 
@@ -218,6 +223,7 @@ export class EnemySpawnerService {
             maxHealth,
             attack: baseStats.attack + BOSS_ATTACK_BONUS,
             defense: baseStats.defense + BOSS_DEFENSE_BONUS,
+            movementSpeed: baseStats.movementSpeed,
         };
     }
 

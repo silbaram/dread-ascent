@@ -7,6 +7,7 @@ import { MapData } from '../../infra/rot/MapGenerator';
 import { RotFovCalculator } from '../../infra/rot/RotFovCalculator';
 import { isWalkableTile } from '../../shared/types/WorldTiles';
 import { GameLocalization } from '../../ui/GameLocalization';
+import { SpriteMovementDurationPolicy } from './MovementDurationPolicy';
 import { MovementAnimator } from './MovementAnimator';
 
 const MAP_LAYER_DEPTH = 0;
@@ -28,6 +29,7 @@ export class RenderSynchronizer {
         private readonly tileSize: number,
         private readonly fovRadius: number,
         private readonly movementAnimator?: MovementAnimator,
+        private readonly movementDurationPolicy?: SpriteMovementDurationPolicy,
     ) {}
 
     /**
@@ -82,8 +84,10 @@ export class RenderSynchronizer {
             .setDepth(PLAYER_SPRITE_DEPTH)
             .setVisible(true)
             .setAlpha(1);
+        this.movementDurationPolicy?.bindSprite(this.playerSprite!, player.stats.movementSpeed);
 
         if (isFirstCreation || this.immediateMode || !this.movementAnimator) {
+            this.movementAnimator?.cancel(this.playerSprite!);
             this.playerSprite!.setPosition(
                 player.position.x * this.tileSize,
                 player.position.y * this.tileSize,
@@ -100,6 +104,8 @@ export class RenderSynchronizer {
 
     public clearEnemySprites() {
         for (const sprite of this.enemySprites.values()) {
+            this.movementAnimator?.cancel(sprite);
+            this.movementDurationPolicy?.unbindSprite(sprite);
             sprite.destroy();
         }
         this.enemySprites.clear();
@@ -130,11 +136,14 @@ export class RenderSynchronizer {
                     .setOrigin(0);
                 this.applyEnemySpriteStyle(sprite, enemy);
                 this.enemySprites.set(enemy.id, sprite);
+                this.movementDurationPolicy?.bindSprite(sprite, enemy.stats.movementSpeed);
                 continue;
             }
 
+            this.movementDurationPolicy?.bindSprite(sprite!, enemy.stats.movementSpeed);
             const immediate = options.immediate || this.immediateMode || !this.movementAnimator;
             if (immediate) {
+                this.movementAnimator?.cancel(sprite!);
                 sprite!.setPosition(enemy.position.x * this.tileSize, enemy.position.y * this.tileSize);
                 continue;
             }
@@ -157,6 +166,10 @@ export class RenderSynchronizer {
 
     public removeEnemySprite(enemyId: string) {
         const sprite = this.enemySprites.get(enemyId);
+        if (sprite) {
+            this.movementAnimator?.cancel(sprite);
+            this.movementDurationPolicy?.unbindSprite(sprite);
+        }
         sprite?.destroy();
         this.enemySprites.delete(enemyId);
     }

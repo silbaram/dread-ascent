@@ -10,28 +10,35 @@ import {
 } from '../../../../src/domain/services/CombatBalance';
 
 describe('CombatBalance', () => {
-    it('defines all 7 battle cards in a shared balance table', () => {
-        expect(Object.keys(CARD_BALANCE_TABLE)).toHaveLength(7);
+    it('defines the expanded card catalog in a shared balance table', () => {
+        expect(Object.keys(CARD_BALANCE_TABLE)).toHaveLength(35);
         expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.STRIKE]).toMatchObject({
             name: 'Strike',
             cost: 1,
             power: 6,
         });
-        expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.WEAKEN]).toMatchObject({
+        expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.BLOOD_PRICE]).toMatchObject({
             cost: 1,
-            statusEffect: { type: 'VULNERABLE', duration: 2 },
+            effectPayload: { drawCount: 2, selfDamage: 4 },
         });
-        expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.LAST_STAND]).toMatchObject({
+        expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.VENOM_STRIKE]).toMatchObject({
+            cost: 1,
+            statusEffect: { type: 'POISON', duration: 3 },
+        });
+        expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.BARRICADE]).toMatchObject({
             cost: 3,
-            power: 30,
-            condition: { type: 'HP_THRESHOLD', value: 5 },
+            effectPayload: {
+                buff: { type: 'BLOCK_PERSIST', value: 1, target: 'SELF' },
+            },
         });
     });
 
-    it('defines per-turn resources and the starter deck composition', () => {
+    it('keeps the starter deck and expands per-turn resources for card combat', () => {
         expect(COMBAT_RESOURCE_BALANCE).toEqual({
             maxEnergy: 3,
             cardsPerTurn: 5,
+            maxHandSize: 10,
+            rewardOfferSize: 3,
         });
         expect(STARTER_DECK_COMPOSITION).toEqual([
             { catalogId: CARD_CATALOG_ID.STRIKE, count: 4 },
@@ -39,19 +46,24 @@ describe('CombatBalance', () => {
         ]);
     });
 
-    it('defines status effect multipliers and poison tick balance', () => {
+    it('defines extended status effect balance for poison, frail, and regeneration', () => {
         expect(STATUS_EFFECT_BALANCE).toEqual({
             durationDecayPerTurn: 1,
             vulnerableDamageMultiplier: 1.5,
             weakDamageMultiplier: 0.75,
+            frailBlockMultiplier: 0.75,
             poison: {
                 damagePerStack: 1,
+                stackDecayPerTurn: 1,
+            },
+            regeneration: {
+                healPerStack: 1,
                 stackDecayPerTurn: 1,
             },
         });
     });
 
-    it('defines floor-band enemy intent scaling in the shared balance object', () => {
+    it('keeps floor-band enemy intent scaling in the shared balance object', () => {
         expect(ENEMY_INTENT_BALANCE.floorScaling.floorBandSize).toBe(10);
         expect(ENEMY_INTENT_BALANCE.floorScaling.perBand.normal).toEqual({
             attack: 1,

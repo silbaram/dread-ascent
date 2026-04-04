@@ -3,6 +3,7 @@ import {
     MovementAnimator,
     type TweenFactory,
 } from '../../../../src/scenes/synchronizers/MovementAnimator';
+import { SpriteMovementDurationPolicy } from '../../../../src/scenes/synchronizers/MovementDurationPolicy';
 
 vi.mock('phaser', () => ({}));
 
@@ -93,6 +94,36 @@ describe('MovementAnimator', () => {
         expect(tweens[0].config.ease).toBe('Linear');
     });
 
+    it('uses the duration provider when no explicit duration override is passed', () => {
+        // Arrange
+        const { factory, tweens } = createFakeTweenFactory();
+        const durationPolicy = new SpriteMovementDurationPolicy();
+        const animator = new MovementAnimator(factory, TILE_SIZE, durationPolicy);
+        const sprite = createFakeSprite();
+        durationPolicy.bindSprite(sprite, 200);
+
+        // Act
+        animator.moveTo(sprite, { x: 1, y: 1 });
+
+        // Assert
+        expect(tweens[0].config.duration).toBe(75);
+    });
+
+    it('prefers explicit duration override over the duration provider', () => {
+        // Arrange
+        const { factory, tweens } = createFakeTweenFactory();
+        const durationPolicy = new SpriteMovementDurationPolicy();
+        const animator = new MovementAnimator(factory, TILE_SIZE, durationPolicy);
+        const sprite = createFakeSprite();
+        durationPolicy.bindSprite(sprite, 25);
+
+        // Act
+        animator.moveTo(sprite, { x: 1, y: 1 }, { duration: 110 });
+
+        // Assert
+        expect(tweens[0].config.duration).toBe(110);
+    });
+
     it('invokes onComplete callback when animation finishes', () => {
         // Arrange
         const { factory, tweens } = createFakeTweenFactory();
@@ -157,6 +188,23 @@ describe('MovementAnimator', () => {
         expect(tweens[0].completeCalled).toBe(false);
         expect(animator.isAnimating(spriteA)).toBe(true);
         expect(animator.isAnimating(spriteB)).toBe(true);
+    });
+
+    it('cancels an active tween without completing it', () => {
+        // Arrange
+        const { factory, tweens } = createFakeTweenFactory();
+        const animator = new MovementAnimator(factory, TILE_SIZE);
+        const sprite = createFakeSprite();
+
+        // Act
+        animator.moveTo(sprite, { x: 1, y: 1 });
+        animator.cancel(sprite);
+
+        // Assert
+        expect(tweens).toHaveLength(1);
+        expect(tweens[0].stopCalled).toBe(true);
+        expect(tweens[0].completeCalled).toBe(false);
+        expect(animator.isAnimating(sprite)).toBe(false);
     });
 
     it('respects custom tileSize from constructor', () => {

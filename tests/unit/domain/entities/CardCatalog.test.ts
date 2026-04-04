@@ -1,18 +1,21 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+    ARCHETYPE_CARD_IDS,
     CARD_CATALOG_ID,
     CARD_TEMPLATES,
+    DROPPABLE_CARD_IDS,
+    RARITY_CARD_IDS,
     STARTER_DECK_COMPOSITION,
+    checkCardCondition,
     createCardFromCatalog,
     createStarterDeckCards,
     getCardTemplate,
-    checkCardCondition,
 } from '../../../../src/domain/entities/CardCatalog';
 import {
+    CARD_ARCHETYPE,
     CARD_EFFECT_TYPE,
     CARD_KEYWORD,
     CARD_RARITY,
-    CARD_TYPE,
     resetCardSequence,
 } from '../../../../src/domain/entities/Card';
 
@@ -21,155 +24,127 @@ describe('CardCatalog', () => {
         resetCardSequence();
     });
 
-    // -----------------------------------------------------------------------
-    // 7종 카드 정의 검증
-    // -----------------------------------------------------------------------
-
-    describe('7 card definitions', () => {
-        it('defines exactly 7 card templates', () => {
-            expect(CARD_TEMPLATES).toHaveLength(7);
+    describe('expanded catalog definitions', () => {
+        it('defines the 35-card expansion catalog', () => {
+            expect(CARD_TEMPLATES).toHaveLength(35);
         });
 
-        it('Strike: cost 1, damage 6', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.STRIKE);
-            expect(card.name).toBe('Strike');
-            expect(card.cost).toBe(1);
-            expect(card.power).toBe(6);
-            expect(card.effectType).toBe(CARD_EFFECT_TYPE.DAMAGE);
-            expect(card.keywords).toEqual([]);
+        it('keeps starter cards intact', () => {
+            const strike = createCardFromCatalog(CARD_CATALOG_ID.STRIKE);
+            const fortify = createCardFromCatalog(CARD_CATALOG_ID.FORTIFY);
+
+            expect(strike).toMatchObject({
+                name: 'Strike',
+                cost: 1,
+                power: 6,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+                rarity: CARD_RARITY.COMMON,
+            });
+            expect(fortify).toMatchObject({
+                name: 'Fortify',
+                cost: 1,
+                power: 5,
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            });
         });
 
-        it('Fortify: cost 1, block 5', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.FORTIFY);
-            expect(card.name).toBe('Fortify');
-            expect(card.cost).toBe(1);
-            expect(card.power).toBe(5);
-            expect(card.effectType).toBe(CARD_EFFECT_TYPE.BLOCK);
+        it('defines representative blood oath, shadow arts, and iron will cards', () => {
+            const bloodPrice = createCardFromCatalog(CARD_CATALOG_ID.BLOOD_PRICE);
+            const venomStrike = createCardFromCatalog(CARD_CATALOG_ID.VENOM_STRIKE);
+            const shieldBash = createCardFromCatalog(CARD_CATALOG_ID.SHIELD_BASH);
+
+            expect(bloodPrice).toMatchObject({
+                archetype: CARD_ARCHETYPE.BLOOD_OATH,
+                effectType: CARD_EFFECT_TYPE.DRAW,
+                effectPayload: { drawCount: 2, selfDamage: 4 },
+            });
+            expect(venomStrike).toMatchObject({
+                archetype: CARD_ARCHETYPE.SHADOW_ARTS,
+                power: 4,
+                statusEffect: { type: 'POISON', duration: 3 },
+            });
+            expect(shieldBash).toMatchObject({
+                archetype: CARD_ARCHETYPE.IRON_WILL,
+                effectPayload: {
+                    scaling: { source: 'USER_BLOCK', multiplier: 1 },
+                },
+            });
         });
 
-        it('Weaken: cost 1, Vulnerable 2 turns', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.WEAKEN);
-            expect(card.name).toBe('Weaken');
-            expect(card.cost).toBe(1);
-            expect(card.effectType).toBe(CARD_EFFECT_TYPE.STATUS_EFFECT);
-            expect(card.statusEffect).toEqual({ type: 'VULNERABLE', duration: 2 });
+        it('defines representative rare cards and curses', () => {
+            const barricade = createCardFromCatalog(CARD_CATALOG_ID.BARRICADE);
+            const hemorrhage = createCardFromCatalog(CARD_CATALOG_ID.HEMORRHAGE);
+
+            expect(barricade).toMatchObject({
+                rarity: CARD_RARITY.RARE,
+                effectType: CARD_EFFECT_TYPE.BUFF,
+                effectPayload: {
+                    buff: { type: 'BLOCK_PERSIST', value: 1, target: 'SELF' },
+                },
+            });
+            expect(hemorrhage.keywords).toContain(CARD_KEYWORD.UNPLAYABLE);
         });
 
-        it('Bloodrush: cost 2, damage 18, Exhaust', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.BLOODRUSH);
-            expect(card.name).toBe('Bloodrush');
-            expect(card.cost).toBe(2);
-            expect(card.power).toBe(18);
-            expect(card.keywords).toContain(CARD_KEYWORD.EXHAUST);
-        });
+        it('keeps catalog ids and names unique', () => {
+            const ids = CARD_TEMPLATES.map((template) => template.catalogId);
+            const names = CARD_TEMPLATES.map((template) => template.params.name);
 
-        it('Shadow Step: cost 0, flee, Exhaust, Rare', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.SHADOW_STEP);
-            expect(card.name).toBe('Shadow Step');
-            expect(card.cost).toBe(0);
-            expect(card.effectType).toBe(CARD_EFFECT_TYPE.FLEE);
-            expect(card.keywords).toContain(CARD_KEYWORD.EXHAUST);
-            expect(card.rarity).toBe(CARD_RARITY.RARE);
-        });
-
-        it('Last Stand: cost 3, damage 30, Retain, HP<=5 condition', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.LAST_STAND);
-            expect(card.name).toBe('Last Stand');
-            expect(card.cost).toBe(3);
-            expect(card.power).toBe(30);
-            expect(card.keywords).toContain(CARD_KEYWORD.RETAIN);
-            expect(card.rarity).toBe(CARD_RARITY.RARE);
-            expect(card.condition).toEqual({ type: 'HP_THRESHOLD', value: 5 });
-        });
-
-        it('Shockwave: cost 2, damage 8', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.SHOCKWAVE);
-            expect(card.name).toBe('Shockwave');
-            expect(card.cost).toBe(2);
-            expect(card.power).toBe(8);
-            expect(card.effectType).toBe(CARD_EFFECT_TYPE.DAMAGE);
-        });
-
-        it('all cards have unique names', () => {
-            const names = CARD_TEMPLATES.map((t) => t.params.name);
-            expect(new Set(names).size).toBe(names.length);
-        });
-
-        it('all catalog IDs are unique', () => {
-            const ids = CARD_TEMPLATES.map((t) => t.catalogId);
             expect(new Set(ids).size).toBe(ids.length);
+            expect(new Set(names).size).toBe(names.length);
         });
     });
 
-    // -----------------------------------------------------------------------
-    // Starter Deck
-    // -----------------------------------------------------------------------
-
     describe('starter deck', () => {
-        it('creates starter deck with Strike x4, Fortify x3', () => {
+        it('creates starter deck with Strike x4 and Fortify x3', () => {
             const cards = createStarterDeckCards();
 
             expect(cards).toHaveLength(7);
-
-            const strikes = cards.filter((c) => c.name === 'Strike');
-            const fortifies = cards.filter((c) => c.name === 'Fortify');
-
-            expect(strikes).toHaveLength(4);
-            expect(fortifies).toHaveLength(3);
-        });
-
-        it('all starter cards have unique IDs', () => {
-            const cards = createStarterDeckCards();
-            const ids = cards.map((c) => c.id);
-            expect(new Set(ids).size).toBe(ids.length);
-        });
-
-        it('starter cards have correct cost values', () => {
-            const cards = createStarterDeckCards();
-            for (const card of cards) {
-                expect(card.cost).toBe(1);
-            }
+            expect(cards.filter((card) => card.name === 'Strike')).toHaveLength(4);
+            expect(cards.filter((card) => card.name === 'Fortify')).toHaveLength(3);
+            expect(STARTER_DECK_COMPOSITION).toEqual([
+                { catalogId: CARD_CATALOG_ID.STRIKE, count: 4 },
+                { catalogId: CARD_CATALOG_ID.FORTIFY, count: 3 },
+            ]);
         });
     });
 
-    // -----------------------------------------------------------------------
-    // Template Lookup
-    // -----------------------------------------------------------------------
-
-    describe('getCardTemplate', () => {
-        it('returns template for valid catalog ID', () => {
-            const template = getCardTemplate(CARD_CATALOG_ID.STRIKE);
-            expect(template).toBeDefined();
-            expect(template!.params.name).toBe('Strike');
+    describe('lookup helpers', () => {
+        it('returns templates for valid ids and undefined for invalid ids', () => {
+            expect(getCardTemplate(CARD_CATALOG_ID.QUICK_DRAW)?.params.name).toBe('Quick Draw');
+            expect(getCardTemplate('INVALID' as never)).toBeUndefined();
         });
 
-        it('returns undefined for invalid catalog ID', () => {
-            const template = getCardTemplate('INVALID' as never);
-            expect(template).toBeUndefined();
+        it('groups cards by archetype and rarity', () => {
+            expect(ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.BLOOD_OATH]).toContain(CARD_CATALOG_ID.BLOOD_PRICE);
+            expect(ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.SHADOW_ARTS]).toContain(CARD_CATALOG_ID.MIASMA);
+            expect(ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.IRON_WILL]).toContain(CARD_CATALOG_ID.BARRICADE);
+            expect(RARITY_CARD_IDS[CARD_RARITY.UNCOMMON]).toContain(CARD_CATALOG_ID.CRIMSON_PACT);
+            expect(RARITY_CARD_IDS[CARD_RARITY.RARE]).toContain(CARD_CATALOG_ID.SHADOW_STEP);
+        });
+
+        it('excludes curses from the droppable pool', () => {
+            expect(DROPPABLE_CARD_IDS).not.toContain(CARD_CATALOG_ID.HEMORRHAGE);
+            expect(DROPPABLE_CARD_IDS).not.toContain(CARD_CATALOG_ID.DREAD);
         });
     });
-
-    // -----------------------------------------------------------------------
-    // Card Condition Check
-    // -----------------------------------------------------------------------
 
     describe('checkCardCondition', () => {
-        it('returns true when card has no condition', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.STRIKE);
-            expect(checkCardCondition(card, 100)).toBe(true);
+        it('returns true when a card has no condition', () => {
+            expect(checkCardCondition(createCardFromCatalog(CARD_CATALOG_ID.STRIKE), 100)).toBe(true);
         });
 
-        it('Last Stand: returns true when HP <= 5', () => {
+        it('checks the Last Stand HP threshold condition', () => {
             const card = createCardFromCatalog(CARD_CATALOG_ID.LAST_STAND);
+
             expect(checkCardCondition(card, 5)).toBe(true);
-            expect(checkCardCondition(card, 3)).toBe(true);
-            expect(checkCardCondition(card, 1)).toBe(true);
+            expect(checkCardCondition(card, 6)).toBe(false);
         });
 
-        it('Last Stand: returns false when HP > 5', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.LAST_STAND);
-            expect(checkCardCondition(card, 6)).toBe(false);
-            expect(checkCardCondition(card, 100)).toBe(false);
+        it('checks turn-damage conditions with the combat context', () => {
+            const card = createCardFromCatalog(CARD_CATALOG_ID.COUNTER_STRIKE);
+
+            expect(checkCardCondition(card, 100, { turnDamageTaken: 0 })).toBe(false);
+            expect(checkCardCondition(card, 100, { turnDamageTaken: 3 })).toBe(true);
         });
     });
 });

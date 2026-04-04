@@ -88,6 +88,8 @@ Dread Ascent의 게임 시스템 설정과 밸런스 값을 설명합니다. 대
 
 브라우저의 `localStorage`를 사용하여 데이터를 영구 저장합니다.
 
+- **Card Collection**: `dread-ascent.card-collection`
+  - 이전 하강에서 한 번이라도 덱에 들어온 카드의 카탈로그 ID를 누적 저장합니다.
 - **Meta Progression**: `dread-ascent.meta-progression`
 - **Run State (Active Game)**: `dread-ascent.run-state`
   - 현재 진행 중인 게임의 층, 인벤토리, 스탯 정보를 포함합니다.

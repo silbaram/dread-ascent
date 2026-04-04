@@ -32,6 +32,7 @@ export class Player {
         this.stats.maxHealth = nextStats.maxHealth;
         this.stats.attack = nextStats.attack;
         this.stats.defense = nextStats.defense;
+        this.stats.movementSpeed = nextStats.movementSpeed;
         this.experience = 0;
     }
 
@@ -41,6 +42,7 @@ export class Player {
         this.stats.maxHealth = nextStats.maxHealth;
         this.stats.attack = nextStats.attack;
         this.stats.defense = nextStats.defense;
+        this.stats.movementSpeed = nextStats.movementSpeed;
         this.experience = Math.max(0, Math.floor(experience));
     }
 
@@ -59,6 +61,7 @@ export class Player {
         this.stats.maxHealth = Math.max(1, this.stats.maxHealth + (modifier.maxHealth ?? 0));
         this.stats.attack = Math.max(0, this.stats.attack + (modifier.attack ?? 0));
         this.stats.defense = Math.max(0, this.stats.defense + (modifier.defense ?? 0));
+        this.stats.movementSpeed = Math.max(1, this.stats.movementSpeed + (modifier.movementSpeed ?? 0));
         this.stats.health = Math.min(this.stats.health, this.stats.maxHealth);
 
         return cloneCombatStats(this.stats);

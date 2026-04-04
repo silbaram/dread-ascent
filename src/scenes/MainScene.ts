@@ -7,7 +7,9 @@ import { MetaProgressionService, PermanentUpgradeKey } from '../domain/services/
 import { RunPersistenceService, PersistedRunStatus } from '../domain/services/RunPersistenceService';
 import { SoulShardService } from '../domain/services/SoulShardService';
 import { CardBattleService } from '../domain/services/CardBattleService';
+import { CardCollectionService } from '../domain/services/CardCollectionService';
 import { CardDropService, type CardDropResult } from '../domain/services/CardDropService';
+import type { Card } from '../domain/entities/Card';
 import { CombatService } from '../domain/services/CombatService';
 import { DeckService } from '../domain/services/DeckService';
 import { WORLD_TILE, isWalkableTile } from '../shared/types/WorldTiles';
@@ -15,6 +17,7 @@ import { GameLocalization, MovementDirection } from '../ui/GameLocalization';
 import { type HudLogTone, GameHud } from '../ui/GameHud';
 import { RenderSynchronizer } from './synchronizers/RenderSynchronizer';
 import { MovementAnimator, PhaserTweenFactory } from './synchronizers/MovementAnimator';
+import { getComposedEnemyMovementDurationMs, SpriteMovementDurationPolicy } from './synchronizers/MovementDurationPolicy';
 import { FloorDirector } from './directors/FloorDirector';
 import { BattleDirector, type BattleOutcome } from './directors/BattleDirector';
 import { BattleScene, type BattleSceneData, type BattleSceneResult } from './BattleScene';
@@ -35,9 +38,11 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     private fovRadius: number = 8;
     private selectedInventoryItemId?: string;
     private isAnimatingMovement = false;
+    private isCardRewardFlowOpen = false;
 
     private readonly combatService = new CombatService();
     private readonly cardBattleService = new CardBattleService();
+    private readonly cardCollectionService = new CardCollectionService();
     private readonly cardDropService = new CardDropService();
     private readonly deckService = new DeckService();
     private readonly enemySpawner = new EnemySpawnerService();
@@ -75,8 +80,16 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     private initializeComponents() {
         const tweenFactory = new PhaserTweenFactory(this);
-        const movementAnimator = new MovementAnimator(tweenFactory, this.tileSize);
-        this.renderSynchronizer = new RenderSynchronizer(this, this.localization, this.tileSize, this.fovRadius, movementAnimator);
+        const movementDurationPolicy = new SpriteMovementDurationPolicy();
+        const movementAnimator = new MovementAnimator(tweenFactory, this.tileSize, movementDurationPolicy);
+        this.renderSynchronizer = new RenderSynchronizer(
+            this,
+            this.localization,
+            this.tileSize,
+            this.fovRadius,
+            movementAnimator,
+            movementDurationPolicy,
+        );
         this.floorDirector = new FloorDirector(
             this.floorProgression,
             this.enemySpawner,
@@ -110,6 +123,8 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             onContinueRun: () => this.resumeSavedRun(),
             onReturnToTitle: () => this.returnToTitleScreen(),
             onStartNewRun: () => this.startNewRun(),
+            onOpenCardCollection: () => this.openCardCollection(),
+            onCloseCardCollection: () => this.closeCardCollection(),
             onOpenSanctuary: () => this.openSanctuary(),
             onCloseSanctuary: () => this.closeSanctuary(),
             onPurchaseUpgrade: (key) => this.purchaseSanctuaryUpgrade(key),
@@ -206,7 +221,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         if (targetTile === WORLD_TILE.STAIRS) {
             this.pushTurnLog(this.localization.formatPlayerClimbsStairs());
             this.advanceToNextFloor();
-            playerAnimationDone.then(() => this.endAnimationLock());
+            this.endAnimationLock();
             return;
         }
 
@@ -225,7 +240,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     public onToggleInventory() {
         const state = this.overlayController.getState();
-        if (state.isTitleScreenOpen || state.isGameOver || !this.playerEntity || !this.isPlayerTurn()) return;
+        if (state.isTitleScreenOpen || state.isGameOver || this.isCardRewardFlowOpen || !this.playerEntity || !this.isPlayerTurn()) return;
         this.setInventoryOpen(!state.isInventoryOpen);
     }
 
@@ -242,7 +257,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     public isInventoryOpen() { return this.overlayController.getState().isInventoryOpen; }
     public isPlayerTurn(): boolean {
         const state = this.overlayController.getState();
-        return !state.isGameOver && !state.isVictory && this.battleDirector.isPlayerTurn();
+        return !this.isCardRewardFlowOpen && !state.isGameOver && !state.isVictory && this.battleDirector.isPlayerTurn();
     }
     public isAnimating(): boolean {
         return this.isAnimatingMovement;
@@ -272,22 +287,25 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         battleScene.setOnBattleEnd((result: BattleSceneResult) => {
             this.handleBattleSceneResult(result);
         });
+        this.hud.setViewportMode('battle-scene');
         this.scene.sleep('MainScene');
         this.scene.launch('BattleScene', battleData);
     }
 
     private handleBattleSceneResult(result: BattleSceneResult): void {
+        this.hud.setViewportMode('field');
         if (!this.playerEntity) return;
 
         const { enemy } = result;
 
-        // 데미지를 실제 엔티티에 적용
-        if (result.totalEnemyDamage > 0) {
-            enemy.applyDamage(result.totalEnemyDamage);
-        }
-        if (result.totalPlayerDamage > 0) {
-            this.playerEntity.applyDamage(result.totalPlayerDamage);
-        }
+        this.playerEntity.stats.health = this.clampHealth(
+            result.playerRemainingHealth,
+            this.playerEntity.stats.maxHealth,
+        );
+        enemy.stats.health = this.clampHealth(
+            result.enemyRemainingHealth,
+            enemy.stats.maxHealth,
+        );
 
         // 로그 기록
         const battleSummary = result.resolution === 'escape'
@@ -325,6 +343,14 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         }
     }
 
+    private clampHealth(value: number, maxHealth: number): number {
+        if (!Number.isFinite(value)) {
+            return 0;
+        }
+
+        return Math.max(0, Math.min(Math.floor(value), maxHealth));
+    }
+
     private handleBattleOutcome(outcome: BattleOutcome, enemy: Enemy) {
         if (!this.playerEntity) return;
 
@@ -354,62 +380,105 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.pushTurnLog(this.localization.formatEnemyDeath(this.getEnemyName(enemy)), 'danger');
         this.pushTurnLog(this.localization.formatExperienceGain(enemy.experienceReward, totalExp), 'item');
 
-        this.rollCardDrop(enemy);
+        const rewardFlowStarted = this.rollCardDrop(enemy);
         this.spawnEliteReward(enemy);
         this.syncBossHud();
+        if (rewardFlowStarted) {
+            this.refreshTurnStatus();
+            return;
+        }
+
+        this.persistRun('active');
         this.completePlayerTurn('');
     }
 
-    /** 적 처치 시 카드 드롭을 판정하고 결과를 로그에 표시한다. */
+    /** 적 처치 시 카드 보상 오퍼를 판정하고 결과를 HUD에 표시한다. */
     private pendingCardDrop: CardDropResult | null = null;
+    private pendingRewardCard: Card | null = null;
 
-    private rollCardDrop(enemy: Enemy): void {
+    private rollCardDrop(enemy: Enemy): boolean {
         const floorNumber = this.floorDirector.getFloorSnapshot().number;
         const result = this.cardDropService.rollCardDrop(
             enemy.kind,
             enemy.elite,
             floorNumber,
-            this.deckService,
+            this.deckService.getCards(),
         );
 
         if (!result.dropped) {
+            return false;
+        }
+
+        this.pushTurnLog(
+            `🃏 Card Reward! Choose 1 of ${result.offer.choices.length} ${result.offer.rarityBand.toLowerCase()} cards.`,
+            'item',
+        );
+        this.pendingCardDrop = result;
+        this.isCardRewardFlowOpen = true;
+        const rewardOffer = {
+            ...result.offer,
+            isDeckFull: this.deckService.isFull(),
+        };
+        this.hud.showCardRewardOverlay(
+            rewardOffer,
+            (selectedCardId: string | null) => this.handleCardRewardSelection(selectedCardId),
+        );
+
+        return true;
+    }
+
+    private handleCardRewardSelection(selectedCardId: string | null): void {
+        if (!this.pendingCardDrop || !this.pendingCardDrop.dropped) {
+            this.resetCardRewardFlowState();
             return;
         }
 
-        const cardTypeLabel = result.card.type === 'ATTACK' ? '⚔️' : '🛡️';
-        this.pushTurnLog(
-            `🃏 Card Drop! ${cardTypeLabel} ${result.card.name} (Power: ${result.card.power})`,
-            'item',
-        );
+        if (selectedCardId === null) {
+            this.pushTurnLog('🃏 Card reward skipped.', 'system');
+            this.completeCardRewardFlow();
+            return;
+        }
 
-        if (result.deckFull) {
-            this.pendingCardDrop = result;
+        const selectedChoice = this.pendingCardDrop.offer.choices.find(
+            (choice) => choice.card.id === selectedCardId,
+        );
+        if (!selectedChoice) {
+            this.pushTurnLog('🃏 Reward option is no longer available.', 'danger');
+            this.completeCardRewardFlow();
+            return;
+        }
+
+        this.pendingRewardCard = selectedChoice.card;
+
+        if (!this.deckService.addCard(selectedChoice.card)) {
             this.pushTurnLog('📦 Deck is full! Choose a card to swap or skip.', 'danger');
             this.hud.showCardSwapOverlay(
-                result.card,
+                selectedChoice.card,
                 this.deckService.getCards(),
                 (removeCardId: string | null) => this.handleCardSwapSelection(removeCardId),
             );
-        } else {
-            this.persistRun('active');
+            return;
         }
+
+        this.pushTurnLog(`🃏 Added ${selectedChoice.card.name} to the deck.`, 'item');
+        this.completeCardRewardFlow();
     }
 
     private handleCardSwapSelection(removeCardId: string | null): void {
-        if (!this.pendingCardDrop || !this.pendingCardDrop.dropped) {
-            this.pendingCardDrop = null;
+        if (!this.pendingRewardCard) {
+            this.resetCardRewardFlowState();
             return;
         }
 
         if (removeCardId === null) {
-            this.pushTurnLog('🃏 Card drop skipped.', 'system');
-            this.pendingCardDrop = null;
+            this.pushTurnLog('🃏 Card reward skipped.', 'system');
+            this.completeCardRewardFlow();
             return;
         }
 
         const swapResult = this.cardDropService.swapCard(
             removeCardId,
-            this.pendingCardDrop.card,
+            this.pendingRewardCard,
             this.deckService,
         );
 
@@ -418,10 +487,30 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
                 `🔄 Swapped ${swapResult.removedCard.name} → ${swapResult.addedCard.name}`,
                 'item',
             );
-            this.persistRun('active');
+            this.completeCardRewardFlow();
+            return;
         }
 
+        this.pushTurnLog('📦 The selected deck card is no longer available.', 'danger');
+        this.hud.showCardSwapOverlay(
+            this.pendingRewardCard,
+            this.deckService.getCards(),
+            (nextRemoveCardId: string | null) => this.handleCardSwapSelection(nextRemoveCardId),
+        );
+    }
+
+    private completeCardRewardFlow(): void {
+        this.persistRun('active');
+        this.resetCardRewardFlowState();
+        this.refreshTurnStatus();
+        this.completePlayerTurn('');
+    }
+
+    private resetCardRewardFlowState(): void {
         this.pendingCardDrop = null;
+        this.pendingRewardCard = null;
+        this.isCardRewardFlowOpen = false;
+        this.hud.hideCardRewardOverlay();
     }
 
     private async completePlayerTurn(logLine: string, extraLogs: Array<{ line: string; tone: HudLogTone }> = []): Promise<void> {
@@ -460,12 +549,12 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
                 return enemy && this.renderSynchronizer.isPositionVisible(enemy.position);
             });
 
-            // If many enemies are visible, speed up the animation to keep the game flow.
-            const duration = visibleEnemies.length >= 5 ? 100 : 150;
-
             for (const enemyTurn of enemyTurns) {
                 const enemy = this.floorDirector.getEnemyById(enemyTurn.id);
                 const isVisible = enemy && this.renderSynchronizer.isPositionVisible(enemy.position);
+                const duration = enemy && isVisible
+                    ? getComposedEnemyMovementDurationMs(enemy.stats.movementSpeed, visibleEnemies.length)
+                    : undefined;
 
                 const outcome = this.battleDirector.resolveEnemyTurn(enemyTurn, player, mapData, {
                     duration,
@@ -521,8 +610,11 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     }
 
     private returnToTitleScreen() {
+        this.hud.setViewportMode('field');
+        this.resetCardRewardFlowState();
         this.overlayController.setTitleScreen(true);
         this.overlayController.setSanctuary(false);
+        this.overlayController.setCardCollection(false);
         this.overlayController.setInventory(false);
         this.overlayController.setGameOver(false);
         this.overlayController.setVictory(false);
@@ -538,8 +630,10 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     private startNewRun() {
         this.defeatedEnemyCount = 0;
         this.selectedInventoryItemId = undefined;
+        this.resetCardRewardFlowState();
         this.overlayController.setTitleScreen(false);
         this.overlayController.setSanctuary(false);
+        this.overlayController.setCardCollection(false);
         this.overlayController.setInventory(false);
         this.overlayController.setGameOver(false);
         this.overlayController.setVictory(false);
@@ -560,6 +654,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.hud.clearLogs();
         this.selectedInventoryItemId = undefined;
         this.defeatedEnemyCount = savedRun.defeatedEnemyCount;
+        this.resetCardRewardFlowState();
         this.renderSynchronizer.clearPlayerTint();
         const floor = this.floorDirector.restoreFloor(savedRun.floor);
         this.itemService.resetRun();
@@ -572,7 +667,22 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.persistRun('active');
     }
 
+    private openCardCollection() {
+        this.overlayController.setSanctuary(false);
+        this.overlayController.setCardCollection(true);
+        this.overlayController.setTitleScreenMessage(undefined);
+        this.syncTitleOverlay();
+        this.refreshTurnStatus();
+    }
+
+    private closeCardCollection() {
+        this.overlayController.setCardCollection(false);
+        this.syncTitleOverlay();
+        this.refreshTurnStatus();
+    }
+
     private openSanctuary() {
+        this.overlayController.setCardCollection(false);
         this.overlayController.setSanctuary(true);
         this.overlayController.setTitleScreenMessage({ key: 'sanctuary-help', tone: 'system' });
         this.syncTitleOverlay();
@@ -789,7 +899,13 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         if (floor.type === 'boss') this.hud.queueEventBanner(this.localization.formatBossApproaches(this.getBossName()), 'danger', 2400);
     }
     private persistRun(status: PersistedRunStatus) {
-        if (this.playerEntity) this.floorDirector.persistRun(status, this.playerEntity, this.defeatedEnemyCount, this.deckService.getCards());
+        if (!this.playerEntity) {
+            return;
+        }
+
+        const deckCards = this.deckService.getCards();
+        this.cardCollectionService.recordCards(deckCards);
+        this.floorDirector.persistRun(status, this.playerEntity, this.defeatedEnemyCount, deckCards);
     }
 
     private getEnemyName(enemy: Pick<Enemy, 'archetypeId' | 'elite'>) { return this.localization.getEnemyName(enemy.archetypeId, enemy.elite); }
@@ -805,12 +921,18 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     }
     private describeEquip(item: Pick<InventoryItem, 'icon' | 'id' | 'name'>, action: 'equip' | 'unequip', modifier?: CombatStatModifier): string {
         const mod = action === 'unequip'
-            ? { maxHealth: modifier?.maxHealth ? -modifier.maxHealth : undefined, attack: modifier?.attack ? -modifier.attack : undefined, defense: modifier?.defense ? -modifier.defense : undefined }
+            ? {
+                maxHealth: modifier?.maxHealth ? -modifier.maxHealth : undefined,
+                attack: modifier?.attack ? -modifier.attack : undefined,
+                defense: modifier?.defense ? -modifier.defense : undefined,
+                movementSpeed: modifier?.movementSpeed ? -modifier.movementSpeed : undefined,
+            }
             : modifier;
         const summary = [
             mod?.maxHealth ? `HP ${formatSignedNumber(mod.maxHealth)}` : undefined,
             mod?.attack ? `ATK ${formatSignedNumber(mod.attack)}` : undefined,
             mod?.defense ? `DEF ${formatSignedNumber(mod.defense)}` : undefined,
+            mod?.movementSpeed ? `SPD ${formatSignedNumber(mod.movementSpeed)}` : undefined,
         ].filter(Boolean).join(' · ');
         return this.localization.formatEquip(item.icon, this.localization.getItemName(item.id, item.name), action, summary);
     }
@@ -820,7 +942,11 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     private syncTitleOverlay() {
         const snapshot = this.metaProgression.getSnapshot();
-        this.overlayController.syncTitleOverlay(this.runPersistence.hasActiveRun(), snapshot.upgrades);
+        this.overlayController.syncTitleOverlay(
+            this.runPersistence.hasActiveRun(),
+            snapshot.upgrades,
+            this.cardCollectionService.getSnapshot(),
+        );
     }
 
     private generateDefaultTextures() {

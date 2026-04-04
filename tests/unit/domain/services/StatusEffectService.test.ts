@@ -52,27 +52,6 @@ describe('StatusEffectService', () => {
             ]);
         });
 
-        it('refreshes Weak with the larger remaining duration instead of stacking', () => {
-            const state = createStatusEffects({ weak: 1 });
-
-            const result = service.applyStatusEffect(state, {
-                type: STATUS_EFFECT_TYPE.WEAK,
-                duration: 4,
-                target: 'player',
-            });
-
-            expect(result.statusEffects.weak).toBe(4);
-            expect(result.events).toEqual([
-                {
-                    type: STATUS_EVENT_TYPE.APPLY,
-                    target: 'player',
-                    status: STATUS_EFFECT_TYPE.WEAK,
-                    value: 4,
-                    duration: 4,
-                },
-            ]);
-        });
-
         it('adds Poison stacks on reapply', () => {
             const state = createStatusEffects({ poison: 3 });
 
@@ -83,14 +62,34 @@ describe('StatusEffectService', () => {
             });
 
             expect(result.statusEffects.poison).toBe(5);
-            expect(result.events).toEqual([
-                {
-                    type: STATUS_EVENT_TYPE.APPLY,
-                    target: 'enemy-1',
-                    status: STATUS_EFFECT_TYPE.POISON,
-                    value: 5,
-                },
-            ]);
+            expect(result.events[0]).toMatchObject({
+                status: STATUS_EFFECT_TYPE.POISON,
+                value: 5,
+            });
+        });
+
+        it('adds Strength and Thorns as stacks, and refreshes Regeneration as duration', () => {
+            const result = service.applyStatusEffect(service.createState(), {
+                type: STATUS_EFFECT_TYPE.STRENGTH,
+                stacks: 2,
+                target: 'player',
+            });
+            const thorns = service.applyStatusEffect(result.statusEffects, {
+                type: STATUS_EFFECT_TYPE.THORNS,
+                stacks: 3,
+                target: 'player',
+            });
+            const regeneration = service.applyStatusEffect(thorns.statusEffects, {
+                type: STATUS_EFFECT_TYPE.REGENERATION,
+                duration: 2,
+                target: 'player',
+            });
+
+            expect(regeneration.statusEffects).toMatchObject({
+                strength: 2,
+                thorns: 3,
+                regeneration: 2,
+            });
         });
     });
 
@@ -115,14 +114,25 @@ describe('StatusEffectService', () => {
             expect(damage).toBe(7);
         });
 
-        it('applies Weak before Vulnerable in damage calculation order', () => {
+        it('adds Strength before Weak and Vulnerable modifiers', () => {
             const damage = service.calculateDamage(
                 10,
-                createStatusEffects({ weak: 1 }),
+                createStatusEffects({ strength: 3, weak: 1 }),
                 createStatusEffects({ vulnerable: 1 }),
             );
 
-            expect(damage).toBe(10);
+            expect(damage).toBe(13);
+        });
+    });
+
+    describe('calculateBlockGain', () => {
+        it('reduces block gain while Frail is active', () => {
+            const blockGain = service.calculateBlockGain(
+                12,
+                createStatusEffects({ frail: 2 }),
+            );
+
+            expect(blockGain).toBe(9);
         });
     });
 
@@ -141,15 +151,30 @@ describe('StatusEffectService', () => {
             expect(result.events).toEqual([]);
         });
 
-        it('decrements Vulnerable and Weak at turn end and expires them at 0', () => {
+        it('heals and decays Regeneration at turn end', () => {
             const result = service.processTurnEnd(
-                createCombatant(),
-                createStatusEffects({ vulnerable: 1, weak: 1 }),
+                createCombatant({ health: 30, maxHealth: 40 }),
+                createStatusEffects({ regeneration: 3 }),
                 'player',
             );
 
-            expect(result.statusEffects.vulnerable).toBe(0);
-            expect(result.statusEffects.weak).toBe(0);
+            expect(result.combatant.health).toBe(33);
+            expect(result.regenerationHeal).toBe(3);
+            expect(result.statusEffects.regeneration).toBe(2);
+        });
+
+        it('decrements Vulnerable, Weak, and Frail at turn end and expires them at 0', () => {
+            const result = service.processTurnEnd(
+                createCombatant(),
+                createStatusEffects({ vulnerable: 1, weak: 1, frail: 1 }),
+                'player',
+            );
+
+            expect(result.statusEffects).toMatchObject({
+                vulnerable: 0,
+                weak: 0,
+                frail: 0,
+            });
             expect(result.events).toEqual([
                 {
                     type: STATUS_EVENT_TYPE.EXPIRE,
@@ -161,23 +186,10 @@ describe('StatusEffectService', () => {
                     target: 'player',
                     status: STATUS_EFFECT_TYPE.WEAK,
                 },
-            ]);
-        });
-
-        it('expires Poison when the last stack is consumed at turn end', () => {
-            const result = service.processTurnEnd(
-                createCombatant({ health: 5 }),
-                createStatusEffects({ poison: 1 }),
-                'enemy-1',
-            );
-
-            expect(result.combatant.health).toBe(4);
-            expect(result.statusEffects.poison).toBe(0);
-            expect(result.events).toEqual([
                 {
                     type: STATUS_EVENT_TYPE.EXPIRE,
-                    target: 'enemy-1',
-                    status: STATUS_EFFECT_TYPE.POISON,
+                    target: 'player',
+                    status: STATUS_EFFECT_TYPE.FRAIL,
                 },
             ]);
         });

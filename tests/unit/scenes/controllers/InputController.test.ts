@@ -13,6 +13,7 @@ function createMockDelegate(overrides: Partial<InputDelegate> = {}): InputDelega
         isSanctuaryOpen: vi.fn(() => false),
         isInventoryOpen: vi.fn(() => false),
         isPlayerTurn: vi.fn(() => true),
+        isAnimating: vi.fn(() => false),
         ...overrides,
     };
 }
@@ -51,8 +52,8 @@ describe('InputController', () => {
             controller.setupInput();
         });
 
-        it('ignores movement input when isPlayerTurn returns false (animation lock)', () => {
-            // Arrange - simulate animation in progress via isPlayerTurn returning false
+        it('ignores movement input when isPlayerTurn returns false', () => {
+            // Arrange
             vi.mocked(delegate.isPlayerTurn).mockReturnValue(false);
 
             // Act
@@ -68,6 +69,7 @@ describe('InputController', () => {
         it('allows movement input when isPlayerTurn returns true', () => {
             // Arrange
             vi.mocked(delegate.isPlayerTurn).mockReturnValue(true);
+            vi.mocked(delegate.isAnimating).mockReturnValue(false);
 
             // Act
             dispatchKey(scene, 'ArrowLeft');
@@ -76,9 +78,22 @@ describe('InputController', () => {
             expect(delegate.onMove).toHaveBeenCalledWith(-1, 0);
         });
 
-        it('allows inventory toggle regardless of isPlayerTurn state', () => {
-            // Arrange - animation in progress
+        it('ignores movement input when isAnimating returns true', () => {
+            // Arrange
+            vi.mocked(delegate.isPlayerTurn).mockReturnValue(true);
+            vi.mocked(delegate.isAnimating).mockReturnValue(true);
+
+            // Act
+            dispatchKey(scene, 'ArrowLeft');
+
+            // Assert
+            expect(delegate.onMove).not.toHaveBeenCalled();
+        });
+
+        it('allows inventory toggle regardless of turn or animation state', () => {
+            // Arrange
             vi.mocked(delegate.isPlayerTurn).mockReturnValue(false);
+            vi.mocked(delegate.isAnimating).mockReturnValue(true);
 
             // Act
             dispatchKey(scene, 'KeyI');
@@ -87,9 +102,10 @@ describe('InputController', () => {
             expect(delegate.onToggleInventory).toHaveBeenCalledOnce();
         });
 
-        it('allows Tab to toggle inventory regardless of isPlayerTurn state', () => {
-            // Arrange - animation in progress
+        it('allows Tab to toggle inventory regardless of turn or animation state', () => {
+            // Arrange
             vi.mocked(delegate.isPlayerTurn).mockReturnValue(false);
+            vi.mocked(delegate.isAnimating).mockReturnValue(true);
 
             // Act
             dispatchKey(scene, 'Tab');
@@ -98,10 +114,11 @@ describe('InputController', () => {
             expect(delegate.onToggleInventory).toHaveBeenCalledOnce();
         });
 
-        it('allows Escape to close inventory regardless of isPlayerTurn state', () => {
-            // Arrange - animation in progress, inventory open
+        it('allows Escape to close inventory regardless of turn or animation state', () => {
+            // Arrange
             vi.mocked(delegate.isPlayerTurn).mockReturnValue(false);
             vi.mocked(delegate.isInventoryOpen).mockReturnValue(true);
+            vi.mocked(delegate.isAnimating).mockReturnValue(true);
 
             // Act
             dispatchKey(scene, 'Escape');
@@ -110,14 +127,16 @@ describe('InputController', () => {
             expect(delegate.onCloseInventory).toHaveBeenCalledOnce();
         });
 
-        it('re-allows movement input after isPlayerTurn returns true again', () => {
-            // Arrange - start with animation lock
-            vi.mocked(delegate.isPlayerTurn).mockReturnValue(false);
+        it('re-allows movement input after animation finishes', () => {
+            // Arrange
+            vi.mocked(delegate.isPlayerTurn).mockReturnValue(true);
+            vi.mocked(delegate.isAnimating).mockReturnValue(true);
             dispatchKey(scene, 'ArrowUp');
             expect(delegate.onMove).not.toHaveBeenCalled();
 
-            // Act - animation completes, turn returns to player
+            // Act
             vi.mocked(delegate.isPlayerTurn).mockReturnValue(true);
+            vi.mocked(delegate.isAnimating).mockReturnValue(false);
             dispatchKey(scene, 'ArrowUp');
 
             // Assert
