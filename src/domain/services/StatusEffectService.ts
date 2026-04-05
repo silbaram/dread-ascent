@@ -91,6 +91,11 @@ export interface StatusEffectTurnEndResult extends StatusEffectUpdateResult {
     readonly regenerationHeal: number;
 }
 
+export interface StatusEffectTurnEndOptions {
+    readonly poisonDecayOverride?: number;
+    readonly regenerationDecayOverride?: number;
+}
+
 function normalizeCount(value: number): number {
     if (!Number.isFinite(value)) {
         return 0;
@@ -233,19 +238,20 @@ export class StatusEffectService {
         combatant: StatusEffectCombatant,
         statusEffects: StatusEffectState,
         target: string,
+        options: StatusEffectTurnEndOptions = {},
     ): StatusEffectTurnEndResult {
         const nextStatusEffects: StatusEffectState = {
             vulnerable: decrementCount(getStatusValue(statusEffects, 'vulnerable')),
             weak: decrementCount(getStatusValue(statusEffects, 'weak')),
             poison: decrementCount(
                 getStatusValue(statusEffects, 'poison'),
-                STATUS_EFFECT_BALANCE.poison.stackDecayPerTurn,
+                options.poisonDecayOverride ?? STATUS_EFFECT_BALANCE.poison.stackDecayPerTurn,
             ),
             strength: getStatusValue(statusEffects, 'strength'),
             thorns: getStatusValue(statusEffects, 'thorns'),
             regeneration: decrementCount(
                 getStatusValue(statusEffects, 'regeneration'),
-                STATUS_EFFECT_BALANCE.regeneration.stackDecayPerTurn,
+                options.regenerationDecayOverride ?? STATUS_EFFECT_BALANCE.regeneration.stackDecayPerTurn,
             ),
             frail: decrementCount(getStatusValue(statusEffects, 'frail')),
         };

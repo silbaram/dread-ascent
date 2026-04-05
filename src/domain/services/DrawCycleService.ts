@@ -124,13 +124,13 @@ export class DrawCycleService {
      *
      * @returns 새 상태. 해당 카드가 손패에 없으면 상태를 변경하지 않는다.
      */
-    playCard(state: DrawCycleState, cardId: string): DrawCycleState {
+    playCard(state: DrawCycleState, cardId: string, playedCard?: Card): DrawCycleState {
         const cardIndex = state.hand.findIndex((c) => c.id === cardId);
         if (cardIndex === -1) {
             return state;
         }
 
-        const card = state.hand[cardIndex];
+        const card = playedCard ?? state.hand[cardIndex];
         const newHand = [...state.hand.slice(0, cardIndex), ...state.hand.slice(cardIndex + 1)];
 
         if (hasKeyword(card, CARD_KEYWORD.EXHAUST)) {

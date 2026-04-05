@@ -4,7 +4,11 @@ import { Player } from '../../domain/entities/Player';
 import { EnemySpawnerService } from '../../domain/services/EnemySpawnerService';
 import { FloorProgressionService, type FloorSnapshot } from '../../domain/services/FloorProgressionService';
 import { ItemService } from '../../domain/services/ItemService';
-import { RunPersistenceService, type PersistedRunStatus } from '../../domain/services/RunPersistenceService';
+import {
+    RunPersistenceService,
+    type PersistedRunStatus,
+    type PersistedSpecialRewardOffer,
+} from '../../domain/services/RunPersistenceService';
 import type { Card } from '../../domain/entities/Card';
 import { MapGenerator, type MapData } from '../../infra/rot/MapGenerator';
 
@@ -100,7 +104,14 @@ export class FloorDirector {
         return this.floorProgression.restore(snapshot);
     }
 
-    public persistRun(status: PersistedRunStatus, player: Player, defeatedEnemyCount: number, deckCards: readonly Card[] = []) {
+    public persistRun(
+        status: PersistedRunStatus,
+        player: Player,
+        defeatedEnemyCount: number,
+        deckCards: readonly Card[] = [],
+        pendingBattleStartEnergy = 0,
+        pendingSpecialRewardOffer?: PersistedSpecialRewardOffer,
+    ) {
         this.runPersistence.save({
             status,
             floor: this.floorProgression.getSnapshot(),
@@ -111,6 +122,8 @@ export class FloorDirector {
             inventory: this.itemService.getInventorySnapshot().items,
             deck: [...deckCards],
             defeatedEnemyCount,
+            pendingBattleStartEnergy,
+            pendingSpecialRewardOffer,
         });
     }
 

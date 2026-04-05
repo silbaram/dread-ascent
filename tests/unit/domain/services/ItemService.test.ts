@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ITEM_RARITY } from '../../../../src/domain/entities/Item';
+import { ITEM_ID, ITEM_RARITY } from '../../../../src/domain/entities/Item';
 import { ItemService, type ItemRandomSource } from '../../../../src/domain/services/ItemService';
 import type { SpawnRoom } from '../../../../src/domain/services/EnemySpawnerService';
 import { WORLD_TILE } from '../../../../src/shared/types/WorldTiles';
@@ -137,6 +137,15 @@ describe('ItemService', () => {
         expect(service.getFieldItems()).toHaveLength(1);
     });
 
+    it('allows elite reward drops to roll epic items on deep floors', () => {
+        const service = new ItemService(new SequenceRandomSource([0.95, 0]), 3);
+
+        const reward = service.spawnEliteRewardDrop({ x: 3, y: 3 }, 100);
+
+        expect(reward.definition.id).toBe(ITEM_ID.SOULFIRE_BRAND);
+        expect(reward.definition.rarity).toBe(ITEM_RARITY.EPIC);
+    });
+
     it('rolls higher item rarities more often on deeper floors', () => {
         // Arrange
         const lowFloorService = new ItemService(new SequenceRandomSource([0.95, 0]), 1);
@@ -147,40 +156,41 @@ describe('ItemService', () => {
             floorNumber: 1,
             ...singleRoomRequest,
         });
-        const [highFloorItem] = highFloorService.initializeFloor({
-            floorNumber: 100,
-            ...singleRoomRequest,
-        });
+        const highFloorItem = highFloorService.spawnRewardDrop({ x: 2, y: 2 }, 100, ITEM_RARITY.RARE);
 
         // Assert
-        expect(lowFloorItem?.rarity).toBe(ITEM_RARITY.RARE);
-        expect(highFloorItem?.rarity).toBe(ITEM_RARITY.LEGENDARY);
+        expect(lowFloorItem?.rarity).toBe(ITEM_RARITY.COMMON);
+        expect(highFloorItem?.rarity).toBe(ITEM_RARITY.EPIC);
     });
 
-    it('scales equipment stat bonuses upward for higher rarities', () => {
+    it('selects exact catalog items instead of scaling a common template upward', () => {
         // Arrange
-        const commonService = new ItemService(new SequenceRandomSource([0.1, 0.3]), 1);
-        const legendaryService = new ItemService(new SequenceRandomSource([0.98, 0.13]), 1);
+        const uncommonService = new ItemService(new SequenceRandomSource([0.7, 0]), 1);
+        const epicService = new ItemService(new SequenceRandomSource([0.95, 0]), 1);
 
         // Act
-        const [commonItem] = commonService.initializeFloor({
-            floorNumber: 1,
+        const [uncommonItem] = uncommonService.initializeFloor({
+            floorNumber: 10,
             ...singleRoomRequest,
         });
-        const [legendaryItem] = legendaryService.initializeFloor({
-            floorNumber: 100,
-            ...singleRoomRequest,
-        });
+        const epicItem = epicService.spawnRewardDrop({ x: 2, y: 2 }, 100, ITEM_RARITY.RARE);
 
         // Assert
-        expect(commonItem?.definition.name).toBe('Iron Dagger');
-        expect(commonItem?.definition.rarity).toBe(ITEM_RARITY.COMMON);
-        expect(commonItem?.definition.equipment?.statModifier.attack).toBe(3);
-        expect(legendaryItem?.definition.name).toBe('Iron Dagger');
-        expect(legendaryItem?.definition.rarity).toBe(ITEM_RARITY.LEGENDARY);
-        expect(legendaryItem?.definition.equipment?.statModifier.attack).toBeGreaterThan(
-            commonItem?.definition.equipment?.statModifier.attack ?? 0,
-        );
+        expect(uncommonItem?.definition.id).toBe('blood-fang');
+        expect(uncommonItem?.definition.rarity).toBe(ITEM_RARITY.UNCOMMON);
+        expect(uncommonItem?.definition.equipment?.statModifier.attack).toBe(2);
+        expect(epicItem.definition.id).toBe('soulfire-brand');
+        expect(epicItem.definition.rarity).toBe(ITEM_RARITY.EPIC);
+        expect(epicItem.definition.equipment?.statModifier.attack).toBe(6);
+    });
+
+    it('keeps legacy moonsteel saber out of the general uncommon reward pool', () => {
+        const service = new ItemService(new SequenceRandomSource([0, 0.99]), 1);
+
+        const reward = service.spawnRewardDrop({ x: 2, y: 2 }, 10, ITEM_RARITY.UNCOMMON);
+
+        expect(reward.definition.id).toBe(ITEM_ID.SILENT_STEPS);
+        expect(reward.definition.id).not.toBe(ITEM_ID.MOONSTEEL_SABER);
     });
 
     it('picks up stackable items and merges their inventory quantity', () => {
@@ -227,7 +237,8 @@ describe('ItemService', () => {
 
         // Assert
         expect(service.getInventory()).toHaveLength(2);
-        expect(service.getInventory().every((item) => item.name === 'Iron Dagger')).toBe(true);
+        expect(service.getInventory().every((item) => item.quantity === 1)).toBe(true);
+        expect(service.getInventory().every((item) => item.stackable === false)).toBe(true);
     });
 
     it('consumes a healing potion and decrements its stack', () => {
@@ -274,13 +285,13 @@ describe('ItemService', () => {
         expect(equipped).toMatchObject({
             status: 'equipped',
             statModifier: {
-                attack: 3,
+                attack: 2,
             },
         });
         expect(unequipped).toMatchObject({
             status: 'unequipped',
             statModifier: {
-                attack: -3,
+                attack: -2,
             },
         });
         expect(service.getInventory()[0]?.isEquipped).toBe(false);
@@ -288,12 +299,22 @@ describe('ItemService', () => {
 
     it('marks materials as not usable', () => {
         // Arrange
-        const service = new ItemService(new SequenceRandomSource([0.7]), 1);
-        const floorItems = service.initializeFloor({
-            floorNumber: 1,
-            ...singleRoomRequest,
-        });
-        service.pickupAt(floorItems[0].position);
+        const service = new ItemService(new SequenceRandomSource([0.1]), 1);
+        service.restoreInventory([
+            {
+                id: 'scrap-bundle',
+                instanceId: 'item-f1-1',
+                name: 'Scrap Bundle',
+                type: 'MATERIAL',
+                rarity: ITEM_RARITY.COMMON,
+                icon: '*',
+                stackable: true,
+                maxStack: 10,
+                quantity: 1,
+                description: 'Loose salvaged parts.',
+                isEquipped: false,
+            },
+        ]);
         const materialId = service.getInventory()[0]?.instanceId ?? '';
 
         // Act
@@ -321,7 +342,7 @@ describe('ItemService', () => {
 
         // Assert
         expect(secondPickup?.status).toBe('inventory-full');
-        expect(secondPickup?.fieldItem?.definition.name).toBe('Iron Dagger');
+        expect(secondPickup?.fieldItem?.definition.name).toBe('Bone Club');
         expect(service.getInventory()).toHaveLength(1);
         expect(service.getFieldItems()).toHaveLength(1);
     });
@@ -445,11 +466,357 @@ describe('ItemService', () => {
         // Assert
         expect(service.getInventory()).toEqual([
             expect.objectContaining({
-                instanceId: 'item-load-1',
+                instanceId: 'item-f3-1',
                 name: 'Iron Dagger',
                 rarity: ITEM_RARITY.RARE,
                 isEquipped: true,
             }),
         ]);
+    });
+
+    it('shifts a small portion of common drop weight into uncommon when worn sandals are equipped', () => {
+        // Arrange
+        const baselineService = new ItemService(new SequenceRandomSource([0.64, 0]), 1);
+        const boostedService = new ItemService(new SequenceRandomSource([0.64, 0]), 1);
+        boostedService.restoreInventory([
+            {
+                id: 'worn-sandals',
+                instanceId: 'item-f3-1',
+                name: 'Worn Sandals',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.COMMON,
+                icon: 'v',
+                stackable: false,
+                maxStack: 1,
+                description: 'Boost uncommon item drops a little.',
+                equipment: {
+                    slot: 'BOOTS',
+                    statModifier: {},
+                },
+                quantity: 1,
+                isEquipped: true,
+            },
+        ]);
+
+        // Act
+        const baselineReward = baselineService.spawnRewardDrop({ x: 2, y: 2 }, 10, ITEM_RARITY.COMMON);
+        const boostedReward = boostedService.spawnRewardDrop({ x: 2, y: 2 }, 10, ITEM_RARITY.COMMON);
+
+        // Assert
+        expect(baselineReward.definition.rarity).toBe(ITEM_RARITY.COMMON);
+        expect(boostedReward.definition.rarity).toBe(ITEM_RARITY.UNCOMMON);
+    });
+
+    it('does not unlock uncommon drops before floor 10 when worn sandals are equipped', () => {
+        const service = new ItemService(new SequenceRandomSource([0.99, 0]), 1);
+        service.restoreInventory([
+            {
+                id: 'worn-sandals',
+                instanceId: 'item-f1-1',
+                name: 'Worn Sandals',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.COMMON,
+                icon: 'v',
+                stackable: false,
+                maxStack: 1,
+                description: 'Boost uncommon item drops a little.',
+                equipment: {
+                    slot: 'BOOTS',
+                    statModifier: {},
+                },
+                quantity: 1,
+                isEquipped: true,
+            },
+        ]);
+
+        const reward = service.spawnRewardDrop({ x: 1, y: 1 }, 1, ITEM_RARITY.COMMON);
+
+        expect(reward.definition.rarity).toBe(ITEM_RARITY.COMMON);
+    });
+
+    it('grants cursed special rewards directly into inventory without spawning a field item', () => {
+        const service = new ItemService(new SequenceRandomSource([0]), 1);
+
+        const reward = service.grantSpecialReward(25);
+
+        expect(reward).toMatchObject({
+            status: 'granted',
+            rewardItem: {
+                instanceId: 'item-special-1',
+                id: ITEM_ID.CURSED_EDGE,
+                rarity: ITEM_RARITY.CURSED,
+            },
+        });
+        expect(service.getFieldItems()).toEqual([]);
+        expect(service.getInventory()).toHaveLength(1);
+    });
+
+    it('unlocks epic special rewards from floor 50 onward without selecting legacy sunfire idol', () => {
+        const service = new ItemService(new SequenceRandomSource([0.3]), 1);
+
+        const reward = service.grantSpecialReward(50);
+
+        expect(reward).toMatchObject({
+            status: 'granted',
+            rewardItem: {
+                rarity: ITEM_RARITY.EPIC,
+            },
+        });
+        expect([
+            ITEM_ID.SOULFIRE_BRAND,
+            ITEM_ID.ALL_SEEING_CROWN,
+            ITEM_ID.BASTION_ARMOR,
+            ITEM_ID.PHANTOM_STRIDE,
+        ]).toContain(reward.rewardItem?.id);
+        expect(reward.rewardItem?.id).not.toBe(ITEM_ID.SUNFIRE_IDOL);
+    });
+
+    it('returns inventory-full when a special reward cannot be granted', () => {
+        const service = new ItemService(new SequenceRandomSource([0]), 1, 1);
+        service.restoreInventory([
+            {
+                id: 'iron-dagger',
+                instanceId: 'item-f1-1',
+                name: 'Iron Dagger',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.COMMON,
+                icon: '/',
+                stackable: false,
+                maxStack: 1,
+                description: 'A full inventory test item.',
+                equipment: {
+                    slot: 'WEAPON',
+                    statModifier: {
+                        attack: 2,
+                    },
+                },
+                quantity: 1,
+                isEquipped: false,
+            },
+        ]);
+
+        const reward = service.grantSpecialReward(25);
+
+        expect(reward).toEqual({
+            status: 'inventory-full',
+        });
+        expect(service.getInventory()).toHaveLength(1);
+        expect(service.getFieldItems()).toEqual([]);
+    });
+
+    it('opens bronze sigils into three cursed reward choices instead of granting immediately', () => {
+        const service = new ItemService(new SequenceRandomSource([0, 0, 0, 0, 0, 0, 0, 0]), 1);
+        service.restoreInventory([
+            {
+                id: ITEM_ID.BRONZE_SIGIL,
+                instanceId: 'bronze-1',
+                name: 'Bronze Sigil',
+                type: 'KEY',
+                rarity: ITEM_RARITY.COMMON,
+                icon: '?',
+                stackable: false,
+                maxStack: 1,
+                quantity: 1,
+                description: 'Break the seal to reveal a special cache.',
+                isEquipped: false,
+            },
+        ]);
+
+        const reward = service.openSpecialReward('bronze-1', 25);
+
+        expect(reward).toMatchObject({
+            status: 'opened',
+            rewardChoices: [
+                expect.objectContaining({ rarity: ITEM_RARITY.CURSED }),
+                expect.objectContaining({ rarity: ITEM_RARITY.CURSED }),
+                expect.objectContaining({ rarity: ITEM_RARITY.CURSED }),
+            ],
+        });
+        expect(reward?.rewardChoices).toHaveLength(3);
+        expect(new Set(reward?.rewardChoices?.map((item) => item.id)).size).toBe(3);
+        expect(service.getInventory()).toEqual([]);
+        expect(service.getFieldItems()).toEqual([]);
+    });
+
+    it('builds boss reward choices from the boss special reward pool', () => {
+        const service = new ItemService(new SequenceRandomSource([0, 0, 0, 0, 0, 0, 0, 0]), 1);
+
+        const choices = service.createSpecialRewardChoices(100, 'boss');
+
+        expect(choices).toHaveLength(3);
+        expect(new Set(choices.map((item) => item.id)).size).toBe(3);
+        expect(choices.every((item) =>
+            item.rarity === ITEM_RARITY.CURSED
+            || item.rarity === ITEM_RARITY.EPIC,
+        )).toBe(true);
+    });
+
+    it('grants a guaranteed boss reward from the rare or epic reward pool', () => {
+        const service = new ItemService(new SequenceRandomSource([0.75, 0]), 1);
+
+        const reward = service.grantBossReward(100);
+
+        expect(reward).toMatchObject({
+            status: 'granted',
+            rewardItem: {
+                rarity: ITEM_RARITY.EPIC,
+            },
+        });
+        expect([
+            ITEM_ID.SOULFIRE_BRAND,
+            ITEM_ID.ALL_SEEING_CROWN,
+            ITEM_ID.BASTION_ARMOR,
+            ITEM_ID.PHANTOM_STRIDE,
+        ]).toContain(reward.rewardItem?.id);
+        expect(service.getFieldItems()).toEqual([]);
+        expect(service.getInventory()).toHaveLength(1);
+    });
+
+    it('still grants the guaranteed boss reward when the inventory is already full', () => {
+        const service = new ItemService(new SequenceRandomSource([0.75, 0]), 1, 1);
+        service.restoreInventory([
+            {
+                id: ITEM_ID.IRON_DAGGER,
+                instanceId: 'item-f1-1',
+                name: 'Iron Dagger',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.COMMON,
+                icon: '/',
+                stackable: false,
+                maxStack: 1,
+                description: 'ATK +2.',
+                equipment: {
+                    slot: 'WEAPON',
+                    statModifier: { attack: 2 },
+                },
+                quantity: 1,
+                isEquipped: false,
+            },
+        ]);
+
+        const reward = service.grantBossReward(100);
+
+        expect(reward).toMatchObject({
+            status: 'granted',
+            rewardItem: {
+                rarity: ITEM_RARITY.EPIC,
+            },
+        });
+        expect(service.getInventory()).toHaveLength(2);
+    });
+
+    it('loses one unequipped inventory item on escape without touching equipped gear', () => {
+        const service = new ItemService(new SequenceRandomSource([0]), 1);
+        service.restoreInventory([
+            {
+                id: ITEM_ID.IRON_DAGGER,
+                instanceId: 'equipped-weapon',
+                name: 'Iron Dagger',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.COMMON,
+                icon: '/',
+                stackable: false,
+                maxStack: 1,
+                description: 'ATK +2.',
+                equipment: {
+                    slot: 'WEAPON',
+                    statModifier: { attack: 2 },
+                },
+                quantity: 1,
+                isEquipped: true,
+            },
+            {
+                id: ITEM_ID.SMALL_POTION,
+                instanceId: 'potion-1',
+                name: 'Small Potion',
+                type: 'CONSUMABLE',
+                rarity: ITEM_RARITY.COMMON,
+                icon: '!',
+                stackable: true,
+                maxStack: 5,
+                description: 'Recover HP.',
+                consumableEffect: {
+                    kind: 'heal',
+                    amount: 30,
+                },
+                quantity: 2,
+                isEquipped: false,
+            },
+        ]);
+
+        const lostItem = service.loseRandomInventoryItem();
+
+        expect(lostItem).toEqual({
+            status: 'lost',
+            item: expect.objectContaining({
+                id: ITEM_ID.SMALL_POTION,
+                quantity: 1,
+            }),
+        });
+        expect(service.getInventory()).toEqual([
+            expect.objectContaining({ instanceId: 'equipped-weapon', isEquipped: true }),
+            expect.objectContaining({ instanceId: 'potion-1', quantity: 1 }),
+        ]);
+    });
+
+    it('marks legacy non-primary equipment as unequipped when inventory is restored', () => {
+        const service = new ItemService(new SequenceRandomSource([0]), 1);
+        service.restoreInventory([
+            {
+                id: 'sunfire-idol',
+                instanceId: 'legacy-trinket-1',
+                name: 'Sunfire Idol',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.EPIC,
+                icon: '&',
+                stackable: false,
+                maxStack: 1,
+                description: 'A legacy trinket.',
+                equipment: {
+                    slot: 'TRINKET',
+                    statModifier: {
+                        attack: 2,
+                    },
+                    passives: [{ kind: 'legacy-bonus', value: 1 }],
+                },
+                quantity: 1,
+                isEquipped: true,
+            },
+        ]);
+
+        const [restoredItem] = service.getInventory();
+
+        expect(restoredItem?.isEquipped).toBe(false);
+        expect(restoredItem?.equipment?.passives).toEqual([{ kind: 'legacy-bonus', value: 1 }]);
+    });
+
+    it('rejects equipping legacy non-primary slot items', () => {
+        const service = new ItemService(new SequenceRandomSource([0]), 1);
+        service.restoreInventory([
+            {
+                id: 'sunfire-idol',
+                instanceId: 'legacy-trinket-1',
+                name: 'Sunfire Idol',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.EPIC,
+                icon: '&',
+                stackable: false,
+                maxStack: 1,
+                description: 'A legacy trinket.',
+                equipment: {
+                    slot: 'TRINKET',
+                    statModifier: {
+                        attack: 2,
+                    },
+                },
+                quantity: 1,
+                isEquipped: false,
+            },
+        ]);
+
+        const activation = service.activateItem('legacy-trinket-1');
+
+        expect(activation?.status).toBe('not-usable');
+        expect(service.getInventory()[0]?.isEquipped).toBe(false);
     });
 });

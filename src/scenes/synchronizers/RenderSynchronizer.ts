@@ -1,6 +1,6 @@
 import 'phaser';
 import { Enemy } from '../../domain/entities/Enemy';
-import { ItemEntity, ITEM_RARITY } from '../../domain/entities/Item';
+import { ItemEntity, ITEM_RARITY, type ItemDefinition } from '../../domain/entities/Item';
 import { type Position, Player } from '../../domain/entities/Player';
 import { VisibilityService, VisibilityState } from '../../domain/services/VisibilityService';
 import { MapData } from '../../infra/rot/MapGenerator';
@@ -358,19 +358,23 @@ export class RenderSynchronizer {
         }
     }
 
-    private getItemDisplayName(item: { id: string; name: string }) {
+    private getItemDisplayName(item: Pick<ItemDefinition, 'id' | 'name'>) {
         return this.localization.getItemName(item.id, item.name);
     }
 
     private getItemRarityColor(rarity: ItemEntity['rarity']) {
         switch (rarity) {
-            case ITEM_RARITY.LEGENDARY:
-                return '#facc15';
+            case ITEM_RARITY.CURSED:
+                return '#f09595';
+            case ITEM_RARITY.EPIC:
+                return '#afa9ec';
             case ITEM_RARITY.RARE:
-                return '#7dd3fc';
+                return '#85b7eb';
+            case ITEM_RARITY.UNCOMMON:
+                return '#5dcaa5';
             case ITEM_RARITY.COMMON:
             default:
-                return '#fef08a';
+                return '#b4b2a9';
         }
     }
 }

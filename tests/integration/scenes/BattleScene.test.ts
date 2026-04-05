@@ -18,6 +18,7 @@ import {
     StatusEffectService,
     type StatusEffectState,
 } from '../../../src/domain/services/StatusEffectService';
+import { getBattleEquipmentConfig } from '../../../src/domain/services/EquipmentEffectService';
 
 vi.mock('phaser', () => ({}));
 
@@ -38,8 +39,10 @@ interface TestScene {
     readonly displayHandCards: () => void;
     readonly executeEnemyTurn: () => void;
     readonly endBattle: (outcome: 'player-win' | 'player-lose') => void;
+    readonly resolveTurnEndStatusEffects: (actor: 'player' | 'enemy') => void;
     readonly updatePowerDisplays: () => void;
     readonly showCardDetail: (card: ReturnType<typeof createCard>) => void;
+    updateTurnDisplay?: ReturnType<typeof vi.fn>;
     drawCycleService: DrawCycleService;
     cardEffectService: CardEffectService;
     energyService: EnergyService;
@@ -150,6 +153,14 @@ interface TestScene {
     };
     enemyAttackDebuff?: number;
     enemyAttackDebuffDuration?: number;
+    equipmentConfig?: ReturnType<typeof getBattleEquipmentConfig>;
+    equipmentInventory?: readonly object[];
+    queuedAttackPowerBonus?: number;
+    pendingNextTurnDrawBonus?: number;
+    martyrStrengthGainedThisTurn?: number;
+    openingHandCardIds?: Set<string>;
+    battleStartEnergyBonus?: number;
+    nextBattleStartEnergyBonus?: number;
 }
 
 describe('BattleScene block lifecycle', () => {
@@ -279,6 +290,15 @@ describe('BattleScene block lifecycle', () => {
         };
         scene.enemyAttackDebuff = 0;
         scene.enemyAttackDebuffDuration = 0;
+        scene.equipmentConfig = getBattleEquipmentConfig([]);
+        scene.equipmentInventory = [];
+        scene.queuedAttackPowerBonus = 0;
+        scene.pendingNextTurnDrawBonus = 0;
+        scene.martyrStrengthGainedThisTurn = 0;
+        scene.openingHandCardIds = new Set();
+        scene.battleStartEnergyBonus = 0;
+        scene.nextBattleStartEnergyBonus = 0;
+        scene.updateTurnDisplay = vi.fn();
 
         return scene;
     }
@@ -1435,12 +1455,167 @@ describe('BattleScene block lifecycle', () => {
         expect(scene.enemyIntentText?.setAlpha).toHaveBeenCalledWith(1);
     });
 
+    it('does not reapply battle-start equipment when the first player turn begins', () => {
+        const scene = createScene();
+        const inventory = [
+            { id: 'blood-treads', isEquipped: true, type: 'EQUIPMENT', equipment: {} },
+            { id: 'soulfire-brand', isEquipped: true, type: 'EQUIPMENT', equipment: {} },
+        ];
+        scene.equipmentInventory = inventory;
+        scene.equipmentConfig = getBattleEquipmentConfig(inventory as never);
+        scene.drawCycleState = scene.drawCycleService.initialize([]);
+
+        (BattleScene.prototype as unknown as {
+            applyBattleStartEquipmentEffects: () => void;
+        }).applyBattleStartEquipmentEffects.call(scene);
+        (BattleScene.prototype as unknown as {
+            startPlayerTurn: () => void;
+        }).startPlayerTurn.call(scene);
+
+        expect(scene.playerState.health).toBe(97);
+        expect(scene.playerStatusEffects.strength).toBe(2);
+    });
+
+    it("limits Madman's Hood to cards captured in the opening hand snapshot on turn one only", () => {
+        const scene = createScene();
+        const openingStrike = createCard({
+            name: 'Opening Strike',
+            type: CARD_TYPE.ATTACK,
+            power: 6,
+            cost: 1,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+        });
+        const laterStrike = createCard({
+            name: 'Later Strike',
+            type: CARD_TYPE.ATTACK,
+            power: 6,
+            cost: 1,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+        });
+        const inventory = [
+            { id: 'madmans-hood', isEquipped: true, type: 'EQUIPMENT', equipment: {} },
+        ];
+
+        scene.turnNumber = 1;
+        scene.equipmentInventory = inventory;
+        scene.equipmentConfig = getBattleEquipmentConfig(inventory as never);
+        scene.openingHandCardIds = new Set([openingStrike.id]);
+
+        const resolvePlayerCardModifier = (
+            BattleScene.prototype as unknown as {
+                resolvePlayerCardModifier: (card: ReturnType<typeof createCard>) => {
+                    card: ReturnType<typeof createCard>;
+                };
+            }
+        ).resolvePlayerCardModifier;
+
+        expect(resolvePlayerCardModifier.call(scene, openingStrike).card.power).toBe(9);
+        expect(resolvePlayerCardModifier.call(scene, laterStrike).card.power).toBe(6);
+
+        scene.turnNumber = 2;
+
+        expect(resolvePlayerCardModifier.call(scene, openingStrike).card.power).toBe(6);
+    });
+
+    it('applies equipped attack modifiers during card resolution', () => {
+        const scene = createScene();
+        scene.drawCycleState = scene.drawCycleService.initialize([
+            createCard({
+                name: 'Strike',
+                type: CARD_TYPE.ATTACK,
+                power: 6,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            }),
+        ]);
+        scene.drawCycleState = scene.drawCycleService.drawCards(scene.drawCycleState, 1);
+        scene.equipmentInventory = [
+            { id: 'blood-fang', isEquipped: true, type: 'EQUIPMENT', equipment: {} },
+        ];
+        scene.equipmentConfig = getBattleEquipmentConfig(scene.equipmentInventory as never);
+
+        scene.onPlayCard(0);
+
+        expect(scene.enemyState.health).toBe(31);
+        expect(scene.playerState.health).toBe(99);
+    });
+
+    it('keeps enemy poison stacks from decaying when the mask effect is active', () => {
+        const scene = createScene();
+        scene.enemyStatusEffects = {
+            ...scene.enemyStatusEffects,
+            poison: 3,
+        };
+        scene.equipmentInventory = [
+            { id: 'plague-doctors-mask', isEquipped: true, type: 'EQUIPMENT', equipment: {} },
+        ];
+        scene.equipmentConfig = getBattleEquipmentConfig(scene.equipmentInventory as never);
+
+        scene.resolveTurnEndStatusEffects('enemy');
+
+        expect(scene.enemyState.health).toBe(37);
+        expect(scene.enemyStatusEffects.poison).toBe(3);
+    });
+
+    it('hides the enemy intent text when blindfold equipment is active', () => {
+        const scene = createScene();
+        scene.currentEnemyIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            damage: 4,
+            label: 'Enemy Strike',
+            sourceCardId: 'enemy-strike',
+        };
+        scene.equipmentInventory = [
+            { id: 'runic-blindfold', isEquipped: true, type: 'EQUIPMENT', equipment: {} },
+        ];
+        scene.equipmentConfig = getBattleEquipmentConfig(scene.equipmentInventory as never);
+
+        (scene as TestScene & {
+            updateEnemyIntentDisplay: (animated: boolean) => void;
+        }).updateEnemyIntentDisplay(false);
+
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('');
+    });
+
+    it('stores Soul Leech energy as a next-battle bonus instead of current-battle energy', () => {
+        const scene = createScene();
+        const inventory = [
+            { id: 'soul-leech', isEquipped: true, type: 'EQUIPMENT', equipment: {} },
+        ];
+        scene.equipmentInventory = inventory;
+        scene.equipmentConfig = getBattleEquipmentConfig(inventory as never);
+        scene.energyState = { current: 1, max: 3 };
+        scene.enemyState = { health: 8, maxHealth: 40, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 8,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.energyState.current).toBe(0);
+        expect(scene.nextBattleStartEnergyBonus).toBe(1);
+        expect(scene.battleLogLines).toContain('Player stores 1 energy for the next battle');
+        expect(scene.showBattleEnd).toHaveBeenCalledWith('player-win');
+    });
+
     it('returns the battle result to MainScene and wakes it after battle end', () => {
         const scene = createScene();
         scene.turnNumber = 4;
         scene.totalPlayerDamage = 7;
         scene.totalEnemyDamage = 12;
         scene.battleResolution = 'victory';
+        scene.nextBattleStartEnergyBonus = 1;
 
         BattleScene.prototype.endBattle.call(scene, 'player-win');
 
@@ -1452,6 +1627,7 @@ describe('BattleScene block lifecycle', () => {
             totalEnemyDamage: 12,
             playerRemainingHealth: 100,
             enemyRemainingHealth: 40,
+            nextBattleStartEnergyBonus: 1,
             enemy: scene.sceneData.enemy,
         });
         expect(scene.scene.stop).toHaveBeenCalledWith('BattleScene');

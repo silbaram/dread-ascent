@@ -5,7 +5,12 @@ import {
     type CardBuffEffect,
     type CardStatusEffect,
 } from '../domain/entities/Card';
-import type { InventoryItem } from '../domain/entities/Item';
+import {
+    ITEM_ID,
+    PRIMARY_EQUIPMENT_SLOTS,
+    type ItemDefinition,
+    type InventoryItem,
+} from '../domain/entities/Item';
 import type { CardCollectionSnapshot } from '../domain/services/CardCollectionService';
 import type { CardRewardOffer } from '../domain/services/CardDropService';
 import type {
@@ -102,6 +107,12 @@ export interface RewardOfferOverlaySnapshot {
     isOpen: boolean;
     offeredCards: Card[];
     isDeckFull: boolean;
+}
+
+export interface SpecialRewardOverlaySnapshot {
+    isOpen: boolean;
+    items: ItemDefinition[];
+    sourceType: 'cache' | 'boss';
 }
 
 export class GameHud {
@@ -204,6 +215,14 @@ export class GameHud {
         isDeckFull: false,
     };
     private rewardOfferCallback?: (selectedCardId: string | null) => void;
+    private specialRewardOverlay!: HTMLElement;
+    private specialRewardList!: HTMLElement;
+    private specialRewardSnapshot: SpecialRewardOverlaySnapshot = {
+        isOpen: false,
+        items: [],
+        sourceType: 'cache',
+    };
+    private specialRewardCallback?: (selectedItemId: string | null) => void;
     private viewportMode: HudViewportMode = 'field';
 
     constructor(
@@ -448,6 +467,17 @@ export class GameHud {
                         </button>
                     </div>
                 </section>
+                <section class="game-hud__card-swap-overlay" data-role="special-reward-overlay" data-open="false">
+                    <div class="game-hud__card-swap-panel">
+                        <span class="game-hud__eyebrow" data-role="special-reward-eyebrow">${ui.specialRewardEyebrow}</span>
+                        <strong class="game-hud__title" data-role="special-reward-title">${ui.specialRewardTitle}</strong>
+                        <p class="game-hud__title-copy" data-role="special-reward-copy">${ui.specialRewardCopy}</p>
+                        <div class="game-hud__card-swap-list" data-role="special-reward-list"></div>
+                        <button class="game-hud__title-action game-hud__title-action--secondary" type="button" data-role="special-reward-skip">
+                            ${ui.specialRewardSkipLabel}
+                        </button>
+                    </div>
+                </section>
             </div>
         `;
         this.bindElements();
@@ -495,6 +525,8 @@ export class GameHud {
         this.cardSwapOverlay = this.requireRole('card-swap-overlay');
         this.rewardOfferOverlay = this.requireRole('reward-offer-overlay');
         this.rewardOfferList = this.requireRole('reward-offer-list');
+        this.specialRewardOverlay = this.requireRole('special-reward-overlay');
+        this.specialRewardList = this.requireRole('special-reward-list');
     }
 
     private renderAll() {
@@ -507,6 +539,7 @@ export class GameHud {
         this.renderInventory();
         this.renderEventBanner();
         this.renderRewardOfferOverlay();
+        this.renderSpecialRewardOverlay();
     }
 
     private renderStatus() {
@@ -860,6 +893,7 @@ export class GameHud {
 
         this.inventoryDetail.innerHTML = selectedItem
             ? `
+                ${this.renderInventoryLoadout(items)}
                 <span class="game-hud__eyebrow">${ui.selectedItemEyebrow}</span>
                 <strong class="game-hud__title game-hud__item-name" data-rarity="${selectedItem.rarity}">${this.escapeHtml(this.localization.getItemName(selectedItem.id, selectedItem.name))}</strong>
                 <p class="game-hud__inventory-description">${this.escapeHtml(this.localization.getItemDescription(selectedItem.id, selectedItem.description))}</p>
@@ -891,6 +925,7 @@ export class GameHud {
                 </dl>
             `
             : `
+                ${this.renderInventoryLoadout(items)}
                 <span class="game-hud__eyebrow">${ui.selectedItemEyebrow}</span>
                 <strong class="game-hud__title">${ui.selectedItemEmptyTitle}</strong>
                 <p class="game-hud__inventory-description">
@@ -1003,6 +1038,17 @@ export class GameHud {
         const rewardCard = target.closest<HTMLElement>('[data-reward-card-id]');
         if (rewardCard?.dataset.rewardCardId) {
             this.handleRewardOfferSelection(rewardCard.dataset.rewardCardId);
+            return;
+        }
+
+        if (target.closest('[data-role="special-reward-skip"]')) {
+            this.handleSpecialRewardSelection(null);
+            return;
+        }
+
+        const rewardItem = target.closest<HTMLElement>('[data-special-reward-item-id]');
+        if (rewardItem?.dataset.specialRewardItemId) {
+            this.handleSpecialRewardSelection(rewardItem.dataset.specialRewardItemId);
         }
     }
 
@@ -1098,6 +1144,47 @@ export class GameHud {
         callback?.(selectedCardId);
     }
 
+    showSpecialRewardOverlay(
+        items: readonly ItemDefinition[],
+        callback: (selectedItemId: string | null) => void,
+        sourceType: 'cache' | 'boss' = 'cache',
+    ): void {
+        this.specialRewardCallback = callback;
+        this.updateSpecialReward({
+            isOpen: true,
+            items: [...items],
+            sourceType,
+        });
+    }
+
+    hideSpecialRewardOverlay(): void {
+        this.specialRewardSnapshot = {
+            isOpen: false,
+            items: [],
+            sourceType: 'cache',
+        };
+        this.renderSpecialRewardOverlay();
+    }
+
+    updateSpecialReward(snapshot: SpecialRewardOverlaySnapshot): void {
+        this.specialRewardSnapshot = {
+            ...snapshot,
+            items: snapshot.items.map((item) => ({
+                ...item,
+                spawnSources: item.spawnSources ? [...item.spawnSources] : undefined,
+                consumableEffect: item.consumableEffect ? { ...item.consumableEffect } : undefined,
+                equipment: item.equipment
+                    ? {
+                        slot: item.equipment.slot,
+                        statModifier: { ...item.equipment.statModifier },
+                        passives: item.equipment.passives?.map((entry) => ({ ...entry })),
+                    }
+                    : undefined,
+            })),
+        };
+        this.renderSpecialRewardOverlay();
+    }
+
     private renderRewardOfferOverlay(): void {
         const { ui } = this.localization.getBundle();
         this.rewardOfferOverlay.dataset.open = this.rewardOfferSnapshot.isOpen ? 'true' : 'false';
@@ -1134,6 +1221,41 @@ export class GameHud {
         }).join('');
     }
 
+    private renderSpecialRewardOverlay(): void {
+        const { ui } = this.localization.getBundle();
+        this.specialRewardOverlay.dataset.open = this.specialRewardSnapshot.isOpen ? 'true' : 'false';
+        const eyebrowElement = this.root.querySelector<HTMLElement>('[data-role="special-reward-eyebrow"]');
+        const titleElement = this.root.querySelector<HTMLElement>('[data-role="special-reward-title"]');
+        const copyElement = this.root.querySelector<HTMLElement>('[data-role="special-reward-copy"]');
+        const skipElement = this.root.querySelector<HTMLElement>('[data-role="special-reward-skip"]');
+        const isBossReward = this.specialRewardSnapshot.sourceType === 'boss';
+        if (eyebrowElement) {
+            eyebrowElement.textContent = isBossReward ? ui.bossRewardEyebrow : ui.specialRewardEyebrow;
+        }
+        if (titleElement) {
+            titleElement.textContent = isBossReward ? ui.bossRewardTitle : ui.specialRewardTitle;
+        }
+        if (copyElement) {
+            copyElement.textContent = isBossReward ? ui.bossRewardCopy : ui.specialRewardCopy;
+        }
+        if (skipElement) {
+            skipElement.textContent = isBossReward ? ui.bossRewardSkipLabel : ui.specialRewardSkipLabel;
+        }
+
+        this.specialRewardList.innerHTML = this.specialRewardSnapshot.items.map((item) => `
+            <button
+                class="game-hud__card-swap-slot"
+                type="button"
+                data-special-reward-item-id="${item.id}"
+                data-rarity="${item.rarity}"
+            >
+                <span>${this.escapeHtml(item.icon)} ${this.escapeHtml(this.localization.getItemName(item.id, item.name))}</span>
+                <span>${this.escapeHtml(this.describeSpecialRewardMeta(item))}</span>
+                <span>${this.escapeHtml(this.localization.getItemDescription(item.id, item.description))}</span>
+            </button>
+        `).join('');
+    }
+
     private handleCardSwapSelection(cardId: string | null): void {
         this.cardSwapOverlay.dataset.open = 'false';
         const callback = this.cardSwapCallback;
@@ -1141,12 +1263,21 @@ export class GameHud {
         callback?.(cardId);
     }
 
+    private handleSpecialRewardSelection(itemId: string | null): void {
+        this.hideSpecialRewardOverlay();
+        const callback = this.specialRewardCallback;
+        this.specialRewardCallback = undefined;
+        callback?.(itemId);
+    }
+
     private canUseSelectedItem(item?: InventoryItem) {
         if (!item) {
             return false;
         }
 
-        return item.type === 'CONSUMABLE' || item.type === 'EQUIPMENT';
+        return item.type === 'CONSUMABLE'
+            || item.type === 'EQUIPMENT'
+            || (item.type === 'KEY' && item.id === ITEM_ID.BRONZE_SIGIL);
     }
 
     private getUseLabel(item?: InventoryItem) {
@@ -1170,7 +1301,36 @@ export class GameHud {
 
         return item.quantity > 1
             ? `x${item.quantity}`
-            : this.localization.getItemTypeLabel(item.type);
+            : item.equipment
+                ? this.localization.getEquipmentSlotLabel(item.equipment.slot)
+                : this.localization.getItemTypeLabel(item.type);
+    }
+
+    private renderInventoryLoadout(items: readonly InventoryItem[]) {
+        const { ui } = this.localization.getBundle();
+        const slots = PRIMARY_EQUIPMENT_SLOTS.map((slot) => {
+            const equippedItem = items.find((item) =>
+                item.isEquipped && item.equipment?.slot === slot,
+            );
+
+            return `
+                <div class="game-hud__loadout-slot" data-rarity="${equippedItem?.rarity ?? 'COMMON'}">
+                    <span class="game-hud__loadout-slot-label">${this.escapeHtml(this.localization.getEquipmentSlotLabel(slot))}</span>
+                    <strong class="game-hud__loadout-slot-value" data-rarity="${equippedItem?.rarity ?? 'COMMON'}">
+                        ${equippedItem
+                            ? this.escapeHtml(this.localization.getItemName(equippedItem.id, equippedItem.name))
+                            : this.escapeHtml(ui.emptySlotLabel)}
+                    </strong>
+                </div>
+            `;
+        }).join('');
+
+        return `
+            <section class="game-hud__loadout">
+                <span class="game-hud__eyebrow">${ui.loadoutLabel}</span>
+                <div class="game-hud__loadout-grid">${slots}</div>
+            </section>
+        `;
     }
 
     private describeItemAction(item: InventoryItem) {
@@ -1191,7 +1351,28 @@ export class GameHud {
             return `${this.localization.getEquipmentSlotLabel(item.equipment.slot)} ${parts.join(' · ')}`;
         }
 
+        if (item.type === 'KEY' && item.id === ITEM_ID.BRONZE_SIGIL) {
+            return this.localization.getItemDescription(item.id, item.description);
+        }
+
         return ui.noDirectUseLabel;
+    }
+
+    private describeSpecialRewardMeta(item: ItemDefinition) {
+        const rarityLabel = this.localization.getRarityLabel(item.rarity);
+        if (item.equipment) {
+            const parts = [
+                item.equipment.statModifier.maxHealth ? `HP ${formatSignedNumber(item.equipment.statModifier.maxHealth)}` : undefined,
+                item.equipment.statModifier.attack ? `ATK ${formatSignedNumber(item.equipment.statModifier.attack)}` : undefined,
+                item.equipment.statModifier.defense ? `DEF ${formatSignedNumber(item.equipment.statModifier.defense)}` : undefined,
+            ].filter(Boolean);
+
+            return [rarityLabel, this.localization.getEquipmentSlotLabel(item.equipment.slot), ...parts]
+                .filter(Boolean)
+                .join(' · ');
+        }
+
+        return `${rarityLabel} · ${this.localization.getItemTypeLabel(item.type)}`;
     }
 
     private describeRewardCardMeta(card: Card) {

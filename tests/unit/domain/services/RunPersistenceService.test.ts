@@ -49,15 +49,15 @@ function createSnapshot(): RunPersistenceSnapshot {
                 instanceId: 'item-f7-1',
                 name: 'Iron Dagger',
                 type: 'EQUIPMENT',
-                rarity: ITEM_RARITY.RARE,
+                rarity: ITEM_RARITY.COMMON,
                 icon: '/',
                 stackable: false,
                 maxStack: 1,
-                description: 'A restored blade.',
+                description: 'A light blade with ATK +2.',
                 equipment: {
                     slot: 'WEAPON',
                     statModifier: {
-                        attack: 4,
+                        attack: 2,
                     },
                 },
                 quantity: 1,
@@ -120,6 +120,7 @@ function createSnapshot(): RunPersistenceSnapshot {
             },
         ],
         defeatedEnemyCount: 12,
+        pendingBattleStartEnergy: 2,
     };
 }
 
@@ -155,6 +156,88 @@ describe('RunPersistenceService', () => {
         });
         expect(snapshot?.deck).toHaveLength(createSnapshot().deck.length);
         expect(service.hasActiveRun()).toBe(true);
+    });
+
+    it('preserves a pending special reward offer across save and load', () => {
+        const storage = new MemoryStorage();
+        const saveService = new RunPersistenceService(storage);
+
+        saveService.save({
+            ...createSnapshot(),
+            pendingSpecialRewardOffer: {
+                sourceType: 'cache',
+                keyItemId: 'bronze-sigil',
+                offeredItemIds: ['cursed-edge', 'runic-blindfold'],
+            },
+        });
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.pendingSpecialRewardOffer).toEqual({
+            sourceType: 'cache',
+            keyItemId: 'bronze-sigil',
+            offeredItemIds: ['cursed-edge', 'runic-blindfold'],
+        });
+    });
+
+    it('preserves boss reward offers across save and load', () => {
+        const storage = new MemoryStorage();
+        const saveService = new RunPersistenceService(storage);
+
+        saveService.save({
+            ...createSnapshot(),
+            pendingSpecialRewardOffer: {
+                sourceType: 'boss',
+                bossArchetypeId: 'final-boss',
+                offeredItemIds: ['cursed-edge', 'soulfire-brand'],
+            },
+        });
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.pendingSpecialRewardOffer).toEqual({
+            sourceType: 'boss',
+            bossArchetypeId: 'final-boss',
+            offeredItemIds: ['cursed-edge', 'soulfire-brand'],
+        });
+    });
+
+    it('preserves legacy boss reward offers without a boss archetype id', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            pendingSpecialRewardOffer: {
+                sourceType: 'boss',
+                offeredItemIds: ['cursed-edge', 'soulfire-brand'],
+            },
+        }));
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.pendingSpecialRewardOffer).toEqual({
+            sourceType: 'boss',
+            offeredItemIds: ['cursed-edge', 'soulfire-brand'],
+        });
+    });
+
+    it('drops invalid pending special reward offers during load normalization', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            pendingSpecialRewardOffer: {
+                sourceType: 'cache',
+                keyItemId: 'not-a-real-key',
+                offeredItemIds: ['small-potion', 'missing-item', 'cursed-edge'],
+            },
+        }));
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.pendingSpecialRewardOffer).toBeUndefined();
     });
 
     it('ignores corrupt persisted data', () => {
@@ -208,6 +291,177 @@ describe('RunPersistenceService', () => {
         // Assert
         expect(snapshot?.player.stats.movementSpeed).toBe(100);
         expect(service.hasActiveRun()).toBe(true);
+    });
+
+    it('maps legacy item rarity and slot values into the new equipment model', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            inventory: [
+                {
+                    id: 'warden-plate',
+                    instanceId: 'legacy-item-1',
+                    name: 'Legacy Plate',
+                    type: 'EQUIPMENT',
+                    rarity: 'LEGENDARY',
+                    icon: ']',
+                    stackable: false,
+                    maxStack: 1,
+                    description: 'A migrated armor piece.',
+                    equipment: {
+                        slot: 'ARMOR',
+                        statModifier: {
+                            defense: 4,
+                        },
+                    },
+                    quantity: 1,
+                    isEquipped: true,
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const snapshot = service.load();
+
+        expect(snapshot?.inventory[0]).toMatchObject({
+            id: 'warden-plate',
+            rarity: ITEM_RARITY.RARE,
+            equipment: {
+                slot: 'BODY_ARMOR',
+                statModifier: {
+                    defense: 4,
+                },
+            },
+        });
+    });
+
+    it('preserves stored equipment passives during load normalization', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            inventory: [
+                {
+                    id: 'blood-fang',
+                    instanceId: 'passive-item-1',
+                    name: 'Blood Fang',
+                    type: 'EQUIPMENT',
+                    rarity: ITEM_RARITY.UNCOMMON,
+                    icon: '/',
+                    stackable: false,
+                    maxStack: 1,
+                    description: 'A passive test item.',
+                    equipment: {
+                        slot: 'WEAPON',
+                        statModifier: {
+                            attack: 2,
+                        },
+                        passives: [
+                            { kind: 'self-damage-attack', value: 3 },
+                        ],
+                    },
+                    quantity: 1,
+                    isEquipped: true,
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const snapshot = service.load();
+
+        expect(snapshot?.inventory[0]?.equipment?.passives).toEqual([
+            { kind: 'self-damage-attack', value: 3 },
+        ]);
+    });
+
+    it('forces legacy non-primary slot items to load unequipped', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            inventory: [
+                {
+                    id: 'sunfire-idol',
+                    instanceId: 'legacy-trinket-1',
+                    name: 'Sunfire Idol',
+                    type: 'EQUIPMENT',
+                    rarity: ITEM_RARITY.EPIC,
+                    icon: '&',
+                    stackable: false,
+                    maxStack: 1,
+                    description: 'A legacy trinket.',
+                    equipment: {
+                        slot: 'TRINKET',
+                        statModifier: {
+                            maxHealth: 20,
+                            attack: 2,
+                        },
+                    },
+                    quantity: 1,
+                    isEquipped: true,
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const snapshot = service.load();
+
+        expect(snapshot?.inventory[0]).toMatchObject({
+            id: 'sunfire-idol',
+            isEquipped: false,
+            equipment: {
+                slot: 'TRINKET',
+            },
+        });
+    });
+
+    it('removes legacy non-primary equipped stat bonuses from persisted player stats', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            player: {
+                stats: {
+                    health: 125,
+                    maxHealth: 130,
+                    attack: 16,
+                    defense: 8,
+                    movementSpeed: 100,
+                },
+                experience: 55,
+            },
+            inventory: [
+                {
+                    id: 'sunfire-idol',
+                    instanceId: 'legacy-trinket-1',
+                    name: 'Sunfire Idol',
+                    type: 'EQUIPMENT',
+                    rarity: ITEM_RARITY.EPIC,
+                    icon: '&',
+                    stackable: false,
+                    maxStack: 1,
+                    description: 'A legacy trinket.',
+                    equipment: {
+                        slot: 'TRINKET',
+                        statModifier: {
+                            maxHealth: 20,
+                            attack: 2,
+                        },
+                    },
+                    quantity: 1,
+                    isEquipped: true,
+                },
+            ],
+        }));
+        const service = new RunPersistenceService(storage);
+
+        const snapshot = service.load();
+
+        expect(snapshot?.player.stats).toMatchObject({
+            health: 110,
+            maxHealth: 110,
+            attack: 14,
+            defense: 8,
+            movementSpeed: 100,
+        });
+        expect(snapshot?.inventory[0]?.isEquipped).toBe(false);
     });
 
     it('drops invalid expanded card enums while keeping valid legacy cards', () => {

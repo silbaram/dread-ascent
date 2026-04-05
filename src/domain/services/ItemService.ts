@@ -1,22 +1,27 @@
+import type { CombatStatModifier } from '../entities/CombatStats';
 import {
     ITEM_CATALOG,
+    ITEM_ID,
     ITEM_RARITY,
+    ITEM_SPAWN_SOURCE,
     ItemEntity,
-    createGeneratedItemDefinition,
+    cloneInventoryItem as cloneStoredInventoryItem,
     createInventoryItem,
     getItemRarityRank,
+    isPrimaryEquipmentSlot,
     type EquipmentSlot,
+    type ItemId,
     type InventoryItem,
     type ItemDefinition,
     type ItemRarity,
 } from '../entities/Item';
-import type { CombatStatModifier } from '../entities/CombatStats';
 import type { Position } from '../entities/Player';
 import type { SpawnRoom } from './EnemySpawnerService';
 import type { FloorType } from './FloorProgressionService';
+import { getRarityWeightBonus } from './EquipmentEffectService';
 import { positionToKey } from '../../shared/utils/positionKey';
-import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
 import { collectRoomFloorPositions, selectUnoccupiedPosition } from '../../shared/utils/roomPositions';
+import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
 
 export type ItemRandomSource = RandomSource;
 
@@ -57,12 +62,60 @@ export interface ItemActivationResult {
     equipmentSlot?: EquipmentSlot;
 }
 
+export interface SpecialRewardOpenResult {
+    status: 'opened' | 'not-usable';
+    consumedItem?: InventoryItem;
+    rewardChoices?: ItemDefinition[];
+}
+
+export interface SpecialRewardGrantResult {
+    status: 'granted' | 'inventory-full' | 'unavailable';
+    rewardItem?: InventoryItem;
+}
+
+export interface ClaimSpecialRewardOptions {
+    ignoreInventoryCapacity?: boolean;
+}
+
+export interface InventoryLossResult {
+    status: 'lost' | 'none';
+    item?: InventoryItem;
+}
+
+interface ItemRarityWeights {
+    COMMON: number;
+    UNCOMMON: number;
+    RARE: number;
+    EPIC: number;
+    CURSED: number;
+}
+
 export const DEFAULT_MAX_ITEMS_PER_FLOOR = 3;
 export const DEFAULT_INVENTORY_SLOT_CAPACITY = 12;
-export const ITEM_RARITY_FLOOR_BAND_SIZE = 20;
-export const ITEM_RARITY_MAX_FLOOR_BANDS = 4;
-export const RARE_WEIGHT_PER_BAND = 0.03;
-export const LEGENDARY_WEIGHT_PER_BAND = 0.01;
+
+const EMPTY_WEIGHTS: ItemRarityWeights = {
+    COMMON: 0,
+    UNCOMMON: 0,
+    RARE: 0,
+    EPIC: 0,
+    CURSED: 0,
+};
+
+const SPECIAL_REWARD_ITEM_IDS = [
+    ITEM_ID.SOULFIRE_BRAND,
+    ITEM_ID.ALL_SEEING_CROWN,
+    ITEM_ID.BASTION_ARMOR,
+    ITEM_ID.PHANTOM_STRIDE,
+    ITEM_ID.CURSED_EDGE,
+    ITEM_ID.SOUL_LEECH,
+    ITEM_ID.RUNIC_BLINDFOLD,
+    ITEM_ID.MADMANS_HOOD,
+    ITEM_ID.MARTYRDOM_PLATE,
+    ITEM_ID.PACT_ARMOR,
+    ITEM_ID.GAMBLERS_SHOES,
+    ITEM_ID.ESCAPE_ARTISTS_BOOTS,
+] as const;
+const SPECIAL_REWARD_CHOICE_COUNT = 3;
 
 export class ItemService {
     private fieldItems: ItemEntity[] = [];
@@ -97,32 +150,27 @@ export class ItemService {
     restoreInventory(items: InventoryItem[]) {
         this.inventory.length = 0;
         items.forEach((item, index) => {
-            this.inventory.push({
+            const restoredItem = cloneStoredInventoryItem({
                 ...item,
-                instanceId: `item-load-${index + 1}`,
-                consumableEffect: item.consumableEffect
-                    ? { ...item.consumableEffect }
-                    : undefined,
-                equipment: item.equipment
-                    ? {
-                        ...item.equipment,
-                        statModifier: { ...item.equipment.statModifier },
-                    }
-                    : undefined,
+                instanceId: item.instanceId || `item-load-${index + 1}`,
             });
+            if (restoredItem.equipment && !isPrimaryEquipmentSlot(restoredItem.equipment.slot)) {
+                restoredItem.isEquipped = false;
+            }
+            this.inventory.push(restoredItem);
         });
     }
 
     getFieldItems() {
         return this.fieldItems.map((item) => new ItemEntity(
             item.instanceId,
-            item.definition,
+            this.cloneItemDefinition(item.definition),
             { ...item.position },
         ));
     }
 
     getInventory() {
-        return this.inventory.map((item) => ({ ...item }));
+        return this.inventory.map((item) => this.cloneInventoryItem(item));
     }
 
     getInventorySnapshot(): InventorySnapshot {
@@ -137,15 +185,204 @@ export class ItemService {
         position: Position,
         floorNumber: number,
         minimumRarity: ItemRarity = ITEM_RARITY.RARE,
+        maximumRarity?: ItemRarity,
     ) {
         const fieldItem = new ItemEntity(
             this.createFieldItemId('reward'),
-            this.generateDefinition(floorNumber, minimumRarity),
+            this.generateDefinition(floorNumber, minimumRarity, ITEM_SPAWN_SOURCE.REWARD, maximumRarity),
             { ...position },
         );
         this.fieldItems.push(fieldItem);
 
-        return new ItemEntity(fieldItem.instanceId, fieldItem.definition, { ...fieldItem.position });
+        return new ItemEntity(
+            fieldItem.instanceId,
+            this.cloneItemDefinition(fieldItem.definition),
+            { ...fieldItem.position },
+        );
+    }
+
+    spawnEliteRewardDrop(position: Position, floorNumber: number) {
+        const minimumRarity = floorNumber >= 25
+            ? ITEM_RARITY.RARE
+            : floorNumber >= 10
+                ? ITEM_RARITY.UNCOMMON
+                : ITEM_RARITY.COMMON;
+        return this.spawnRewardDrop(position, floorNumber, minimumRarity, ITEM_RARITY.EPIC);
+    }
+
+    openSpecialReward(instanceId: string, floorNumber: number): SpecialRewardOpenResult | undefined {
+        const inventoryIndex = this.inventory.findIndex((item) => item.instanceId === instanceId);
+        if (inventoryIndex === -1) {
+            return undefined;
+        }
+
+        const item = this.inventory[inventoryIndex];
+        if (item.type !== 'KEY' || item.id !== ITEM_ID.BRONZE_SIGIL) {
+            return {
+                status: 'not-usable',
+                consumedItem: this.cloneInventoryItem(item),
+            };
+        }
+
+        const consumedItem = this.cloneInventoryItem(item);
+        this.inventory.splice(inventoryIndex, 1);
+
+        const rewardChoices = this.createSpecialRewardChoices(floorNumber, 'cache', SPECIAL_REWARD_CHOICE_COUNT, item.id);
+
+        return {
+            status: 'opened',
+            consumedItem,
+            rewardChoices,
+        };
+    }
+
+    createSpecialRewardChoices(
+        floorNumber: number,
+        sourceType: 'cache' | 'boss',
+        count = SPECIAL_REWARD_CHOICE_COUNT,
+        keyItemId?: ItemId,
+    ): ItemDefinition[] {
+        return this.generateSpecialRewardChoices(floorNumber, sourceType, count, keyItemId);
+    }
+
+    grantBossReward(floorNumber: number): SpecialRewardGrantResult {
+        let definition: ItemDefinition;
+        try {
+            definition = this.generateDefinition(
+                floorNumber,
+                ITEM_RARITY.RARE,
+                ITEM_SPAWN_SOURCE.REWARD,
+                ITEM_RARITY.EPIC,
+            );
+        } catch {
+            return {
+                status: 'unavailable',
+            };
+        }
+
+        return {
+            status: 'granted',
+            rewardItem: this.addDefinitionToInventory(
+                definition,
+                this.createFieldItemId('special'),
+            ),
+        };
+    }
+
+    grantSpecialReward(floorNumber: number): SpecialRewardGrantResult {
+        let definition: ItemDefinition;
+        try {
+            definition = this.generateSpecialDefinition(floorNumber);
+        } catch {
+            return {
+                status: 'unavailable',
+            };
+        }
+
+        if (!this.canAddToInventory(definition)) {
+            return {
+                status: 'inventory-full',
+            };
+        }
+
+        return {
+            status: 'granted',
+            rewardItem: this.addDefinitionToInventory(
+                definition,
+                this.createFieldItemId('special'),
+            ),
+        };
+    }
+
+    claimSpecialReward(itemId: ItemId, options: ClaimSpecialRewardOptions = {}): SpecialRewardGrantResult {
+        const definition = ITEM_CATALOG.find((entry) =>
+            SPECIAL_REWARD_ITEM_IDS.includes(entry.id as (typeof SPECIAL_REWARD_ITEM_IDS)[number])
+            && entry.id === itemId,
+        );
+        if (!definition) {
+            return {
+                status: 'unavailable',
+            };
+        }
+
+        if (!options.ignoreInventoryCapacity && !this.canAddToInventory(definition)) {
+            return {
+                status: 'inventory-full',
+            };
+        }
+
+        return {
+            status: 'granted',
+            rewardItem: this.addDefinitionToInventory(
+                this.cloneItemDefinition(definition),
+                this.createFieldItemId('special'),
+            ),
+        };
+    }
+
+    getSpecialRewardChoiceDefinitions(itemIds: readonly ItemId[]): ItemDefinition[] {
+        return itemIds.flatMap((itemId) => {
+            const definition = ITEM_CATALOG.find((entry) =>
+                SPECIAL_REWARD_ITEM_IDS.includes(entry.id as (typeof SPECIAL_REWARD_ITEM_IDS)[number])
+                && entry.id === itemId,
+            );
+            return definition
+                ? [this.cloneItemDefinition(definition)]
+                : [];
+        });
+    }
+
+    loseRandomInventoryItem(includeEquipped = false): InventoryLossResult {
+        const eligibleIndices = this.inventory.reduce<number[]>((indices, item, index) => {
+            if (!includeEquipped && item.isEquipped) {
+                return indices;
+            }
+
+            indices.push(index);
+            return indices;
+        }, []);
+
+        if (eligibleIndices.length === 0) {
+            return {
+                status: 'none',
+            };
+        }
+
+        const selectedIndex = eligibleIndices[
+            Math.min(
+                Math.floor(this.random.next() * eligibleIndices.length),
+                eligibleIndices.length - 1,
+            )
+        ];
+        if (selectedIndex === undefined) {
+            return {
+                status: 'none',
+            };
+        }
+
+        const item = this.inventory[selectedIndex];
+        if (!item) {
+            return {
+                status: 'none',
+            };
+        }
+
+        if (item.quantity > 1) {
+            item.quantity -= 1;
+            return {
+                status: 'lost',
+                item: {
+                    ...this.cloneInventoryItem(item),
+                    quantity: 1,
+                },
+            };
+        }
+
+        const [lostItem] = this.inventory.splice(selectedIndex, 1);
+        return {
+            status: 'lost',
+            item: lostItem ? this.cloneInventoryItem(lostItem) : undefined,
+        };
     }
 
     pickupAt(position: Position): ItemPickupResult | undefined {
@@ -164,7 +401,7 @@ export class ItemService {
                 fieldItemId: fieldItem.instanceId,
                 fieldItem: new ItemEntity(
                     fieldItem.instanceId,
-                    fieldItem.definition,
+                    this.cloneItemDefinition(fieldItem.definition),
                     { ...fieldItem.position },
                 ),
             };
@@ -190,7 +427,7 @@ export class ItemService {
         if (inventoryItem.isEquipped) {
             return {
                 status: 'equipped-item',
-                inventoryItem: { ...inventoryItem },
+                inventoryItem: this.cloneInventoryItem(inventoryItem),
             };
         }
 
@@ -206,18 +443,7 @@ export class ItemService {
 
         const fieldItem = new ItemEntity(
             this.createFieldItemId('drop'),
-            {
-                id: inventoryItem.id,
-                name: inventoryItem.name,
-                type: inventoryItem.type,
-                rarity: inventoryItem.rarity,
-                icon: inventoryItem.icon,
-                stackable: inventoryItem.stackable,
-                maxStack: inventoryItem.maxStack,
-                description: inventoryItem.description,
-                consumableEffect: inventoryItem.consumableEffect,
-                equipment: inventoryItem.equipment,
-            },
+            this.cloneItemDefinition(inventoryItem),
             { ...position },
         );
 
@@ -231,8 +457,14 @@ export class ItemService {
 
         return {
             status: 'dropped',
-            fieldItem: new ItemEntity(fieldItem.instanceId, fieldItem.definition, { ...fieldItem.position }),
-            inventoryItem: inventoryItem.quantity > 0 ? { ...inventoryItem } : undefined,
+            fieldItem: new ItemEntity(
+                fieldItem.instanceId,
+                this.cloneItemDefinition(fieldItem.definition),
+                { ...fieldItem.position },
+            ),
+            inventoryItem: inventoryItem.quantity > 0
+                ? this.cloneInventoryItem(inventoryItem)
+                : undefined,
         };
     }
 
@@ -258,32 +490,39 @@ export class ItemService {
 
         return {
             status: 'not-usable',
-            item: { ...item },
+            item: this.cloneInventoryItem(item),
         };
     }
 
     private addToInventory(fieldItem: ItemEntity) {
-        if (fieldItem.definition.stackable) {
+        return this.addDefinitionToInventory(fieldItem.definition, fieldItem.instanceId);
+    }
+
+    private addDefinitionToInventory(definition: ItemDefinition, instanceId: string) {
+        if (definition.stackable) {
             const existing = this.inventory.find((item) =>
-                item.id === fieldItem.definition.id
-                && item.rarity === fieldItem.rarity
+                item.id === definition.id
+                && item.rarity === definition.rarity
                 && item.quantity < item.maxStack,
             );
             if (existing) {
                 existing.quantity += 1;
-                return { ...existing };
+                return this.cloneInventoryItem(existing);
             }
         }
 
-        const inventoryItem = createInventoryItem(fieldItem.definition, fieldItem.instanceId);
+        const inventoryItem = createInventoryItem(
+            this.cloneItemDefinition(definition),
+            instanceId,
+        );
         this.inventory.push(inventoryItem);
-        return { ...inventoryItem };
+        return this.cloneInventoryItem(inventoryItem);
     }
 
     private consumeItem(item: InventoryItem, inventoryIndex: number) {
         if (item.quantity > 1) {
             item.quantity -= 1;
-            return { ...item };
+            return this.cloneInventoryItem(item);
         }
 
         this.inventory.splice(inventoryIndex, 1);
@@ -291,10 +530,10 @@ export class ItemService {
     }
 
     private toggleEquipment(item: InventoryItem): ItemActivationResult {
-        if (!item.equipment) {
+        if (!item.equipment || !isPrimaryEquipmentSlot(item.equipment.slot)) {
             return {
                 status: 'not-usable',
-                item: { ...item },
+                item: this.cloneInventoryItem(item),
             };
         }
 
@@ -303,7 +542,7 @@ export class ItemService {
 
             return {
                 status: 'unequipped',
-                item: { ...item },
+                item: this.cloneInventoryItem(item),
                 equipmentSlot: item.equipment.slot,
                 statModifier: this.invertStatModifier(item.equipment.statModifier),
             };
@@ -328,8 +567,8 @@ export class ItemService {
 
         return {
             status: 'equipped',
-            item: { ...item },
-            replacedItem: replacedItem ? { ...replacedItem } : undefined,
+            item: this.cloneInventoryItem(item),
+            replacedItem: replacedItem ? this.cloneInventoryItem(replacedItem) : undefined,
             equipmentSlot: item.equipment.slot,
             statModifier,
         };
@@ -374,28 +613,90 @@ export class ItemService {
 
                 return new ItemEntity(
                     this.createFieldItemId(request.floorNumber),
-                    this.generateDefinition(request.floorNumber),
+                    this.generateDefinition(request.floorNumber, ITEM_RARITY.COMMON, ITEM_SPAWN_SOURCE.FIELD),
                     position,
                 );
             });
     }
 
-    private generateDefinition(floorNumber: number, minimumRarity: ItemRarity = ITEM_RARITY.COMMON) {
-        const rarity = this.rollRarity(floorNumber, minimumRarity);
+    private generateDefinition(
+        floorNumber: number,
+        minimumRarity: ItemRarity,
+        source: typeof ITEM_SPAWN_SOURCE[keyof typeof ITEM_SPAWN_SOURCE],
+        maximumRarity?: ItemRarity,
+    ) {
+        const rarity = this.rollRarity(floorNumber, minimumRarity, source, maximumRarity);
         const eligibleDefinitions = ITEM_CATALOG.filter((definition) =>
-            getItemRarityRank(definition.rarity) <= getItemRarityRank(rarity),
+            definition.rarity === rarity
+            && definition.spawnSources?.includes(source),
         );
-        if (eligibleDefinitions.length === 0) {
-            throw new Error(`No item definitions available for rarity ${rarity}.`);
+
+        const fallbackDefinitions = eligibleDefinitions.length > 0
+            ? eligibleDefinitions
+            : ITEM_CATALOG.filter((definition) =>
+                definition.spawnSources?.includes(source)
+                && getItemRarityRank(definition.rarity) >= getItemRarityRank(minimumRarity)
+                && (
+                    !maximumRarity
+                    || getItemRarityRank(definition.rarity) <= getItemRarityRank(maximumRarity)
+                ),
+            );
+
+        if (fallbackDefinitions.length === 0) {
+            throw new Error(`No item definitions available for source ${source} at rarity ${rarity}.`);
         }
 
-        const index = Math.floor(this.random.next() * eligibleDefinitions.length);
-        const template = eligibleDefinitions[Math.min(index, eligibleDefinitions.length - 1)];
+        const index = Math.floor(this.random.next() * fallbackDefinitions.length);
+        const template = fallbackDefinitions[Math.min(index, fallbackDefinitions.length - 1)];
         if (!template) {
             throw new Error('Item template selection failed.');
         }
 
-        return createGeneratedItemDefinition(template, rarity);
+        return this.cloneItemDefinition(template);
+    }
+
+    private generateSpecialDefinition(floorNumber: number): ItemDefinition {
+        const candidates = ITEM_CATALOG.filter((definition) =>
+            SPECIAL_REWARD_ITEM_IDS.includes(definition.id as (typeof SPECIAL_REWARD_ITEM_IDS)[number])
+            && (
+                definition.rarity === ITEM_RARITY.CURSED
+                || (floorNumber >= 50 && definition.rarity === ITEM_RARITY.EPIC)
+            ),
+        );
+
+        if (candidates.length === 0) {
+            throw new Error(`No special reward definitions available for floor ${floorNumber}.`);
+        }
+
+        const index = Math.floor(this.random.next() * candidates.length);
+        const template = candidates[Math.min(index, candidates.length - 1)];
+        if (!template) {
+            throw new Error('Special reward template selection failed.');
+        }
+
+        return this.cloneItemDefinition(template);
+    }
+
+    private generateSpecialRewardChoices(
+        floorNumber: number,
+        sourceType: 'cache' | 'boss',
+        count: number,
+        keyItemId?: ItemId,
+    ): ItemDefinition[] {
+        const allowEpic = sourceType === 'cache'
+            && keyItemId !== ITEM_ID.BRONZE_SIGIL
+            && floorNumber >= 50;
+        const candidates = ITEM_CATALOG.filter((definition) =>
+            SPECIAL_REWARD_ITEM_IDS.includes(definition.id as (typeof SPECIAL_REWARD_ITEM_IDS)[number])
+            && (
+                definition.rarity === ITEM_RARITY.CURSED
+                || (allowEpic && definition.rarity === ITEM_RARITY.EPIC)
+            ),
+        );
+
+        return shuffleArray(candidates, this.random)
+            .slice(0, Math.min(count, candidates.length))
+            .map((definition) => this.cloneItemDefinition(definition));
     }
 
     private combineStatModifiers(
@@ -417,7 +718,7 @@ export class ItemService {
         };
     }
 
-    private createFieldItemId(floorNumber: number | 'drop' | 'reward') {
+    private createFieldItemId(floorNumber: number | 'drop' | 'reward' | 'special') {
         const sequence = this.nextFieldItemSequence;
         this.nextFieldItemSequence += 1;
         if (floorNumber === 'drop') {
@@ -426,36 +727,147 @@ export class ItemService {
         if (floorNumber === 'reward') {
             return `item-reward-${sequence}`;
         }
+        if (floorNumber === 'special') {
+            return `item-special-${sequence}`;
+        }
 
         return `item-f${floorNumber}-${sequence}`;
     }
 
-    private rollRarity(floorNumber: number, minimumRarity: ItemRarity) {
-        const floorBands = Math.min(
-            ITEM_RARITY_MAX_FLOOR_BANDS,
-            Math.max(0, Math.floor((floorNumber - 1) / ITEM_RARITY_FLOOR_BAND_SIZE)),
-        );
-        const rareWeight = 0.15 + (floorBands * RARE_WEIGHT_PER_BAND);
-        const legendaryWeight = 0.03 + (floorBands * LEGENDARY_WEIGHT_PER_BAND);
-        const commonWeight = Math.max(0, 1 - rareWeight - legendaryWeight);
-        const weights = [
-            { rarity: ITEM_RARITY.COMMON, weight: commonWeight },
-            { rarity: ITEM_RARITY.RARE, weight: rareWeight },
-            { rarity: ITEM_RARITY.LEGENDARY, weight: legendaryWeight },
-        ].filter((entry) => getItemRarityRank(entry.rarity) >= getItemRarityRank(minimumRarity));
+    private rollRarity(
+        floorNumber: number,
+        minimumRarity: ItemRarity,
+        source: typeof ITEM_SPAWN_SOURCE[keyof typeof ITEM_SPAWN_SOURCE],
+        maximumRarity?: ItemRarity,
+    ) {
+        const weights = this.resolveWeights(floorNumber, source);
+        const uncommonWeightBonus = getRarityWeightBonus(this.inventory, ITEM_RARITY.UNCOMMON);
+        if (weights.UNCOMMON > 0 && uncommonWeightBonus > 0) {
+            const shiftedCommonWeight = Math.min(weights.COMMON, uncommonWeightBonus);
+            weights.COMMON -= shiftedCommonWeight;
+            weights.UNCOMMON += shiftedCommonWeight;
+        }
 
-        const totalWeight = weights.reduce((sum, entry) => sum + entry.weight, 0);
+        const availableEntries = (Object.entries(weights) as Array<[ItemRarity, number]>)
+            .filter(([rarity, weight]) =>
+                weight > 0
+                && getItemRarityRank(rarity) >= getItemRarityRank(minimumRarity)
+                && (
+                    !maximumRarity
+                    || getItemRarityRank(rarity) <= getItemRarityRank(maximumRarity)
+                ),
+            );
+
+        if (availableEntries.length === 0) {
+            return minimumRarity;
+        }
+
+        const totalWeight = availableEntries.reduce((sum, [, weight]) => sum + weight, 0);
         const roll = this.random.next() * totalWeight;
         let cursor = 0;
 
-        for (const entry of weights) {
-            cursor += entry.weight;
+        for (const [rarity, weight] of availableEntries) {
+            cursor += weight;
             if (roll < cursor) {
-                return entry.rarity;
+                return rarity;
             }
         }
 
-        return weights[weights.length - 1]?.rarity ?? minimumRarity;
+        return availableEntries[availableEntries.length - 1]?.[0] ?? minimumRarity;
     }
 
+    private resolveWeights(
+        floorNumber: number,
+        source: typeof ITEM_SPAWN_SOURCE[keyof typeof ITEM_SPAWN_SOURCE],
+    ): ItemRarityWeights {
+        if (source === ITEM_SPAWN_SOURCE.SPECIAL) {
+            return { ...EMPTY_WEIGHTS, CURSED: 1 };
+        }
+
+        const allowEpic = source === ITEM_SPAWN_SOURCE.REWARD;
+        if (floorNumber >= 100) {
+            return {
+                ...EMPTY_WEIGHTS,
+                RARE: 0.5,
+                EPIC: allowEpic ? 0.5 : 0,
+            };
+        }
+
+        if (floorNumber >= 80) {
+            return {
+                ...EMPTY_WEIGHTS,
+                COMMON: 0.10,
+                UNCOMMON: 0.20,
+                RARE: 0.45,
+                EPIC: allowEpic ? 0.25 : 0,
+            };
+        }
+
+        if (floorNumber >= 50) {
+            return {
+                ...EMPTY_WEIGHTS,
+                COMMON: 0.20,
+                UNCOMMON: 0.30,
+                RARE: 0.40,
+                EPIC: allowEpic ? 0.10 : 0,
+            };
+        }
+
+        if (floorNumber >= 25) {
+            return {
+                ...EMPTY_WEIGHTS,
+                COMMON: 0.40,
+                UNCOMMON: 0.35,
+                RARE: 0.22,
+                EPIC: allowEpic ? 0.03 : 0,
+            };
+        }
+
+        if (floorNumber >= 10) {
+            return {
+                ...EMPTY_WEIGHTS,
+                COMMON: 0.65,
+                UNCOMMON: 0.30,
+                RARE: 0.05,
+            };
+        }
+
+        return {
+            ...EMPTY_WEIGHTS,
+            COMMON: 1,
+        };
+    }
+
+    private cloneItemDefinition(definition: ItemDefinition): ItemDefinition {
+        return {
+            id: definition.id,
+            name: definition.name,
+            type: definition.type,
+            rarity: definition.rarity,
+            icon: definition.icon,
+            stackable: definition.stackable,
+            maxStack: definition.maxStack,
+            description: definition.description,
+            spawnSources: definition.spawnSources ? [...definition.spawnSources] : undefined,
+            consumableEffect: definition.consumableEffect
+                ? { ...definition.consumableEffect }
+                : undefined,
+            equipment: definition.equipment
+                ? {
+                    slot: definition.equipment.slot,
+                    statModifier: { ...definition.equipment.statModifier },
+                    passives: definition.equipment.passives?.map((passive) => ({ ...passive })),
+                }
+                : undefined,
+        };
+    }
+
+    private cloneInventoryItem(item: InventoryItem): InventoryItem {
+        return {
+            ...this.cloneItemDefinition(item),
+            instanceId: item.instanceId,
+            quantity: item.quantity,
+            isEquipped: item.isEquipped,
+        };
+    }
 }

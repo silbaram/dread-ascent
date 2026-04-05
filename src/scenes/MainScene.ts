@@ -4,7 +4,11 @@ import { EnemySpawnerService } from '../domain/services/EnemySpawnerService';
 import { FloorProgressionService, type FloorSnapshot } from '../domain/services/FloorProgressionService';
 import { ItemService } from '../domain/services/ItemService';
 import { MetaProgressionService, PermanentUpgradeKey } from '../domain/services/MetaProgressionService';
-import { RunPersistenceService, PersistedRunStatus } from '../domain/services/RunPersistenceService';
+import {
+    RunPersistenceService,
+    PersistedRunStatus,
+    type PersistedSpecialRewardOffer,
+} from '../domain/services/RunPersistenceService';
 import { SoulShardService } from '../domain/services/SoulShardService';
 import { CardBattleService } from '../domain/services/CardBattleService';
 import { CardCollectionService } from '../domain/services/CardCollectionService';
@@ -24,7 +28,11 @@ import { BattleScene, type BattleSceneData, type BattleSceneResult } from './Bat
 import { OverlayController } from './controllers/OverlayController';
 import { InputController, InputDelegate } from './controllers/InputController';
 import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
-import { ITEM_RARITY, type InventoryItem, type ItemDefinition } from '../domain/entities/Item';
+import {
+    ITEM_ID,
+    type InventoryItem,
+    type ItemDefinition,
+} from '../domain/entities/Item';
 import type { CombatStatModifier } from '../domain/entities/CombatStats';
 import { Position } from '../domain/entities/Player';
 import { Enemy } from '../domain/entities/Enemy';
@@ -34,11 +42,14 @@ import type { MapData } from '../infra/rot/MapGenerator';
 export class MainScene extends Phaser.Scene implements InputDelegate {
     private playerEntity?: Player;
     private defeatedEnemyCount = 0;
+    private pendingBattleStartEnergy = 0;
     private tileSize: number = 32;
     private fovRadius: number = 8;
     private selectedInventoryItemId?: string;
     private isAnimatingMovement = false;
     private isCardRewardFlowOpen = false;
+    private isSpecialRewardFlowOpen = false;
+    private pendingSpecialRewardOffer?: PersistedSpecialRewardOffer;
 
     private readonly combatService = new CombatService();
     private readonly cardBattleService = new CardBattleService();
@@ -240,11 +251,23 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     public onToggleInventory() {
         const state = this.overlayController.getState();
-        if (state.isTitleScreenOpen || state.isGameOver || this.isCardRewardFlowOpen || !this.playerEntity || !this.isPlayerTurn()) return;
+        if (
+            state.isTitleScreenOpen
+            || state.isGameOver
+            || this.isCardRewardFlowOpen
+            || this.isSpecialRewardFlowOpen
+            || !this.playerEntity
+            || !this.isPlayerTurn()
+        ) {
+            return;
+        }
         this.setInventoryOpen(!state.isInventoryOpen);
     }
 
     public onCloseInventory() {
+        if (this.isSpecialRewardFlowOpen) {
+            return;
+        }
         this.setInventoryOpen(false);
     }
 
@@ -257,7 +280,11 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     public isInventoryOpen() { return this.overlayController.getState().isInventoryOpen; }
     public isPlayerTurn(): boolean {
         const state = this.overlayController.getState();
-        return !this.isCardRewardFlowOpen && !state.isGameOver && !state.isVictory && this.battleDirector.isPlayerTurn();
+        return !this.isCardRewardFlowOpen
+            && !this.isSpecialRewardFlowOpen
+            && !state.isGameOver
+            && !state.isVictory
+            && this.battleDirector.isPlayerTurn();
     }
     public isAnimating(): boolean {
         return this.isAnimatingMovement;
@@ -280,6 +307,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             itemService: this.itemService,
             enemyName: this.getEnemyName(enemy),
             floorNumber: this.floorDirector.getFloorSnapshot().number,
+            startEnergyBonus: this.pendingBattleStartEnergy,
         };
 
         // BattleScene 시작
@@ -297,6 +325,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         if (!this.playerEntity) return;
 
         const { enemy } = result;
+        this.pendingBattleStartEnergy = Math.max(0, result.nextBattleStartEnergyBonus);
 
         this.playerEntity.stats.health = this.clampHealth(
             result.playerRemainingHealth,
@@ -324,11 +353,31 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
         // 승패 처리
         if (result.resolution === 'escape') {
+            const escapeArtistEquipped = this.itemService.getInventory().some((item) =>
+                item.isEquipped && item.id === ITEM_ID.ESCAPE_ARTISTS_BOOTS,
+            );
+            if (escapeArtistEquipped) {
+                this.pushTurnLog(this.localization.formatEscapeItemLossPrevented(), 'item');
+            } else {
+                const loss = this.itemService.loseRandomInventoryItem();
+                if (loss.status === 'lost' && loss.item) {
+                    this.pushTurnLog(
+                        this.localization.formatEscapeItemLost(
+                            this.localization.getItemName(loss.item.id, loss.item.name),
+                        ),
+                        'danger',
+                    );
+                    this.syncInventoryOverlay();
+                } else {
+                    this.pushTurnLog(this.localization.formatEscapeInventoryIntact(), 'system');
+                }
+            }
+            this.persistRun('active');
             this.completePlayerTurn('');
         } else if (result.outcome === 'player-win') {
             if (enemy.isDead()) {
                 if (enemy.isBoss()) {
-                    this.handleVictory(enemy);
+                    this.handleBossDefeat(enemy);
                 } else {
                     this.floorDirector.removeEnemy(enemy.id);
                     this.renderSynchronizer.removeEnemySprite(enemy.id);
@@ -368,18 +417,14 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
                 this.completePlayerTurn('');
             }
         } else if (outcome.type === 'victory' && outcome.boss) {
-            this.handleVictory(outcome.boss);
+            this.handleBossDefeat(outcome.boss);
         }
     }
 
     private handleEnemyDeath(enemy: Enemy) {
         if (!this.playerEntity) return;
 
-        this.defeatedEnemyCount += 1;
-        const totalExp = this.playerEntity.gainExperience(enemy.experienceReward);
-        this.pushTurnLog(this.localization.formatEnemyDeath(this.getEnemyName(enemy)), 'danger');
-        this.pushTurnLog(this.localization.formatExperienceGain(enemy.experienceReward, totalExp), 'item');
-
+        this.recordEnemyDefeat(enemy);
         const rewardFlowStarted = this.rollCardDrop(enemy);
         this.spawnEliteReward(enemy);
         this.syncBossHud();
@@ -392,9 +437,58 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.completePlayerTurn('');
     }
 
+    private recordEnemyDefeat(enemy: Enemy) {
+        if (!this.playerEntity) {
+            return;
+        }
+
+        this.defeatedEnemyCount += 1;
+        const totalExp = this.playerEntity.gainExperience(enemy.experienceReward);
+        this.pushTurnLog(this.localization.formatEnemyDeath(this.getEnemyName(enemy)), 'danger');
+        this.pushTurnLog(this.localization.formatExperienceGain(enemy.experienceReward, totalExp), 'item');
+    }
+
+    private handleBossDefeat(boss: Enemy) {
+        this.recordEnemyDefeat(boss);
+        this.removeBossFromFloor(boss.id);
+        this.syncBossHud();
+
+        const bossReward = this.itemService.grantBossReward(
+            this.floorDirector.getFloorSnapshot().number,
+        );
+        if (bossReward.status === 'granted' && bossReward.rewardItem) {
+            this.pushTurnLog(
+                this.localization.formatBossRewardClaimed(
+                    this.localization.getItemName(bossReward.rewardItem.id, bossReward.rewardItem.name),
+                    bossReward.rewardItem.rarity,
+                ),
+                'item',
+            );
+        }
+        this.syncInventoryOverlay();
+
+        const rewardChoices = this.itemService.createSpecialRewardChoices(
+            this.floorDirector.getFloorSnapshot().number,
+            'boss',
+        );
+        if (rewardChoices.length === 0) {
+            this.completeVictory(this.getEnemyName(boss));
+            return;
+        }
+
+        this.beginSpecialRewardFlow(rewardChoices, {
+            sourceType: 'boss',
+            bossArchetypeId: boss.archetypeId,
+            offeredItemIds: rewardChoices.map((item) => item.id),
+        });
+        this.refreshTurnStatus();
+        this.persistRun('active');
+    }
+
     /** 적 처치 시 카드 보상 오퍼를 판정하고 결과를 HUD에 표시한다. */
     private pendingCardDrop: CardDropResult | null = null;
     private pendingRewardCard: Card | null = null;
+    private pendingSpecialRewardChoices: ItemDefinition[] = [];
 
     private rollCardDrop(enemy: Enemy): boolean {
         const floorNumber = this.floorDirector.getFloorSnapshot().number;
@@ -513,6 +607,102 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.hud.hideCardRewardOverlay();
     }
 
+    private handleSpecialRewardSelection(selectedItemId: string | null): void {
+        if (!this.isSpecialRewardFlowOpen) {
+            this.resetSpecialRewardFlowState();
+            return;
+        }
+
+        const rewardSource = this.pendingSpecialRewardOffer?.sourceType ?? 'cache';
+
+        if (selectedItemId === null) {
+            this.pushTurnLog(
+                rewardSource === 'boss'
+                    ? this.localization.formatBossRewardSkipped()
+                    : this.localization.formatSpecialCacheSkipped(),
+                'system',
+            );
+            this.completeSpecialRewardFlow();
+            return;
+        }
+
+        const selectedReward = this.pendingSpecialRewardChoices.find((item) => item.id === selectedItemId);
+        if (!selectedReward) {
+            this.pushTurnLog(
+                rewardSource === 'boss'
+                    ? this.localization.formatBossRewardChoiceExpired()
+                    : this.localization.formatSpecialCacheChoiceExpired(),
+                'danger',
+            );
+            this.completeSpecialRewardFlow();
+            return;
+        }
+
+        const claimResult = rewardSource === 'boss'
+            ? this.itemService.claimSpecialReward(
+                selectedReward.id,
+                { ignoreInventoryCapacity: true },
+            )
+            : this.itemService.claimSpecialReward(selectedReward.id);
+        if (claimResult.status === 'granted' && claimResult.rewardItem) {
+            this.pushTurnLog(
+                rewardSource === 'boss'
+                    ? this.localization.formatBossRewardClaimed(
+                        this.localization.getItemName(claimResult.rewardItem.id, claimResult.rewardItem.name),
+                        claimResult.rewardItem.rarity,
+                    )
+                    : this.localization.formatSpecialCacheOpened(
+                        this.localization.getItemName(claimResult.rewardItem.id, claimResult.rewardItem.name),
+                        claimResult.rewardItem.rarity,
+                    ),
+                'item',
+            );
+        } else if (claimResult.status === 'inventory-full') {
+            const snapshot = this.itemService.getInventorySnapshot();
+            this.pushTurnLog(
+                this.localization.formatInventoryFull(
+                    this.localization.getItemName(selectedReward.id, selectedReward.name),
+                    snapshot.usedSlots,
+                    snapshot.slotCapacity,
+                ),
+                'danger',
+            );
+        } else {
+            this.pushTurnLog(
+                rewardSource === 'boss'
+                    ? this.localization.formatBossRewardChoiceExpired()
+                    : this.localization.formatSpecialCacheChoiceExpired(),
+                'danger',
+            );
+        }
+
+        this.completeSpecialRewardFlow();
+    }
+
+    private completeSpecialRewardFlow(): void {
+        const pendingOffer = this.pendingSpecialRewardOffer;
+        const rewardSource = pendingOffer?.sourceType ?? 'cache';
+        this.resetSpecialRewardFlowState();
+        this.syncInventoryOverlay();
+        if (rewardSource === 'boss') {
+            const bossName = pendingOffer?.bossArchetypeId
+                ? this.localization.getEnemyName(pendingOffer.bossArchetypeId)
+                : this.localization.getEnemyName('final-boss');
+            this.completeVictory(bossName);
+            return;
+        }
+
+        this.refreshTurnStatus();
+        this.persistRun('active');
+    }
+
+    private resetSpecialRewardFlowState(): void {
+        this.pendingSpecialRewardChoices = [];
+        this.pendingSpecialRewardOffer = undefined;
+        this.isSpecialRewardFlowOpen = false;
+        this.hud.hideSpecialRewardOverlay();
+    }
+
     private async completePlayerTurn(logLine: string, extraLogs: Array<{ line: string; tone: HudLogTone }> = []): Promise<void> {
         if (!this.playerEntity) return;
 
@@ -586,6 +776,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     }
 
     private handlePlayerDeath() {
+        this.resetSpecialRewardFlowState();
         this.overlayController.setGameOver(true);
         this.renderSynchronizer.setPlayerDeathStyle();
         const floor = this.floorDirector.getFloorSnapshot();
@@ -600,11 +791,13 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.persistRun('game-over');
     }
 
-    private handleVictory(boss: Enemy) {
+    private completeVictory(bossName: string) {
+        this.resetSpecialRewardFlowState();
+        this.overlayController.setInventory(false);
         this.overlayController.setVictory(true);
         const floor = this.floorDirector.getFloorSnapshot();
-        this.overlayController.updateVictory(floor.number, this.defeatedEnemyCount, this.getEnemyName(boss));
-        this.pushTurnLog(this.localization.formatVictory(this.getEnemyName(boss)), 'item');
+        this.overlayController.updateVictory(floor.number, this.defeatedEnemyCount, bossName);
+        this.pushTurnLog(this.localization.formatVictory(bossName), 'item');
         this.refreshTurnStatus();
         this.persistRun('victory');
     }
@@ -612,6 +805,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     private returnToTitleScreen() {
         this.hud.setViewportMode('field');
         this.resetCardRewardFlowState();
+        this.resetSpecialRewardFlowState();
         this.overlayController.setTitleScreen(true);
         this.overlayController.setSanctuary(false);
         this.overlayController.setCardCollection(false);
@@ -629,8 +823,10 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     private startNewRun() {
         this.defeatedEnemyCount = 0;
+        this.pendingBattleStartEnergy = 0;
         this.selectedInventoryItemId = undefined;
         this.resetCardRewardFlowState();
+        this.resetSpecialRewardFlowState();
         this.overlayController.setTitleScreen(false);
         this.overlayController.setSanctuary(false);
         this.overlayController.setCardCollection(false);
@@ -654,7 +850,9 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.hud.clearLogs();
         this.selectedInventoryItemId = undefined;
         this.defeatedEnemyCount = savedRun.defeatedEnemyCount;
+        this.pendingBattleStartEnergy = savedRun.pendingBattleStartEnergy ?? 0;
         this.resetCardRewardFlowState();
+        this.resetSpecialRewardFlowState();
         this.renderSynchronizer.clearPlayerTint();
         const floor = this.floorDirector.restoreFloor(savedRun.floor);
         this.itemService.resetRun();
@@ -662,6 +860,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.buildFloor(floor, this.localization.formatResumedFloor(floor.number, floor.type));
         this.playerEntity?.restore(savedRun.player.stats, savedRun.player.experience);
         this.itemService.restoreInventory(savedRun.inventory);
+        this.restorePendingSpecialRewardFlow(savedRun.pendingSpecialRewardOffer);
         this.syncInventoryOverlay();
         this.refreshTurnStatus();
         this.persistRun('active');
@@ -789,11 +988,47 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     private useSelectedInventoryItem() {
         if (!this.playerEntity || !this.selectedInventoryItemId) return;
+        const inventory = this.itemService.getInventorySnapshot();
+        const selectedItem = inventory.items.find((item) => item.instanceId === this.selectedInventoryItemId);
+        if (!selectedItem) {
+            return;
+        }
+
+        if (selectedItem.type === 'KEY') {
+            const rewardOpen = this.itemService.openSpecialReward(
+                this.selectedInventoryItemId,
+                this.floorDirector.getFloorSnapshot().number,
+            );
+            if (!rewardOpen) {
+                return;
+            }
+
+            if (rewardOpen.status === 'opened' && rewardOpen.rewardChoices && rewardOpen.rewardChoices.length > 0) {
+                this.beginSpecialRewardFlow(rewardOpen.rewardChoices, {
+                    sourceType: 'cache',
+                    keyItemId: selectedItem.id,
+                    offeredItemIds: rewardOpen.rewardChoices.map((item) => item.id),
+                });
+                this.persistRun('active');
+            } else {
+                this.pushTurnLog(
+                    this.localization.formatItemNotUsable(
+                        this.localization.getItemName(selectedItem.id, selectedItem.name),
+                    ),
+                    'danger',
+                );
+                this.persistRun('active');
+            }
+            this.syncInventoryOverlay();
+            this.refreshTurnStatus();
+            return;
+        }
+
         const activation = this.itemService.activateItem(this.selectedInventoryItemId);
         if (!activation) return;
 
-        const inventory = this.itemService.getInventorySnapshot();
-        const item = inventory.items.find(i => i.instanceId === this.selectedInventoryItemId) || activation.item;
+        const updatedInventory = this.itemService.getInventorySnapshot();
+        const item = updatedInventory.items.find(i => i.instanceId === this.selectedInventoryItemId) || activation.item;
         if (!item) return;
 
         switch (activation.status) {
@@ -867,12 +1102,18 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             return;
         }
 
-        const reward = this.itemService.spawnRewardDrop(pos, this.floorDirector.getFloorSnapshot().number, ITEM_RARITY.RARE);
+        const reward = this.itemService.spawnEliteRewardDrop(
+            pos,
+            this.floorDirector.getFloorSnapshot().number,
+        );
         this.renderSynchronizer.synchronizeItems(this.floorDirector.getFieldItems());
         this.pushTurnLog(this.localization.formatEnemyDrops(this.getEnemyName(enemy), this.localization.getItemName(reward.definition.id, reward.definition.name), reward.definition.rarity), 'item');
     }
 
     private setInventoryOpen(isOpen: boolean) {
+        if (!isOpen && this.isSpecialRewardFlowOpen) {
+            return;
+        }
         this.overlayController.setInventory(isOpen);
         this.syncInventoryOverlay();
         this.refreshTurnStatus();
@@ -905,7 +1146,76 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
         const deckCards = this.deckService.getCards();
         this.cardCollectionService.recordCards(deckCards);
-        this.floorDirector.persistRun(status, this.playerEntity, this.defeatedEnemyCount, deckCards);
+        this.floorDirector.persistRun(
+            status,
+            this.playerEntity,
+            this.defeatedEnemyCount,
+            deckCards,
+            this.pendingBattleStartEnergy,
+            this.pendingSpecialRewardOffer,
+        );
+    }
+
+    private restorePendingSpecialRewardFlow(
+        pendingSpecialRewardOffer?: PersistedSpecialRewardOffer,
+    ) {
+        if (!pendingSpecialRewardOffer) {
+            return;
+        }
+
+        if (pendingSpecialRewardOffer.sourceType === 'boss') {
+            this.removeBossFromFloor();
+            this.syncBossHud();
+        }
+
+        const rewardChoices = this.itemService.getSpecialRewardChoiceDefinitions(
+            pendingSpecialRewardOffer.offeredItemIds,
+        );
+        if (rewardChoices.length === 0) {
+            this.pendingSpecialRewardOffer = undefined;
+            if (pendingSpecialRewardOffer.sourceType === 'boss') {
+                const bossName = pendingSpecialRewardOffer.bossArchetypeId
+                    ? this.localization.getEnemyName(pendingSpecialRewardOffer.bossArchetypeId)
+                    : this.localization.getEnemyName('final-boss');
+                this.completeVictory(bossName);
+            }
+            return;
+        }
+
+        this.beginSpecialRewardFlow(rewardChoices, {
+            sourceType: pendingSpecialRewardOffer.sourceType,
+            keyItemId: pendingSpecialRewardOffer.keyItemId,
+            bossArchetypeId: pendingSpecialRewardOffer.bossArchetypeId,
+            offeredItemIds: rewardChoices.map((item) => item.id),
+        });
+    }
+
+    private beginSpecialRewardFlow(
+        rewardChoices: readonly ItemDefinition[],
+        offer: PersistedSpecialRewardOffer,
+    ) {
+        this.pendingSpecialRewardChoices = [...rewardChoices];
+        this.pendingSpecialRewardOffer = offer;
+        this.isSpecialRewardFlowOpen = true;
+        this.overlayController.setInventory(offer.sourceType === 'cache');
+        this.hud.showSpecialRewardOverlay(
+            rewardChoices,
+            (selectedItemId: string | null) => this.handleSpecialRewardSelection(selectedItemId),
+            offer.sourceType,
+        );
+    }
+
+    private removeBossFromFloor(enemyId?: string) {
+        const boss = enemyId
+            ? this.floorDirector.getEnemyById(enemyId)
+            : this.floorDirector.getBossEnemy();
+        if (!boss) {
+            return;
+        }
+
+        this.floorDirector.removeEnemy(boss.id);
+        this.renderSynchronizer.removeEnemySprite(boss.id);
+        this.battleDirector.refreshTurnQueueRoster();
     }
 
     private getEnemyName(enemy: Pick<Enemy, 'archetypeId' | 'elite'>) { return this.localization.getEnemyName(enemy.archetypeId, enemy.elite); }

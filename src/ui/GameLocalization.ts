@@ -65,6 +65,8 @@ interface LocaleBundle {
         inventoryTitle: string;
         inventoryEmptyTitle: string;
         inventoryEmptyCopy: string;
+        loadoutLabel: string;
+        emptySlotLabel: string;
         selectedItemEyebrow: string;
         selectedItemEmptyTitle: string;
         selectedItemEmptyCopy: string;
@@ -91,6 +93,14 @@ interface LocaleBundle {
         rewardOfferSwapLabel: string;
         rewardOfferSkipLabel: string;
         rewardOfferPowerLabel: string;
+        specialRewardEyebrow: string;
+        specialRewardTitle: string;
+        specialRewardCopy: string;
+        specialRewardSkipLabel: string;
+        bossRewardEyebrow: string;
+        bossRewardTitle: string;
+        bossRewardCopy: string;
+        bossRewardSkipLabel: string;
         floorSuffix: string;
         slotCapacity: (usedSlots: number, slotCapacity: number) => string;
     };
@@ -102,7 +112,7 @@ interface LocaleBundle {
     itemTypes: Record<ItemType, string>;
     equipmentSlots: Record<EquipmentSlot, string>;
     upgrades: Record<PermanentUpgradeKey, { label: string; statLabel: UpgradeStatLabel; description: string }>;
-    items: Record<ItemDefinition['id'], { name: string; description: string }>;
+    items: Partial<Record<ItemDefinition['id'], { name: string; description: string }>>;
     common: {
         player: string;
         titleScreenTurn: string;
@@ -174,6 +184,8 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             inventoryTitle: 'Pack Ledger',
             inventoryEmptyTitle: 'Inventory is empty',
             inventoryEmptyCopy: 'Collect treasure on the field to fill your pack.',
+            loadoutLabel: 'Equipped Loadout',
+            emptySlotLabel: 'Empty',
             selectedItemEyebrow: 'Selected Item',
             selectedItemEmptyTitle: 'Nothing selected',
             selectedItemEmptyCopy: 'Pick an item slot to inspect it and drop it back onto the floor.',
@@ -200,6 +212,14 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             rewardOfferSwapLabel: 'Open Swap',
             rewardOfferSkipLabel: 'Skip Reward',
             rewardOfferPowerLabel: 'Power',
+            specialRewardEyebrow: 'Special Cache',
+            specialRewardTitle: 'Choose a Cache Reward',
+            specialRewardCopy: 'Pick one item from the cache, or walk away with nothing.',
+            specialRewardSkipLabel: 'Leave the Cache',
+            bossRewardEyebrow: 'Boss Trophy',
+            bossRewardTitle: 'Choose a Boss Reward',
+            bossRewardCopy: 'Claim one prize from the fallen boss, or leave the power untouched.',
+            bossRewardSkipLabel: 'Leave It Behind',
             floorSuffix: 'F',
             slotCapacity: (usedSlots, slotCapacity) => `${usedSlots} / ${slotCapacity} slots`,
         },
@@ -227,8 +247,10 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
         },
         rarities: {
             COMMON: 'Common',
+            UNCOMMON: 'Uncommon',
             RARE: 'Rare',
-            LEGENDARY: 'Legendary',
+            EPIC: 'Epic',
+            CURSED: 'Cursed',
         },
         itemTypes: {
             CONSUMABLE: 'Consumable',
@@ -238,6 +260,9 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
         },
         equipmentSlots: {
             WEAPON: 'Weapon',
+            HELMET: 'Helmet',
+            BODY_ARMOR: 'Body Armor',
+            BOOTS: 'Boots',
             ARMOR: 'Armor',
             TRINKET: 'Trinket',
         },
@@ -277,7 +302,7 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             },
             'bronze-sigil': {
                 name: 'Bronze Sigil',
-                description: 'An engraved seal marked for future locked paths.',
+                description: 'Break the seal to reveal a special cache.',
             },
             'moonsteel-saber': {
                 name: 'Moonsteel Saber',
@@ -353,6 +378,8 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             inventoryTitle: '소지 현황',
             inventoryEmptyTitle: '인벤토리가 비어 있습니다',
             inventoryEmptyCopy: '필드에서 보물을 모아 가방을 채우세요.',
+            loadoutLabel: '장착 현황',
+            emptySlotLabel: '비어 있음',
             selectedItemEyebrow: '선택한 아이템',
             selectedItemEmptyTitle: '선택된 아이템 없음',
             selectedItemEmptyCopy: '슬롯을 선택하면 정보와 버리기 가능 여부를 확인할 수 있습니다.',
@@ -379,6 +406,14 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             rewardOfferSwapLabel: '교체 열기',
             rewardOfferSkipLabel: '보상 건너뛰기',
             rewardOfferPowerLabel: '위력',
+            specialRewardEyebrow: '특수 보관함',
+            specialRewardTitle: '보관함 보상 선택',
+            specialRewardCopy: '보관함에서 아이템 1개를 고르거나 아무것도 받지 않고 떠납니다.',
+            specialRewardSkipLabel: '보관함 떠나기',
+            bossRewardEyebrow: '보스 전리품',
+            bossRewardTitle: '보스 보상 선택',
+            bossRewardCopy: '쓰러진 보스의 전리품 중 하나를 고르거나 아무것도 받지 않고 떠납니다.',
+            bossRewardSkipLabel: '전리품 포기',
             floorSuffix: '층',
             slotCapacity: (usedSlots, slotCapacity) => `${usedSlots} / ${slotCapacity}칸`,
         },
@@ -406,8 +441,10 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
         },
         rarities: {
             COMMON: '일반',
+            UNCOMMON: '고급',
             RARE: '희귀',
-            LEGENDARY: '전설',
+            EPIC: '전설',
+            CURSED: '저주받은',
         },
         itemTypes: {
             CONSUMABLE: '소모품',
@@ -417,6 +454,9 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
         },
         equipmentSlots: {
             WEAPON: '무기',
+            HELMET: '투구',
+            BODY_ARMOR: '갑옷',
+            BOOTS: '신발',
             ARMOR: '방어구',
             TRINKET: '장신구',
         },
@@ -456,7 +496,7 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             },
             'bronze-sigil': {
                 name: '청동 인장',
-                description: '앞으로 열릴 잠긴 길을 암시하는 각인된 봉인입니다.',
+                description: '봉인을 깨뜨려 특수 보관함을 드러냅니다.',
             },
             'moonsteel-saber': {
                 name: '문스틸 세이버',
@@ -783,6 +823,44 @@ export class GameLocalization {
             : `Get ${icon} ${itemName}${quantityLabel}.`;
     }
 
+    formatSpecialCacheOpened(itemName: string, rarity: ItemRarity) {
+        const rarityLabel = this.getRarityLabel(rarity);
+        return this.locale === 'ko'
+            ? `특수 보관함이 열리며 ${itemName} [${rarityLabel}]이 모습을 드러냈습니다.`
+            : `A special cache opens and reveals ${itemName} [${rarityLabel}].`;
+    }
+
+    formatSpecialCacheSkipped() {
+        return this.locale === 'ko'
+            ? '특수 보관함을 열어봤지만 아무것도 가져가지 않았습니다.'
+            : 'The special cache is opened, but you leave without taking anything.';
+    }
+
+    formatSpecialCacheChoiceExpired() {
+        return this.locale === 'ko'
+            ? '선택 가능한 보관함 보상이 더 이상 없습니다.'
+            : 'That cache reward is no longer available.';
+    }
+
+    formatBossRewardClaimed(itemName: string, rarity: ItemRarity) {
+        const rarityLabel = this.getRarityLabel(rarity);
+        return this.locale === 'ko'
+            ? `보스 전리품으로 ${itemName} [${rarityLabel}]을 챙겼습니다.`
+            : `You claim ${itemName} [${rarityLabel}] from the fallen boss.`;
+    }
+
+    formatBossRewardSkipped() {
+        return this.locale === 'ko'
+            ? '보스 전리품을 두고 정상의 침묵만 챙겼습니다.'
+            : 'You leave the boss reward behind and keep only the silence of the summit.';
+    }
+
+    formatBossRewardChoiceExpired() {
+        return this.locale === 'ko'
+            ? '선택 가능한 보스 보상이 더 이상 없습니다.'
+            : 'That boss reward is no longer available.';
+    }
+
     formatDrop(icon: string, itemName: string) {
         return this.locale === 'ko'
             ? `${icon} ${itemName} 버리기.`
@@ -819,6 +897,24 @@ export class GameLocalization {
         return this.locale === 'ko'
             ? `${itemName}은 지금 사용할 수 없습니다.`
             : `${itemName} cannot be used right now.`;
+    }
+
+    formatEscapeItemLost(itemName: string) {
+        return this.locale === 'ko'
+            ? `도주에 성공했지만 ${itemName}을 잃어버렸습니다.`
+            : `You escape, but lose ${itemName} in the scramble.`;
+    }
+
+    formatEscapeItemLossPrevented() {
+        return this.locale === 'ko'
+            ? '도주했지만 장비의 보호 덕분에 아무 아이템도 잃지 않았습니다.'
+            : 'You escape without losing any item thanks to your gear.';
+    }
+
+    formatEscapeInventoryIntact() {
+        return this.locale === 'ko'
+            ? '도주했지만 잃어버릴 아이템이 없어 가방은 그대로였습니다.'
+            : 'You escape, and your pack stays intact because there is nothing to lose.';
     }
 
     formatUnequipBeforeDrop() {

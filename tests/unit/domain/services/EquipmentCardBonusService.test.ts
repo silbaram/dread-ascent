@@ -19,13 +19,20 @@ import { resolveCardClash } from '../../../../src/domain/services/CardBattleReso
 // ---------------------------------------------------------------------------
 
 function createEquipmentItem(overrides: {
-    slot: 'WEAPON' | 'ARMOR' | 'TRINKET';
+    slot: 'WEAPON' | 'HELMET' | 'BODY_ARMOR' | 'BOOTS';
     attack?: number;
     defense?: number;
     isEquipped?: boolean;
 }): InventoryItem {
+    const idBySlot = {
+        WEAPON: 'iron-dagger',
+        HELMET: 'iron-helm',
+        BODY_ARMOR: 'leather-vest',
+        BOOTS: 'iron-boots',
+    } as const;
+
     return {
-        id: `test-${overrides.slot.toLowerCase()}`,
+        id: idBySlot[overrides.slot],
         instanceId: `inst-${overrides.slot.toLowerCase()}-${Math.random()}`,
         name: `Test ${overrides.slot}`,
         type: ITEM_TYPE.EQUIPMENT,
@@ -67,9 +74,9 @@ describe('EquipmentCardBonusService', () => {
             expect(bonus.guardBonus).toBe(0);
         });
 
-        it('장착된 방어구의 defense 스탯을 guardBonus로 추출한다', () => {
+        it('장착된 방어 장비의 defense 스탯을 guardBonus로 추출한다', () => {
             const inventory: InventoryItem[] = [
-                createEquipmentItem({ slot: 'ARMOR', defense: 3 }),
+                createEquipmentItem({ slot: 'BODY_ARMOR', defense: 3 }),
             ];
 
             const bonus = getEquipmentCardBonus(inventory);
@@ -78,22 +85,24 @@ describe('EquipmentCardBonusService', () => {
             expect(bonus.guardBonus).toBe(3);
         });
 
-        it('무기와 방어구 모두 장착 시 각각의 보너스를 반환한다', () => {
+        it('무기와 여러 방어 슬롯을 함께 장착하면 보너스를 합산한다', () => {
             const inventory: InventoryItem[] = [
                 createEquipmentItem({ slot: 'WEAPON', attack: 5 }),
-                createEquipmentItem({ slot: 'ARMOR', defense: 3 }),
+                createEquipmentItem({ slot: 'HELMET', defense: 1 }),
+                createEquipmentItem({ slot: 'BODY_ARMOR', defense: 3 }),
+                createEquipmentItem({ slot: 'BOOTS', defense: 1 }),
             ];
 
             const bonus = getEquipmentCardBonus(inventory);
 
             expect(bonus.attackBonus).toBe(5);
-            expect(bonus.guardBonus).toBe(3);
+            expect(bonus.guardBonus).toBe(5);
         });
 
         it('장비 미장착 시 보너스는 0이다', () => {
             const inventory: InventoryItem[] = [
                 createEquipmentItem({ slot: 'WEAPON', attack: 5, isEquipped: false }),
-                createEquipmentItem({ slot: 'ARMOR', defense: 3, isEquipped: false }),
+                createEquipmentItem({ slot: 'BODY_ARMOR', defense: 3, isEquipped: false }),
             ];
 
             const bonus = getEquipmentCardBonus(inventory);
@@ -109,22 +118,11 @@ describe('EquipmentCardBonusService', () => {
             expect(bonus.guardBonus).toBe(0);
         });
 
-        it('Trinket은 보너스에 반영되지 않는다', () => {
-            const inventory: InventoryItem[] = [
-                createEquipmentItem({ slot: 'TRINKET', attack: 10, defense: 10 }),
-            ];
-
-            const bonus = getEquipmentCardBonus(inventory);
-
-            expect(bonus.attackBonus).toBe(0);
-            expect(bonus.guardBonus).toBe(0);
-        });
-
         it('소모품 아이템은 무시한다', () => {
             const consumable: InventoryItem = {
-                id: 'potion',
+                id: 'small-potion',
                 instanceId: 'inst-potion',
-                name: 'Potion',
+                name: 'Small Potion',
                 type: ITEM_TYPE.CONSUMABLE,
                 rarity: ITEM_RARITY.COMMON,
                 icon: '🧪',

@@ -13,17 +13,26 @@ import {
 import {
     DEFAULT_MOVEMENT_SPEED,
     cloneCombatStats,
+    type CombatStatModifier,
     type CombatStats,
 } from '../entities/CombatStats';
 import { STATUS_EFFECT_TYPE } from './StatusEffectService';
 import {
+    ITEM_CATALOG,
     EQUIPMENT_SLOT,
     ITEM_RARITY,
+    ITEM_SPAWN_SOURCE,
     ITEM_TYPE,
+    type ItemId,
+    cloneConsumableEffect,
+    cloneEquipmentDefinition,
+    cloneInventoryItem as cloneStoredInventoryItem,
+    isPrimaryEquipmentSlot,
     type InventoryItem,
     type ItemRarity,
     type ItemType,
 } from '../entities/Item';
+import type { EnemyArchetypeId } from '../entities/Enemy';
 import type { FloorSnapshot, FloorType } from './FloorProgressionService';
 import type { StorageLike } from './SoulShardService';
 
@@ -34,6 +43,13 @@ export interface PersistedPlayerSnapshot {
     experience: number;
 }
 
+export interface PersistedSpecialRewardOffer {
+    sourceType: 'cache' | 'boss';
+    keyItemId?: ItemId;
+    bossArchetypeId?: EnemyArchetypeId;
+    offeredItemIds: ItemId[];
+}
+
 export interface RunPersistenceSnapshot {
     status: PersistedRunStatus;
     floor: FloorSnapshot;
@@ -41,9 +57,21 @@ export interface RunPersistenceSnapshot {
     inventory: InventoryItem[];
     deck: Card[];
     defeatedEnemyCount: number;
+    pendingBattleStartEnergy?: number;
+    pendingSpecialRewardOffer?: PersistedSpecialRewardOffer;
 }
 
 export const RUN_PERSISTENCE_STORAGE_KEY = 'dread-ascent.run-state';
+
+interface NormalizedInventoryResult {
+    items: InventoryItem[];
+    removedLegacyEquippedStatModifier: CombatStatModifier;
+}
+
+interface NormalizedInventoryItemResult {
+    item: InventoryItem;
+    removedLegacyEquippedStatModifier?: CombatStatModifier;
+}
 
 const CARD_CONDITION_TYPES = [
     'HP_THRESHOLD',
@@ -136,6 +164,15 @@ export class RunPersistenceService {
             inventory: snapshot.inventory.map((item) => this.cloneInventoryItem(item)),
             deck: snapshot.deck.map((card) => this.cloneCard(card)),
             defeatedEnemyCount: snapshot.defeatedEnemyCount,
+            pendingBattleStartEnergy: snapshot.pendingBattleStartEnergy ?? 0,
+            pendingSpecialRewardOffer: snapshot.pendingSpecialRewardOffer
+                ? {
+                    sourceType: snapshot.pendingSpecialRewardOffer.sourceType,
+                    keyItemId: snapshot.pendingSpecialRewardOffer.keyItemId,
+                    bossArchetypeId: snapshot.pendingSpecialRewardOffer.bossArchetypeId,
+                    offeredItemIds: [...snapshot.pendingSpecialRewardOffer.offeredItemIds],
+                }
+                : undefined,
         };
     }
 
@@ -161,10 +198,22 @@ export class RunPersistenceService {
         return {
             status,
             floor,
-            player,
-            inventory,
+            player: {
+                ...player,
+                stats: this.removeStatModifier(
+                    player.stats,
+                    inventory.removedLegacyEquippedStatModifier,
+                ),
+            },
+            inventory: inventory.items,
             deck,
             defeatedEnemyCount: this.normalizeCount(snapshot.defeatedEnemyCount),
+            pendingBattleStartEnergy: this.normalizeCount(
+                (snapshot as { pendingBattleStartEnergy?: unknown }).pendingBattleStartEnergy,
+            ),
+            pendingSpecialRewardOffer: this.normalizePendingSpecialRewardOffer(
+                (snapshot as { pendingSpecialRewardOffer?: unknown }).pendingSpecialRewardOffer,
+            ),
         };
     }
 
@@ -198,6 +247,71 @@ export class RunPersistenceService {
         return type === 'normal' || type === 'safe' || type === 'boss'
             ? type
             : undefined;
+    }
+
+    private normalizePendingSpecialRewardOffer(
+        offer: unknown,
+    ): PersistedSpecialRewardOffer | undefined {
+        if (!offer || typeof offer !== 'object') {
+            return undefined;
+        }
+
+        const candidate = offer as Partial<PersistedSpecialRewardOffer>;
+        const sourceType = candidate.sourceType === 'cache' || candidate.sourceType === 'boss'
+            ? candidate.sourceType
+            : typeof candidate.keyItemId === 'string'
+                ? 'cache'
+                : undefined;
+        const keyItemId = typeof candidate.keyItemId === 'string'
+            ? candidate.keyItemId as ItemId
+            : undefined;
+        const bossArchetypeId = typeof candidate.bossArchetypeId === 'string'
+            ? candidate.bossArchetypeId as EnemyArchetypeId
+            : undefined;
+        const keyItem = keyItemId
+            ? ITEM_CATALOG.find((item) =>
+                item.id === keyItemId
+                && item.type === ITEM_TYPE.KEY,
+            )
+            : undefined;
+        const rawOfferedItemIds = (candidate as { offeredItemIds?: unknown }).offeredItemIds;
+        const offeredItemIds = Array.isArray(rawOfferedItemIds)
+            ? rawOfferedItemIds.reduce<ItemId[]>((ids, itemId) => {
+                if (typeof itemId !== 'string') {
+                    return ids;
+                }
+
+                const definition = ITEM_CATALOG.find((item) => item.id === itemId);
+                const isValidSpecialReward = definition
+                    && (
+                        definition.spawnSources?.includes(ITEM_SPAWN_SOURCE.SPECIAL)
+                        || (
+                            definition.rarity === ITEM_RARITY.EPIC
+                            && definition.spawnSources?.includes(ITEM_SPAWN_SOURCE.REWARD)
+                        )
+                    );
+                if (!isValidSpecialReward || ids.includes(itemId as ItemId)) {
+                    return ids;
+                }
+
+                ids.push(itemId as ItemId);
+                return ids;
+            }, [])
+            : [];
+        if (!sourceType || offeredItemIds.length === 0) {
+            return undefined;
+        }
+
+        if (sourceType === 'cache' && !keyItem) {
+            return undefined;
+        }
+
+        return {
+            sourceType,
+            keyItemId: keyItem?.id,
+            bossArchetypeId,
+            offeredItemIds,
+        };
     }
 
     private normalizePlayer(player: unknown): PersistedPlayerSnapshot | undefined {
@@ -241,17 +355,30 @@ export class RunPersistenceService {
         };
     }
 
-    private normalizeInventory(inventory: unknown): InventoryItem[] | undefined {
+    private normalizeInventory(inventory: unknown): NormalizedInventoryResult | undefined {
         if (!Array.isArray(inventory)) {
             return undefined;
         }
 
-        return inventory
-            .map((item) => this.normalizeInventoryItem(item))
-            .filter((item): item is InventoryItem => !!item);
+        return inventory.reduce<NormalizedInventoryResult>((result, item) => {
+            const normalizedItem = this.normalizeInventoryItem(item);
+            if (!normalizedItem) {
+                return result;
+            }
+
+            result.items.push(normalizedItem.item);
+            result.removedLegacyEquippedStatModifier = this.combineStatModifiers(
+                result.removedLegacyEquippedStatModifier,
+                normalizedItem.removedLegacyEquippedStatModifier,
+            );
+            return result;
+        }, {
+            items: [],
+            removedLegacyEquippedStatModifier: {},
+        });
     }
 
-    private normalizeInventoryItem(item: unknown): InventoryItem | undefined {
+    private normalizeInventoryItem(item: unknown): NormalizedInventoryItemResult | undefined {
         if (!item || typeof item !== 'object') {
             return undefined;
         }
@@ -284,6 +411,7 @@ export class RunPersistenceService {
             return undefined;
         }
 
+        const catalogDefinition = ITEM_CATALOG.find((definition) => definition.id === id);
         const consumableEffect = candidate.consumableEffect
             && typeof candidate.consumableEffect === 'object'
             && (candidate.consumableEffect as { kind?: unknown }).kind === 'heal'
@@ -292,47 +420,98 @@ export class RunPersistenceService {
                 kind: 'heal' as const,
                 amount: this.normalizePositiveStat((candidate.consumableEffect as { amount?: unknown }).amount) ?? 1,
             }
-            : undefined;
-        const equipment = this.normalizeEquipment(candidate.equipment);
+            : cloneConsumableEffect(catalogDefinition?.consumableEffect);
+        const equipment = this.normalizeEquipment(candidate.equipment, catalogDefinition?.equipment);
+        const effectiveType = catalogDefinition?.type ?? type;
+        const effectiveRarity = catalogDefinition?.rarity ?? rarity;
+        const effectiveIsEquipped = effectiveType === ITEM_TYPE.EQUIPMENT
+            && !!equipment
+            && isPrimaryEquipmentSlot(equipment.slot)
+            ? isEquipped
+            : false;
 
         return {
-            instanceId,
-            id,
-            name,
-            type,
-            rarity,
-            icon,
-            stackable,
-            maxStack,
-            quantity,
-            description,
-            isEquipped,
-            consumableEffect,
-            equipment,
+            item: {
+                instanceId,
+                id: catalogDefinition?.id ?? id,
+                name: catalogDefinition?.name ?? name,
+                type: effectiveType,
+                rarity: effectiveRarity,
+                icon: catalogDefinition?.icon ?? icon,
+                stackable: catalogDefinition?.stackable ?? stackable,
+                maxStack: catalogDefinition?.maxStack ?? maxStack,
+                quantity,
+                description: catalogDefinition?.description ?? description,
+                spawnSources: catalogDefinition?.spawnSources ? [...catalogDefinition.spawnSources] : undefined,
+                isEquipped: effectiveIsEquipped,
+                consumableEffect,
+                equipment,
+            },
+            removedLegacyEquippedStatModifier:
+                effectiveType === ITEM_TYPE.EQUIPMENT
+                && !!equipment
+                && isEquipped
+                && !isPrimaryEquipmentSlot(equipment.slot)
+                    ? { ...equipment.statModifier }
+                    : undefined,
         };
     }
 
-    private normalizeEquipment(equipment: unknown) {
+    private normalizeEquipment(
+        equipment: unknown,
+        catalogEquipment?: InventoryItem['equipment'],
+    ) {
         if (!equipment || typeof equipment !== 'object') {
-            return undefined;
+            return cloneEquipmentDefinition(catalogEquipment);
         }
 
         const candidate = equipment as {
             slot?: unknown;
             statModifier?: Partial<CombatStats>;
+            passives?: InventoryItem['equipment'] extends infer T
+                ? T extends { passives?: infer TPassives }
+                    ? TPassives
+                    : never
+                : never;
         };
         const slot = candidate.slot === EQUIPMENT_SLOT.WEAPON
+            || candidate.slot === EQUIPMENT_SLOT.HELMET
+            || candidate.slot === EQUIPMENT_SLOT.BODY_ARMOR
+            || candidate.slot === EQUIPMENT_SLOT.BOOTS
             || candidate.slot === EQUIPMENT_SLOT.ARMOR
             || candidate.slot === EQUIPMENT_SLOT.TRINKET
-            ? candidate.slot
-            : undefined;
+            ? candidate.slot === EQUIPMENT_SLOT.ARMOR
+                ? EQUIPMENT_SLOT.BODY_ARMOR
+                : candidate.slot
+            : catalogEquipment?.slot;
         const modifier = candidate.statModifier && typeof candidate.statModifier === 'object'
             ? {
                 maxHealth: this.normalizeOptionalStat(candidate.statModifier.maxHealth),
                 attack: this.normalizeOptionalStat(candidate.statModifier.attack),
                 defense: this.normalizeOptionalStat(candidate.statModifier.defense),
+                movementSpeed: this.normalizeOptionalStat(candidate.statModifier.movementSpeed),
             }
-            : undefined;
+            : catalogEquipment?.statModifier
+                ? { ...catalogEquipment.statModifier }
+                : undefined;
+        const passives = Array.isArray(candidate.passives)
+            ? candidate.passives
+                .filter((entry): entry is { kind: string; value?: number } =>
+                    !!entry
+                    && typeof entry === 'object'
+                    && typeof entry.kind === 'string'
+                    && (
+                        (entry as { value?: unknown }).value === undefined
+                        || Number.isFinite((entry as { value?: unknown }).value)
+                    ),
+                )
+                .map((entry) => ({
+                    kind: entry.kind,
+                    value: Number.isFinite(entry.value)
+                        ? Math.floor(entry.value as number)
+                        : undefined,
+                }))
+            : catalogEquipment?.passives?.map((entry) => ({ ...entry }));
         if (!slot || !modifier) {
             return undefined;
         }
@@ -340,6 +519,7 @@ export class RunPersistenceService {
         return {
             slot,
             statModifier: modifier,
+            passives,
         };
     }
 
@@ -354,10 +534,14 @@ export class RunPersistenceService {
 
     private normalizeItemRarity(rarity: unknown): ItemRarity | undefined {
         return rarity === ITEM_RARITY.COMMON
+            || rarity === ITEM_RARITY.UNCOMMON
             || rarity === ITEM_RARITY.RARE
-            || rarity === ITEM_RARITY.LEGENDARY
+            || rarity === ITEM_RARITY.EPIC
+            || rarity === ITEM_RARITY.CURSED
             ? rarity
-            : undefined;
+            : rarity === 'LEGENDARY'
+                ? ITEM_RARITY.EPIC
+                : undefined;
     }
 
     private normalizeDeck(deck: unknown): Card[] | undefined {
@@ -750,19 +934,39 @@ export class RunPersistenceService {
             : undefined;
     }
 
-    private cloneInventoryItem(item: InventoryItem): InventoryItem {
+    private combineStatModifiers(
+        left: CombatStatModifier,
+        right?: CombatStatModifier,
+    ): CombatStatModifier {
+        if (!right) {
+            return { ...left };
+        }
+
         return {
-            ...item,
-            consumableEffect: item.consumableEffect
-                ? { ...item.consumableEffect }
-                : undefined,
-            equipment: item.equipment
-                ? {
-                    ...item.equipment,
-                    statModifier: { ...item.equipment.statModifier },
-                }
-                : undefined,
+            maxHealth: (left.maxHealth ?? 0) + (right.maxHealth ?? 0) || undefined,
+            attack: (left.attack ?? 0) + (right.attack ?? 0) || undefined,
+            defense: (left.defense ?? 0) + (right.defense ?? 0) || undefined,
+            movementSpeed: (left.movementSpeed ?? 0) + (right.movementSpeed ?? 0) || undefined,
         };
+    }
+
+    private removeStatModifier(
+        stats: CombatStats,
+        modifier: CombatStatModifier,
+    ): CombatStats {
+        const maxHealth = Math.max(1, stats.maxHealth - (modifier.maxHealth ?? 0));
+
+        return {
+            health: Math.min(maxHealth, stats.health),
+            maxHealth,
+            attack: Math.max(0, stats.attack - (modifier.attack ?? 0)),
+            defense: Math.max(0, stats.defense - (modifier.defense ?? 0)),
+            movementSpeed: Math.max(1, stats.movementSpeed - (modifier.movementSpeed ?? 0)),
+        };
+    }
+
+    private cloneInventoryItem(item: InventoryItem): InventoryItem {
+        return cloneStoredInventoryItem(item);
     }
 
     private cloneCard(card: Card): Card {

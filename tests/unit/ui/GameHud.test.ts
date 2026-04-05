@@ -45,6 +45,10 @@ const HUD_ROLES = [
     'reward-offer-overlay',
     'reward-offer-copy',
     'reward-offer-list',
+    'special-reward-overlay',
+    'special-reward-title',
+    'special-reward-copy',
+    'special-reward-list',
 ] as const;
 
 class FakeElement {
@@ -534,6 +538,36 @@ describe('GameHud', () => {
         expect(root.disabledFor('inventory-drop')).toBe(true);
     });
 
+    it('enables use for bronze sigil key items and shows the special cache action', () => {
+        const { root, hud } = createHud();
+
+        hud.updateInventory({
+            isOpen: true,
+            items: [
+                {
+                    id: 'bronze-sigil',
+                    instanceId: 'item-key-1',
+                    name: 'Bronze Sigil',
+                    type: 'KEY',
+                    rarity: 'RARE',
+                    icon: '?',
+                    stackable: false,
+                    maxStack: 1,
+                    description: 'Break the seal to reveal a special cache.',
+                    quantity: 1,
+                    isEquipped: false,
+                },
+            ],
+            selectedItemId: 'item-key-1',
+            usedSlots: 1,
+            slotCapacity: 12,
+        });
+
+        expect(root.textFor('inventory-use')).toBe('Use');
+        expect(root.disabledFor('inventory-use')).toBe(false);
+        expect(root.htmlFor('inventory-detail')).toContain('Break the seal to reveal a special cache.');
+    });
+
     it('renders the title return overlay with the current soul shard total', () => {
         // Arrange
         const { root, hud } = createHud();
@@ -757,6 +791,116 @@ describe('GameHud', () => {
         hud.showCardRewardOverlay(createRewardOffer(false), callback);
         (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
             target: createClosestTarget('[data-role="reward-offer-skip"]'),
+        } as Event);
+        expect(callback).toHaveBeenCalledWith(null);
+    });
+
+    it('renders the special reward overlay with item choices and localized copy', () => {
+        const { root, hud, localization } = createHud();
+        const callback = vi.fn();
+
+        hud.showSpecialRewardOverlay([
+            {
+                id: 'cursed-edge',
+                name: 'Cursed Edge',
+                type: 'EQUIPMENT',
+                rarity: 'CURSED',
+                icon: '/',
+                stackable: false,
+                maxStack: 1,
+                description: 'Attack cards gain +2 power.',
+                equipment: {
+                    slot: 'WEAPON',
+                    statModifier: { attack: 7 },
+                },
+            },
+            {
+                id: 'madmans-hood',
+                name: "Madman's Hood",
+                type: 'EQUIPMENT',
+                rarity: 'CURSED',
+                icon: '^',
+                stackable: false,
+                maxStack: 1,
+                description: 'Opening hand cards gain +3 power.',
+                equipment: {
+                    slot: 'HELMET',
+                    statModifier: {},
+                },
+            },
+        ], callback);
+
+        expect(root.datasetFor('special-reward-overlay').open).toBe('true');
+        expect(root.textFor('special-reward-copy')).toBe('Pick one item from the cache, or walk away with nothing.');
+        expect(root.htmlFor('special-reward-list')).toContain('Cursed Edge');
+        expect(root.htmlFor('special-reward-list')).toContain('Cursed · Weapon · ATK +7');
+        expect(root.htmlFor('special-reward-list')).toContain('Madman&#39;s Hood');
+
+        localization.setLocale('ko');
+
+        expect(root.textFor('special-reward-copy')).toBe('보관함에서 아이템 1개를 고르거나 아무것도 받지 않고 떠납니다.');
+        expect(root.htmlFor('special-reward-list')).toContain('저주받은 · 무기 · ATK +7');
+    });
+
+    it('renders boss reward overlay copy when the source is a boss victory', () => {
+        const { root, hud, localization } = createHud();
+        const callback = vi.fn();
+
+        hud.showSpecialRewardOverlay([
+            {
+                id: 'soulfire-brand',
+                name: 'Soulfire Brand',
+                type: 'EQUIPMENT',
+                rarity: 'EPIC',
+                icon: '/',
+                stackable: false,
+                maxStack: 1,
+                description: 'Start battle with Strength +2.',
+                equipment: {
+                    slot: 'WEAPON',
+                    statModifier: { attack: 6 },
+                },
+            },
+        ], callback, 'boss');
+
+        expect(root.textFor('special-reward-copy')).toBe('Claim one prize from the fallen boss, or leave the power untouched.');
+
+        localization.setLocale('ko');
+
+        expect(root.textFor('special-reward-copy')).toBe('쓰러진 보스의 전리품 중 하나를 고르거나 아무것도 받지 않고 떠납니다.');
+    });
+
+    it('routes special reward clicks to select and skip callbacks, then closes itself', () => {
+        const { hud } = createHud();
+        const callback = vi.fn();
+
+        hud.showSpecialRewardOverlay([
+            {
+                id: 'cursed-edge',
+                name: 'Cursed Edge',
+                type: 'EQUIPMENT',
+                rarity: 'CURSED',
+                icon: '/',
+                stackable: false,
+                maxStack: 1,
+                description: 'Attack cards gain +2 power.',
+                equipment: {
+                    slot: 'WEAPON',
+                    statModifier: { attack: 7 },
+                },
+            },
+        ], callback);
+
+        const rewardTarget = createClosestTarget('[data-special-reward-item-id]') as FakeElement & {
+            dataset: Record<string, string>;
+        };
+        rewardTarget.dataset.specialRewardItemId = 'cursed-edge';
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({ target: rewardTarget } as Event);
+        expect(callback).toHaveBeenCalledWith('cursed-edge');
+
+        hud.showSpecialRewardOverlay([], callback);
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
+            target: createClosestTarget('[data-role="special-reward-skip"]'),
         } as Event);
         expect(callback).toHaveBeenCalledWith(null);
     });

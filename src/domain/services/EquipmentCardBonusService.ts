@@ -24,8 +24,7 @@ export interface EquipmentCardBonus {
 /**
  * 인벤토리에서 장착 중인 장비의 카드 파워 보너스를 추출한다.
  * - 무기(WEAPON)의 attack 스탯 → 공격 카드 보너스
- * - 방어구(ARMOR)의 defense 스탯 → 수비 카드 보너스
- * - Trinket은 이번 범위에서 제외
+ * - 방어 장비(HELMET/BODY_ARMOR/BOOTS)의 defense 스탯 → 수비 카드 보너스
  * - 미장착 시 보너스 0
  */
 export function getEquipmentCardBonus(inventory: readonly InventoryItem[]): EquipmentCardBonus {
@@ -39,7 +38,12 @@ export function getEquipmentCardBonus(inventory: readonly InventoryItem[]): Equi
             attackBonus += item.equipment.statModifier.attack ?? 0;
         }
 
-        if (item.equipment.slot === EQUIPMENT_SLOT.ARMOR) {
+        if (
+            item.equipment.slot === EQUIPMENT_SLOT.HELMET
+            || item.equipment.slot === EQUIPMENT_SLOT.BODY_ARMOR
+            || item.equipment.slot === EQUIPMENT_SLOT.BOOTS
+            || item.equipment.slot === EQUIPMENT_SLOT.ARMOR
+        ) {
             guardBonus += item.equipment.statModifier.defense ?? 0;
         }
     }
