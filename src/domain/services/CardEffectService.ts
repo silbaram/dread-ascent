@@ -25,6 +25,7 @@ export interface CardEffectResult {
     readonly discardCount: number;
     readonly selfDamageTaken: number;
     readonly hitsResolved: number;
+    readonly hitDamages?: readonly number[];
     readonly statusApplied?: CardStatusEffect;
     readonly statusEffectsApplied?: readonly CardStatusEffect[];
     readonly buffApplied?: {
@@ -247,6 +248,7 @@ export class CardEffectService {
         let damageDealt = 0;
         let damageBlocked = 0;
         let hitsResolved = 0;
+        const hitDamages: number[] = [];
 
         for (let hitIndex = 0; hitIndex < hitCount; hitIndex += 1) {
             const damageResult = this.calculateDamageAfterBlock(resolvedPower, currentTarget.block);
@@ -259,6 +261,7 @@ export class CardEffectService {
             damageDealt += actualDamage;
             damageBlocked += damageResult.damageBlocked;
             hitsResolved += 1;
+            hitDamages.push(actualDamage);
 
             if (currentTarget.health <= 0) {
                 break;
@@ -279,6 +282,7 @@ export class CardEffectService {
             discardCount: 0,
             selfDamageTaken: selfDamage,
             hitsResolved,
+            hitDamages,
         };
     }
 

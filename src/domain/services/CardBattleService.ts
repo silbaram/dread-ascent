@@ -2,7 +2,12 @@
 // Card Battle Service — 배틀 진입, 드로우, 적 카드 풀 관리
 // ---------------------------------------------------------------------------
 
-import { CARD_TYPE, createCard, type Card } from '../entities/Card';
+import {
+    CARD_EFFECT_TYPE,
+    CARD_TYPE,
+    createCard,
+    type Card,
+} from '../entities/Card';
 import type { EnemyKind } from '../entities/Enemy';
 
 // ---------------------------------------------------------------------------
@@ -29,6 +34,8 @@ export interface EnemyCardPoolTemplate {
     readonly guardCount: number;
     readonly attackPower: number;
     readonly guardPower: number;
+    readonly flurryHitCount: number;
+    readonly flurryPower: number;
 }
 
 /**
@@ -38,9 +45,9 @@ export interface EnemyCardPoolTemplate {
  * - boss: 공격 4장, 수비 3장
  */
 export const ENEMY_CARD_POOL_TEMPLATES: Record<string, EnemyCardPoolTemplate> = {
-    normal: { attackCount: 2, guardCount: 1, attackPower: 6, guardPower: 4 },
-    elite: { attackCount: 3, guardCount: 2, attackPower: 8, guardPower: 6 },
-    boss: { attackCount: 4, guardCount: 3, attackPower: 10, guardPower: 8 },
+    normal: { attackCount: 2, guardCount: 1, attackPower: 6, guardPower: 4, flurryHitCount: 2, flurryPower: 3 },
+    elite: { attackCount: 3, guardCount: 2, attackPower: 8, guardPower: 6, flurryHitCount: 3, flurryPower: 3 },
+    boss: { attackCount: 4, guardCount: 3, attackPower: 10, guardPower: 8, flurryHitCount: 4, flurryPower: 3 },
 };
 
 // ---------------------------------------------------------------------------
@@ -107,11 +114,24 @@ export class CardBattleService {
 
         const cards: Card[] = [];
 
-        for (let i = 0; i < template.attackCount; i++) {
+        const strikeCount = Math.max(0, template.attackCount - 1);
+
+        for (let i = 0; i < strikeCount; i++) {
             cards.push(createCard({
                 name: `Enemy Strike ${i + 1}`,
                 type: CARD_TYPE.ATTACK,
                 power: template.attackPower,
+            }));
+        }
+
+        if (template.attackCount > 0) {
+            cards.push(createCard({
+                name: `Enemy Flurry ${template.flurryHitCount}`,
+                type: CARD_TYPE.ATTACK,
+                power: template.flurryPower,
+                effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                hitCount: template.flurryHitCount,
+                effectPayload: { hitCount: template.flurryHitCount },
             }));
         }
 

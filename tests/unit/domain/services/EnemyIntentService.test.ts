@@ -9,6 +9,7 @@ import {
     type Card,
 } from '../../../../src/domain/entities/Card';
 import {
+    ENEMY_INTENT_PATTERN,
     ENEMY_INTENT_BUFF_STAT,
     ENEMY_INTENT_TYPE,
     EnemyIntentService,
@@ -80,6 +81,21 @@ function createEnemyCardPool(): Card[] {
     ];
 }
 
+function createEnemyPatternCardPool(): Card[] {
+    return [
+        ...createEnemyCardPool(),
+        createCard({
+            id: 'enemy-flurry-3x3',
+            name: 'Enemy Flurry 3',
+            type: CARD_TYPE.ATTACK,
+            power: 3,
+            effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+            hitCount: 3,
+            effectPayload: { hitCount: 3 },
+        }),
+    ];
+}
+
 describe('EnemyIntentService', () => {
     beforeEach(() => {
         resetCardSequence();
@@ -96,6 +112,7 @@ describe('EnemyIntentService', () => {
 
         expect(intent).toEqual({
             type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE,
             damage: 8,
             label: 'Enemy Strike 8',
             sourceCardId: 'enemy-strike-8',
@@ -114,6 +131,7 @@ describe('EnemyIntentService', () => {
 
         expect(intent).toEqual({
             type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.GUARD,
             block: 5,
             label: 'Enemy Guard 5',
             sourceCardId: 'enemy-guard-5',
@@ -128,6 +146,7 @@ describe('EnemyIntentService', () => {
 
         expect(intent).toEqual({
             type: ENEMY_INTENT_TYPE.BUFF,
+            pattern: ENEMY_INTENT_PATTERN.RITUAL,
             stat: ENEMY_INTENT_BUFF_STAT.ATTACK,
             amount: 4,
             label: 'Battle Cry',
@@ -152,12 +171,14 @@ describe('EnemyIntentService', () => {
 
         expect(earlyIntent).toEqual({
             type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.GUARD,
             block: 5,
             label: 'Enemy Guard 5',
             sourceCardId: 'enemy-guard-5',
         });
         expect(lateIntent).toEqual({
             type: ENEMY_INTENT_TYPE.BUFF,
+            pattern: ENEMY_INTENT_PATTERN.RITUAL,
             stat: ENEMY_INTENT_BUFF_STAT.ATTACK,
             amount: 3,
             label: 'Battle Cry',
@@ -172,8 +193,29 @@ describe('EnemyIntentService', () => {
 
         expect(intent).toEqual({
             type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE,
             damage: 10,
             label: 'Attack',
+        });
+    });
+
+    it('promotes multi-hit cards into flurry intent previews', () => {
+        const enemy = createEnemy();
+        const service = new EnemyIntentService(new FixedRandom(0));
+
+        const intent = service.decideNextIntent({
+            enemy,
+            enemyCardPool: createEnemyPatternCardPool(),
+        });
+
+        expect(intent).toEqual({
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.FLURRY,
+            damage: 9,
+            hitCount: 3,
+            damagePerHit: 3,
+            label: 'Enemy Flurry 3',
+            sourceCardId: 'enemy-flurry-3x3',
         });
     });
 

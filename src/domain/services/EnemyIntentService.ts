@@ -32,6 +32,15 @@ export const ENEMY_INTENT_BUFF_STAT = {
 
 export type EnemyIntentBuffStat = (typeof ENEMY_INTENT_BUFF_STAT)[keyof typeof ENEMY_INTENT_BUFF_STAT];
 
+export const ENEMY_INTENT_PATTERN = {
+    STRIKE: 'strike',
+    FLURRY: 'flurry',
+    GUARD: 'guard',
+    RITUAL: 'ritual',
+} as const;
+
+export type EnemyIntentPattern = (typeof ENEMY_INTENT_PATTERN)[keyof typeof ENEMY_INTENT_PATTERN];
+
 const LOW_HEALTH_THRESHOLD = ENEMY_INTENT_BALANCE.lowHealthThreshold;
 const HIGH_HEALTH_THRESHOLD = ENEMY_INTENT_BALANCE.highHealthThreshold;
 
@@ -45,13 +54,17 @@ export interface EnemyIntentRandomSource {
 
 export interface AttackIntent {
     readonly type: typeof ENEMY_INTENT_TYPE.ATTACK;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.STRIKE | typeof ENEMY_INTENT_PATTERN.FLURRY;
     readonly damage: number;
     readonly label: string;
+    readonly hitCount?: number;
+    readonly damagePerHit?: number;
     readonly sourceCardId?: string;
 }
 
 export interface DefendIntent {
     readonly type: typeof ENEMY_INTENT_TYPE.DEFEND;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.GUARD;
     readonly block: number;
     readonly label: string;
     readonly sourceCardId?: string;
@@ -59,6 +72,7 @@ export interface DefendIntent {
 
 export interface BuffIntent {
     readonly type: typeof ENEMY_INTENT_TYPE.BUFF;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.RITUAL;
     readonly stat: EnemyIntentBuffStat;
     readonly amount: number;
     readonly label: string;
@@ -210,16 +224,24 @@ export class EnemyIntentService {
         );
 
         if (strongestAttackCard) {
+            const hitCount = strongestAttackCard.hitCount ?? strongestAttackCard.effectPayload?.hitCount ?? 1;
+            const damagePerHit = strongestAttackCard.power;
             return {
                 type: ENEMY_INTENT_TYPE.ATTACK,
-                damage: strongestAttackCard.power,
+                pattern: hitCount > 1
+                    ? ENEMY_INTENT_PATTERN.FLURRY
+                    : ENEMY_INTENT_PATTERN.STRIKE,
+                damage: damagePerHit * hitCount,
                 label: strongestAttackCard.name,
+                hitCount: hitCount > 1 ? hitCount : undefined,
+                damagePerHit: hitCount > 1 ? damagePerHit : undefined,
                 sourceCardId: strongestAttackCard.id,
             };
         }
 
         return {
             type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE,
             damage: Math.max(1, request.enemy.stats.attack),
             label: 'Attack',
         };
@@ -234,6 +256,7 @@ export class EnemyIntentService {
         if (strongestDefendCard) {
             return {
                 type: ENEMY_INTENT_TYPE.DEFEND,
+                pattern: ENEMY_INTENT_PATTERN.GUARD,
                 block: strongestDefendCard.power,
                 label: strongestDefendCard.name,
                 sourceCardId: strongestDefendCard.id,
@@ -242,6 +265,7 @@ export class EnemyIntentService {
 
         return {
             type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.GUARD,
             block: Math.max(1, request.enemy.stats.defense + 2),
             label: 'Defend',
         };
@@ -252,6 +276,7 @@ export class EnemyIntentService {
 
         return {
             type: ENEMY_INTENT_TYPE.BUFF,
+            pattern: ENEMY_INTENT_PATTERN.RITUAL,
             stat: ENEMY_INTENT_BUFF_STAT.ATTACK,
             amount: ENEMY_INTENT_BALANCE.buffAmount[profile],
             label: 'Battle Cry',
@@ -265,10 +290,15 @@ export class EnemyIntentService {
         return cards
             ?.filter(predicate)
             .reduce<Card | undefined>((strongest, card) => {
-                if (!strongest || card.power > strongest.power) {
+                if (!strongest || this.getIntentThreatScore(card) > this.getIntentThreatScore(strongest)) {
                     return card;
                 }
                 return strongest;
             }, undefined);
+    }
+
+    private getIntentThreatScore(card: Card): number {
+        const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
+        return card.power * Math.max(1, hitCount);
     }
 }

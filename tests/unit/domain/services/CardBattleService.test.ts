@@ -5,7 +5,13 @@ import {
     HAND_SIZE,
     type BattleRandomSource,
 } from '../../../../src/domain/services/CardBattleService';
-import { CARD_TYPE, createCard, resetCardSequence, type Card } from '../../../../src/domain/entities/Card';
+import {
+    CARD_EFFECT_TYPE,
+    CARD_TYPE,
+    createCard,
+    resetCardSequence,
+    type Card,
+} from '../../../../src/domain/entities/Card';
 
 // ---------------------------------------------------------------------------
 // Deterministic random for testing
@@ -210,6 +216,9 @@ describe('CardBattleService', () => {
             expect(attacks).toHaveLength(template.attackCount);
             expect(guards).toHaveLength(template.guardCount);
             expect(attacks[0].power).toBe(template.attackPower);
+            expect(attacks.at(-1)?.effectType).toBe(CARD_EFFECT_TYPE.MULTI_HIT);
+            expect(attacks.at(-1)?.hitCount).toBe(template.flurryHitCount);
+            expect(attacks.at(-1)?.power).toBe(template.flurryPower);
             expect(guards[0].power).toBe(template.guardPower);
         });
 
@@ -223,6 +232,8 @@ describe('CardBattleService', () => {
             const guards = pool.filter((c) => c.type === CARD_TYPE.GUARD);
             expect(attacks).toHaveLength(template.attackCount);
             expect(guards).toHaveLength(template.guardCount);
+            expect(attacks.at(-1)?.effectType).toBe(CARD_EFFECT_TYPE.MULTI_HIT);
+            expect(attacks.at(-1)?.hitCount).toBe(template.flurryHitCount);
         });
 
         it('generates boss enemy pool (4 attack, 3 guard)', () => {
@@ -236,6 +247,9 @@ describe('CardBattleService', () => {
             expect(attacks).toHaveLength(template.attackCount);
             expect(guards).toHaveLength(template.guardCount);
             expect(attacks[0].power).toBe(template.attackPower);
+            expect(attacks.at(-1)?.effectType).toBe(CARD_EFFECT_TYPE.MULTI_HIT);
+            expect(attacks.at(-1)?.hitCount).toBe(template.flurryHitCount);
+            expect(attacks.at(-1)?.power).toBe(template.flurryPower);
             expect(guards[0].power).toBe(template.guardPower);
         });
 

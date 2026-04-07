@@ -50,13 +50,19 @@ import {
 } from '../domain/services/CardEffectService';
 import { EnergyService, type EnergyState } from '../domain/services/EnergyService';
 import {
+    ENEMY_INTENT_PATTERN,
     ENEMY_INTENT_TYPE,
     EnemyIntentService,
+    type AttackIntent,
     type BuffIntent,
     type EnemyIntent,
     type EnemyIntentBuffStat,
     type EnemyIntentType,
 } from '../domain/services/EnemyIntentService';
+import {
+    DreadRuleService,
+    type DreadRuleDefinition,
+} from '../domain/services/DreadRuleService';
 import {
     STATUS_EFFECT_TYPE,
     StatusEffectService,
@@ -117,6 +123,8 @@ interface HandLayoutMetrics {
     readonly scale: number;
 }
 
+type PlayerBreakpointState = 'stable' | 'bloodied' | 'desperation';
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -175,7 +183,10 @@ const LOG_PANEL_CONTENT_X = LOG_PANEL_X - (LOG_PANEL_WIDTH / 2) + PANEL_CONTENT_
 const LOG_PANEL_CONTENT_Y = LOG_PANEL_Y - (LOG_PANEL_HEIGHT / 2) + 34;
 const LOG_PANEL_CONTENT_WIDTH = LOG_PANEL_WIDTH - (PANEL_CONTENT_PADDING * 2);
 const LOG_PANEL_CONTENT_HEIGHT = LOG_PANEL_HEIGHT - 50;
-const BATTLE_LOG_MAX_ENTRIES = 3;
+const BATTLE_LOG_MAX_ENTRIES = 5;
+const BLOODIED_HP_THRESHOLD = 0.5;
+const DESPERATION_HP_THRESHOLD = 0.25;
+const DESPERATION_SELF_DAMAGE_THRESHOLD = 6;
 const CARD_DETAIL_PANEL_X = BATTLE_SCENE_LAYOUT.cardDetailPanel.x;
 const CARD_DETAIL_PANEL_Y = BATTLE_SCENE_LAYOUT.cardDetailPanel.y;
 const CARD_DETAIL_PANEL_WIDTH = BATTLE_SCENE_LAYOUT.cardDetailPanel.width;
@@ -194,6 +205,8 @@ const ENEMY_PANEL_POPUP_X = ENEMY_PANEL_X + 140;
 const ENEMY_PANEL_POPUP_Y = ENEMY_PANEL_Y + 20;
 const PLAYER_PANEL_POPUP_X = PLAYER_PANEL_X + 140;
 const PLAYER_PANEL_POPUP_Y = PLAYER_PANEL_Y + 20;
+const DREAD_RULE_TEXT_X = MAIN_PANEL_CENTER_X + 118;
+const DREAD_RULE_TEXT_Y = 92;
 
 // Colors
 const COLOR_BG = 0x1a1a2e;
@@ -223,6 +236,10 @@ const COLOR_RARITY_UNCOMMON = 0x67b7ff;
 const COLOR_RARITY_RARE = 0xf5ca62;
 const COLOR_CARD_DETAIL_BG = 0x0d1623;
 const COLOR_CARD_DETAIL_BORDER = 0x4e6d8e;
+const COLOR_BREAKPOINT_BLOODIED = 0xffb347;
+const COLOR_BREAKPOINT_DESPERATION = 0xff5d73;
+const COLOR_BREAKPOINT_ACTIVE = 0x7ee787;
+const COLOR_BREAKPOINT_FINISHER = 0xffd166;
 const EMPTY_ONGOING_BATTLE_BUFFS: OngoingBattleBuffState = {
     blockPersist: false,
     blockPersistCharges: 0,
@@ -241,6 +258,7 @@ export class BattleScene extends Phaser.Scene {
     private energyService!: EnergyService;
     private statusEffectService!: StatusEffectService;
     private enemyIntentService!: EnemyIntentService;
+    private readonly dreadRuleService = new DreadRuleService();
 
     // Battle state
     private drawCycleState!: DrawCycleState;
@@ -273,6 +291,11 @@ export class BattleScene extends Phaser.Scene {
     private openingHandCardIds = new Set<string>();
     private battleStartEnergyBonus = 0;
     private nextBattleStartEnergyBonus = 0;
+    private playerSelfDamageTotal = 0;
+    private playerBreakpointState: PlayerBreakpointState = 'stable';
+    private activeBreakpointReactionKeys = new Set<string>();
+    private dreadRule?: DreadRuleDefinition;
+    private dreadRuleSelfDamageTriggeredThisTurn = false;
 
     // UI elements
     private cardSprites: Phaser.GameObjects.Container[] = [];
@@ -281,6 +304,7 @@ export class BattleScene extends Phaser.Scene {
     private playerHpText!: Phaser.GameObjects.Text;
     private enemyHpText!: Phaser.GameObjects.Text;
     private turnText!: Phaser.GameObjects.Text;
+    private dreadRuleText?: Phaser.GameObjects.Text;
     private resultText!: Phaser.GameObjects.Text;
     private effectText?: Phaser.GameObjects.Text;
     private endTurnButton?: Phaser.GameObjects.Container;
@@ -292,10 +316,12 @@ export class BattleScene extends Phaser.Scene {
     private enemyBlockText!: Phaser.GameObjects.Text;
     private playerStatusText?: Phaser.GameObjects.Text;
     private enemyStatusText?: Phaser.GameObjects.Text;
+    private playerBreakpointText?: Phaser.GameObjects.Text;
     private playerPowerText?: Phaser.GameObjects.Text;
     private enemyPowerText?: Phaser.GameObjects.Text;
     private battleLogText?: Phaser.GameObjects.Text;
     private battleLogMaskGraphics?: Phaser.GameObjects.Graphics;
+    private isBattleLogReady = false;
     private enemyIntentText?: Phaser.GameObjects.Text;
     private cardDetailTitleText?: Phaser.GameObjects.Text;
     private cardDetailBodyText?: Phaser.GameObjects.Text;
@@ -314,6 +340,8 @@ export class BattleScene extends Phaser.Scene {
 
     init(data: BattleSceneData): void {
         this.sceneData = data;
+        this.battleLogText = undefined;
+        this.battleLogMaskGraphics = undefined;
 
         // 서비스 초기화
         this.drawCycleService = new DrawCycleService();
@@ -356,6 +384,7 @@ export class BattleScene extends Phaser.Scene {
             data.enemy.kind,
             data.enemy.elite,
         );
+        this.dreadRule = this.dreadRuleService.decideRule(data.enemy);
 
         // 초기화
         this.turnNumber = 0;
@@ -379,6 +408,14 @@ export class BattleScene extends Phaser.Scene {
         this.openingHandCardIds = new Set();
         this.battleStartEnergyBonus = Math.max(0, data.startEnergyBonus ?? 0);
         this.nextBattleStartEnergyBonus = 0;
+        this.playerSelfDamageTotal = 0;
+        this.playerBreakpointState = 'stable';
+        this.activeBreakpointReactionKeys = new Set();
+        this.dreadRuleSelfDamageTriggeredThisTurn = false;
+        this.battleLogText = undefined;
+        this.battleLogMaskGraphics = undefined;
+        this.isBattleLogReady = false;
+        this.dreadRuleText = undefined;
     }
 
     create(): void {
@@ -387,6 +424,7 @@ export class BattleScene extends Phaser.Scene {
         this.createActionMotionLayers();
         this.createHpBars();
         this.createTurnDisplay();
+        this.createDreadRuleDisplay();
         this.createResultText();
         this.createZoneCountDisplays();
         this.createEnergyDisplay();
@@ -395,6 +433,9 @@ export class BattleScene extends Phaser.Scene {
         this.createStatusDisplays();
         this.createPowerDisplays();
         this.createBattleLog();
+        if (this.dreadRule) {
+            this.appendBattleLog(`Dread Rule: ${this.dreadRule.name}`);
+        }
         this.createCardDetailPanel();
         this.createEndTurnButton();
         this.applyBattleStartEquipmentEffects();
@@ -504,6 +545,12 @@ export class BattleScene extends Phaser.Scene {
             color: '#ffffff',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
+        this.playerBreakpointText = this.add.text(MAIN_PANEL_CENTER_X - 134, 281, '', {
+            fontSize: '11px',
+            color: '#ffffff',
+            fontFamily: 'monospace',
+            fontStyle: 'bold',
+        }).setOrigin(0.5);
 
         this.updateHpBars();
     }
@@ -555,8 +602,42 @@ export class BattleScene extends Phaser.Scene {
         }).setOrigin(0.5);
     }
 
+    private createDreadRuleDisplay(): void {
+        this.dreadRuleText = this.add.text(DREAD_RULE_TEXT_X, DREAD_RULE_TEXT_Y, '', {
+            fontSize: '10px',
+            color: '#ff9f7a',
+            fontFamily: 'monospace',
+            fontStyle: 'bold',
+            align: 'center',
+            wordWrap: { width: 176 },
+        }).setOrigin(0.5);
+        this.updateDreadRuleDisplay();
+    }
+
     private updateTurnDisplay(): void {
         this.turnText.setText(`Turn ${this.turnNumber}`);
+    }
+
+    private updateDreadRuleDisplay(): void {
+        if (!this.dreadRuleText || !this.dreadRule) {
+            return;
+        }
+
+        if (this.dreadRule.effects.hideEnemyIntentOnEvenTurns) {
+            this.dreadRuleText.setText(
+                this.dreadRuleService.isBlackoutTurn(this.dreadRule, this.turnNumber)
+                    ? `Rule: ${this.dreadRule.name} · intent hidden now`
+                    : `Rule: ${this.dreadRule.name} · ${this.dreadRule.summary}`,
+            );
+            return;
+        }
+
+        if (this.dreadRule.effects.firstSelfDamageStrength && this.dreadRuleSelfDamageTriggeredThisTurn) {
+            this.dreadRuleText.setText(`Rule: ${this.dreadRule.name} · spent this turn`);
+            return;
+        }
+
+        this.dreadRuleText.setText(`Rule: ${this.dreadRule.name} · ${this.dreadRule.summary}`);
     }
 
     // -----------------------------------------------------------------------
@@ -682,8 +763,52 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private updateStatusDisplays(): void {
-        this.playerStatusText?.setText(this.formatStatusSummary(this.playerStatusEffects));
+        this.syncPlayerBreakpointState();
+        this.playerStatusText?.setText(this.formatPlayerStatusSummary());
         this.enemyStatusText?.setText(this.formatStatusSummary(this.enemyStatusEffects));
+        this.updatePlayerBreakpointDisplay();
+    }
+
+    private formatPlayerStatusSummary(): string {
+        const parts: string[] = [];
+        const breakpointState = this.getPlayerBreakpointState();
+
+        if (breakpointState === 'bloodied') {
+            parts.push('BLOODIED');
+        } else if (breakpointState === 'desperation') {
+            parts.push('DESPERATION');
+        }
+
+        const statusSummary = this.formatStatusSummary(this.playerStatusEffects);
+        if (statusSummary.length > 0) {
+            parts.push(statusSummary);
+        }
+
+        return parts.join(' · ');
+    }
+
+    private updatePlayerBreakpointDisplay(): void {
+        if (!this.playerBreakpointText) {
+            return;
+        }
+
+        const breakpointState = this.getPlayerBreakpointState();
+        if (breakpointState === 'bloodied') {
+            this.playerBreakpointText.setText('BLOODIED');
+            this.playerBreakpointText.setColor('#ffb347');
+            this.playerBreakpointText.setAlpha(0.95);
+            return;
+        }
+
+        if (breakpointState === 'desperation') {
+            this.playerBreakpointText.setText('DESPERATION');
+            this.playerBreakpointText.setColor('#ff5d73');
+            this.playerBreakpointText.setAlpha(0.98);
+            return;
+        }
+
+        this.playerBreakpointText.setText('');
+        this.playerBreakpointText.setAlpha(0);
     }
 
     private formatStatusSummary(statusEffects: StatusEffectState): string {
@@ -748,6 +873,7 @@ export class BattleScene extends Phaser.Scene {
         this.playerPowerText?.setText(this.formatPowerSummary(
             this.playerStatusEffects,
             [
+                ...this.getPlayerBreakpointSummary(),
                 ...this.getOngoingBuffSummary(this.playerOngoingBuffs),
                 ...this.activePowerCards.map((card) => card.name),
             ],
@@ -797,12 +923,33 @@ export class BattleScene extends Phaser.Scene {
         return [totalModifier > 0 ? `ATK +${totalModifier}` : `ATK ${totalModifier}`];
     }
 
+    private getPlayerBreakpointSummary(): string[] {
+        if (!this.playerState) {
+            return [];
+        }
+
+        const labels: string[] = [];
+        const breakpointState = this.getPlayerBreakpointState();
+
+        if (breakpointState === 'bloodied') {
+            labels.push('BLOODIED');
+        } else if (breakpointState === 'desperation') {
+            labels.push('DESPERATION');
+        }
+
+        if ((this.playerSelfDamageTotal ?? 0) >= DESPERATION_SELF_DAMAGE_THRESHOLD) {
+            labels.push(`SCARS ${this.playerSelfDamageTotal}`);
+        }
+
+        return labels;
+    }
+
     // -----------------------------------------------------------------------
     // Battle Log
     // -----------------------------------------------------------------------
 
     private createBattleLog(): void {
-        this.add.text(LOG_PANEL_CONTENT_X, LOG_PANEL_CONTENT_Y - 18, 'Recent Actions', {
+        this.add.text(LOG_PANEL_CONTENT_X, LOG_PANEL_CONTENT_Y - 18, 'Reaction Feed', {
             fontSize: '12px',
             color: '#cccccc',
             fontFamily: 'monospace',
@@ -818,6 +965,7 @@ export class BattleScene extends Phaser.Scene {
         }).setOrigin(0, 0);
         this.applyBattleLogMask();
 
+        this.isBattleLogReady = true;
         this.updateBattleLog();
     }
 
@@ -858,11 +1006,13 @@ export class BattleScene extends Phaser.Scene {
 
     private showCardDetail(card: Card): void {
         const resolvedCost = this.resolveCardDetailCost(card);
+        const breakpointDetail = this.describeCardBreakpoint(card);
         this.cardDetailTitleText?.setText(card.name);
         this.cardDetailBodyText?.setText([
             `${this.getCardTypeLabel(card)} · ${this.getCardRarityLabel(card)} · ${this.getCardArchetypeLabel(card)} · Cost ${resolvedCost}`,
             `${this.describeCardEffect(card)} ${card.keywords.length > 0 ? `Keywords: ${card.keywords.join(', ')}` : 'Keywords: none'}`,
             this.describeCardCondition(card),
+            breakpointDetail,
         ].filter(Boolean).join('\n'));
     }
 
@@ -872,6 +1022,9 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private updateBattleLog(): void {
+        if (!this.isBattleLogReady || !this.battleLogText) {
+            return;
+        }
         this.battleLogText?.setText(this.battleLogLines.join('\n'));
     }
 
@@ -909,52 +1062,70 @@ export class BattleScene extends Phaser.Scene {
         cardsDrawn: number;
         energyGained: number;
         healthRestored: number;
+        selfDamageTaken: number;
+        hitsResolved: number;
+        hitDamages?: readonly number[];
         buffApplied?: CardEffectResult['buffApplied'];
         statusApplied?: CardStatusEffect;
     }): string {
+        const selfDamageTaken = effect.selfDamageTaken ?? 0;
+        const hitsResolved = effect.hitsResolved ?? (effect.damageDealt > 0 ? 1 : 0);
+
         if (effect.fled) {
             return `${card.name}: retreat`;
         }
 
+        const parts: string[] = [];
+
+        if (selfDamageTaken > 0) {
+            parts.push(`pay ${selfDamageTaken} HP`);
+        }
+
         if (effect.damageDealt > 0 || (effect.damageBlocked ?? 0) > 0) {
             if (card.name === 'Shockwave') {
-                return `${card.name}: strike current enemy`;
+                parts.push('strike current enemy');
+            } else if (hitsResolved > 1) {
+                parts.push(`hit ${hitsResolved}x`);
+            } else {
+                parts.push('strike');
             }
-            return `${card.name}: strike`;
         }
 
         if (effect.blockGained > 0) {
-            return `${card.name}: +${effect.blockGained} Block`;
+            parts.push(`+${effect.blockGained} Block`);
         }
 
         if (effect.healthRestored > 0) {
-            return `${card.name}: +${effect.healthRestored} HP`;
+            parts.push(`+${effect.healthRestored} HP`);
         }
 
         if (effect.statusApplied) {
-            return `${card.name}: ${this.getStatusLabel(effect.statusApplied.type)}`;
+            parts.push(this.getStatusLabel(effect.statusApplied.type));
         }
 
         if (effect.buffApplied) {
-            return `${card.name}: ${effect.buffApplied.type} +${effect.buffApplied.value}`;
+            parts.push(`${effect.buffApplied.type} +${effect.buffApplied.value}`);
         }
 
         if (effect.cardsDrawn > 0) {
-            return effect.energyGained > 0
-                ? `${card.name}: draw ${effect.cardsDrawn}, gain ${effect.energyGained} energy`
-                : `${card.name}: draw ${effect.cardsDrawn}`;
+            parts.push(`draw ${effect.cardsDrawn}`);
         }
 
         if (effect.energyGained > 0) {
-            return `${card.name}: gain ${effect.energyGained} energy`;
+            parts.push(`+${effect.energyGained} energy`);
         }
 
-        return `${card.name} used`;
+        return parts.length > 0
+            ? `${card.name}: ${parts.join(', ')}`
+            : `${card.name} used`;
     }
 
     private formatEnemyActionLog(card: Card, damage: number, blockGained: number, damageBlocked = 0): string {
         if (damage > 0 || damageBlocked > 0) {
-            return `Enemy ${card.name}: attack`;
+            const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
+            return hitCount > 1
+                ? `Enemy ${card.name}: flurry`
+                : `Enemy ${card.name}: attack`;
         }
 
         if (blockGained > 0) {
@@ -1112,7 +1283,11 @@ export class BattleScene extends Phaser.Scene {
                 health: Math.max(0, this.playerState.health - this.equipmentConfig.battleStartSelfDamage),
             };
             this.handlePlayerHealthLost(this.equipmentConfig.battleStartSelfDamage);
+            this.trackPlayerSelfDamage(this.equipmentConfig.battleStartSelfDamage);
+            this.applyDreadRuleSelfDamageReaction(this.equipmentConfig.battleStartSelfDamage);
+            this.showPopupBatch('player-hp', [{ type: 'damage', value: this.equipmentConfig.battleStartSelfDamage }]);
             this.appendBattleLog(`Player sacrifices ${this.equipmentConfig.battleStartSelfDamage} HP`);
+            this.syncPlayerBreakpointState();
         }
     }
 
@@ -1123,6 +1298,83 @@ export class BattleScene extends Phaser.Scene {
         const updateResult = this.statusEffectService.applyStatusEffect(currentState, application);
         this.appendStatusEventLogs(updateResult.events);
         return updateResult.statusEffects;
+    }
+
+    private shouldHideEnemyIntent(): boolean {
+        if (this.equipmentConfig.hideEnemyIntent) {
+            return true;
+        }
+
+        return Boolean(
+            this.dreadRule?.effects.hideEnemyIntentOnEvenTurns
+            && this.turnNumber > 0
+            && this.turnNumber % 2 === 0,
+        );
+    }
+
+    private shouldPreventPoisonDecay(actor: 'player' | 'enemy', statusBeforeTurnEnd: StatusEffectState): boolean {
+        if (statusBeforeTurnEnd.poison <= 0) {
+            return false;
+        }
+
+        if (this.dreadRule?.effects.poisonDoesNotDecay) {
+            return true;
+        }
+
+        return actor === 'enemy' && this.equipmentConfig.poisonDoesNotDecay;
+    }
+
+    private applyDreadRuleSelfDamageReaction(selfDamageTaken: number): void {
+        const strengthGain = this.dreadRule?.effects.firstSelfDamageStrength ?? 0;
+        if (
+            selfDamageTaken <= 0
+            || strengthGain <= 0
+            || this.dreadRuleSelfDamageTriggeredThisTurn
+            || this.turnNumber <= 0
+        ) {
+            return;
+        }
+
+        this.dreadRuleSelfDamageTriggeredThisTurn = true;
+        const statusUpdate = this.statusEffectService.applyStatusEffect(
+            this.playerStatusEffects,
+            {
+                type: STATUS_EFFECT_TYPE.STRENGTH,
+                stacks: strengthGain,
+                target: 'Player',
+            },
+        );
+        this.playerStatusEffects = statusUpdate.statusEffects;
+        this.showPopupBatch('player-panel', [{ type: 'buff', value: strengthGain }]);
+        this.appendBattleLog(`${this.dreadRule?.name}: +${strengthGain} STR`);
+        this.playPanelPulseMotion('player', COLOR_ACTION_BUFF);
+    }
+
+    private applyDreadRuleTurnEndPenalty(remainingEnergy: number): boolean {
+        const selfDamagePerEnergy = this.dreadRule?.effects.turnEndSelfDamagePerUnspentEnergy ?? 0;
+        if (remainingEnergy <= 0 || selfDamagePerEnergy <= 0) {
+            return false;
+        }
+
+        const selfDamage = remainingEnergy * selfDamagePerEnergy;
+        this.playerState = {
+            ...this.playerState,
+            health: Math.max(0, this.playerState.health - selfDamage),
+        };
+        this.playerDamageTakenWindow += selfDamage;
+        this.handlePlayerHealthLost(selfDamage);
+        this.trackPlayerSelfDamage(selfDamage);
+        this.applyDreadRuleSelfDamageReaction(selfDamage);
+        this.showPopupBatch('player-hp', [{ type: 'damage', value: selfDamage }]);
+        this.appendBattleLog(`${this.dreadRule?.name}: ${selfDamage} self-damage for ${remainingEnergy} unspent energy`);
+        this.syncPlayerBreakpointState();
+
+        if (this.playerState.health > 0) {
+            return false;
+        }
+
+        this.showBattleEnd('player-lose');
+        return true;
     }
 
     private getTurnStartDrawBonus(): number {
@@ -1205,6 +1457,7 @@ export class BattleScene extends Phaser.Scene {
                 health: Math.min(this.playerState.maxHealth, this.playerState.health + reward.heal),
             };
             this.appendBattleLog(`Player harvests ${reward.heal} HP`);
+            this.syncPlayerBreakpointState();
         }
 
         if (reward.extraEnergy > 0) {
@@ -1221,6 +1474,105 @@ export class BattleScene extends Phaser.Scene {
             this.equipmentInventory,
             amount,
         ).nextAttackPowerBonus;
+    }
+
+    private getPlayerHealthRatio(): number {
+        if (!this.playerState || this.playerState.maxHealth <= 0) {
+            return 1;
+        }
+
+        return this.playerState.health / this.playerState.maxHealth;
+    }
+
+    private getPlayerBreakpointState(): PlayerBreakpointState {
+        if (
+            this.getPlayerHealthRatio() <= DESPERATION_HP_THRESHOLD
+            || this.playerSelfDamageTotal >= DESPERATION_SELF_DAMAGE_THRESHOLD
+        ) {
+            return 'desperation';
+        }
+
+        if (this.getPlayerHealthRatio() <= BLOODIED_HP_THRESHOLD) {
+            return 'bloodied';
+        }
+
+        return 'stable';
+    }
+
+    private syncPlayerBreakpointState(): void {
+        const nextState = this.getPlayerBreakpointState();
+        if (nextState === this.playerBreakpointState) {
+            return;
+        }
+
+        this.playerBreakpointState = nextState;
+
+        if (nextState === 'bloodied') {
+            this.appendBattleLog('Bloodied');
+            this.playPanelPulseMotion('player', COLOR_BREAKPOINT_BLOODIED);
+        } else if (nextState === 'desperation') {
+            this.appendBattleLog('Desperation');
+            this.playPanelImpactMotion('player', COLOR_BREAKPOINT_DESPERATION);
+        } else {
+            this.appendBattleLog('Player steadies');
+        }
+
+        this.appendBreakpointCardReactions();
+        this.playerStatusText?.setText(this.formatPlayerStatusSummary());
+        this.updatePlayerBreakpointDisplay();
+    }
+
+    private trackPlayerSelfDamage(amount: number): void {
+        if (amount <= 0) {
+            return;
+        }
+
+        this.playerSelfDamageTotal += amount;
+    }
+
+    private appendBreakpointCardReactions(): void {
+        if (!this.drawCycleState || !this.playerState) {
+            this.activeBreakpointReactionKeys.clear();
+            return;
+        }
+
+        const nextActiveKeys = new Set<string>();
+        const seen = new Set<string>();
+        for (const card of this.drawCycleState.hand) {
+            const activeCost = resolveCardCost(card, this.playerState.health, {
+                playerMaxHealth: this.playerState.maxHealth,
+                turnDamageTaken: this.playerDamageTakenWindow,
+            });
+
+            if (
+                card.effectPayload?.costWhenConditionMet !== undefined
+                && checkCardCondition(card, this.playerState.health, {
+                    playerMaxHealth: this.playerState.maxHealth,
+                    turnDamageTaken: this.playerDamageTakenWindow,
+                })
+            ) {
+                const reactionKey = `cost:${card.name}`;
+                nextActiveKeys.add(reactionKey);
+                if (!seen.has(reactionKey) && !this.activeBreakpointReactionKeys.has(reactionKey)) {
+                    seen.add(reactionKey);
+                    this.appendBattleLog(`${card.name} cost ${activeCost}`);
+                }
+            }
+
+            if (
+                this.getPlayerBreakpointState() === 'desperation'
+                && card.effectPayload?.scaling?.source === 'MISSING_HEALTH'
+            ) {
+                const reactionKey = `finisher:${card.name}`;
+                nextActiveKeys.add(reactionKey);
+                if (!seen.has(reactionKey) && !this.activeBreakpointReactionKeys.has(reactionKey)) {
+                    seen.add(reactionKey);
+                    this.appendBattleLog(`${card.name} surges with missing HP`);
+                }
+            }
+        }
+
+        this.activeBreakpointReactionKeys = nextActiveKeys;
     }
 
     private getHandLayoutMetrics(handCount: number): HandLayoutMetrics {
@@ -1301,6 +1653,11 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private getCardBorderColor(card: Card): number {
+        const breakpointHighlight = this.getCardBreakpointHighlight(card);
+        if (breakpointHighlight) {
+            return breakpointHighlight.borderColor;
+        }
+
         switch (card.rarity) {
             case CARD_RARITY.UNCOMMON:
                 return COLOR_RARITY_UNCOMMON;
@@ -1309,6 +1666,73 @@ export class BattleScene extends Phaser.Scene {
             default:
                 return COLOR_RARITY_COMMON;
         }
+    }
+
+    private getCardBreakpointHighlight(card: Card): { borderColor: number; badgeColor: number; textColor: string } | undefined {
+        if (!this.playerState) {
+            return undefined;
+        }
+
+        const breakpointState = this.getPlayerBreakpointState();
+
+        if (
+            card.effectPayload?.costWhenConditionMet !== undefined
+            && card.condition
+            && checkCardCondition(card, this.playerState.health, {
+                playerMaxHealth: this.playerState.maxHealth,
+                turnDamageTaken: this.playerDamageTakenWindow,
+            })
+        ) {
+            return {
+                borderColor: breakpointState === 'desperation'
+                    ? COLOR_BREAKPOINT_FINISHER
+                    : COLOR_BREAKPOINT_ACTIVE,
+                badgeColor: breakpointState === 'desperation'
+                    ? COLOR_BREAKPOINT_FINISHER
+                    : COLOR_BREAKPOINT_ACTIVE,
+                textColor: '#102414',
+            };
+        }
+
+        if (
+            breakpointState === 'desperation'
+            && card.effectPayload?.scaling?.source === 'MISSING_HEALTH'
+        ) {
+            return {
+                borderColor: COLOR_BREAKPOINT_FINISHER,
+                badgeColor: COLOR_BREAKPOINT_FINISHER,
+                textColor: '#2b1700',
+            };
+        }
+
+        return undefined;
+    }
+
+    private describeCardBreakpoint(card: Card): string | undefined {
+        if (!this.playerState) {
+            return undefined;
+        }
+
+        if (card.effectPayload?.scaling?.source === 'MISSING_HEALTH') {
+            const missingHealth = Math.max(0, this.playerState.maxHealth - this.playerState.health);
+            const currentDamage = Math.max(
+                0,
+                Math.floor(missingHealth * card.effectPayload.scaling.multiplier),
+            );
+
+            return this.getPlayerBreakpointState() === 'desperation'
+                ? `Finisher online: ${currentDamage} current damage from ${missingHealth} missing HP.`
+                : `Current payoff: ${currentDamage} damage from ${missingHealth} missing HP.`;
+        }
+
+        const breakpointHighlight = this.getCardBreakpointHighlight(card);
+        if (!breakpointHighlight) {
+            return undefined;
+        }
+
+        return this.getPlayerBreakpointState() === 'desperation'
+            ? 'Finisher online: Desperation window is active.'
+            : 'Breakpoint online: this card is primed.';
     }
 
     private getCardTypeLabel(card: Card): string {
@@ -1474,10 +1898,11 @@ export class BattleScene extends Phaser.Scene {
                 const normalizedPercent = Number.isInteger(currentPercent)
                     ? `${currentPercent}`
                     : currentPercent.toFixed(1);
+                const breakpointLabel = card.condition.value <= 25 ? 'Desperation' : 'Bloodied';
 
                 return currentPercent <= card.condition.value
-                    ? `Condition active: HP ${normalizedPercent}% is at or below ${card.condition.value}%.`
-                    : `Condition unmet: HP ${normalizedPercent}% is above ${card.condition.value}%.`;
+                    ? `Breakpoint active: ${breakpointLabel}. HP ${normalizedPercent}% is at or below ${card.condition.value}%.`
+                    : `Breakpoint locked: ${breakpointLabel} at ${card.condition.value}%. HP ${normalizedPercent}% is above it.`;
             }
             case 'TURN_DAMAGE_TAKEN_AT_LEAST': {
                 const turnDamageTaken = this.playerDamageTakenWindow ?? 0;
@@ -1501,19 +1926,29 @@ export class BattleScene extends Phaser.Scene {
         baseScale: number = 1,
     ): Phaser.GameObjects.Container {
         const container = this.add.container(x, y);
+        const breakpointHighlight = this.getCardBreakpointHighlight(card);
         const bgColor = canAfford ? this.getCardColor(card) : COLOR_CARD_DIM;
         const alpha = canAfford ? 0.85 : 0.45;
+        const borderColor = breakpointHighlight?.borderColor ?? this.getCardBorderColor(card);
 
         const bg = this.add.rectangle(0, 0, CARD_WIDTH, CARD_HEIGHT, bgColor, alpha);
-        bg.setStrokeStyle(2, this.getCardBorderColor(card), canAfford ? 0.8 : 0.35);
+        bg.setStrokeStyle(2, borderColor, canAfford ? 0.8 : 0.35);
         container.add(bg);
 
         // 에너지 비용 뱃지 (좌상단)
-        const costBadge = this.add.circle(-CARD_WIDTH / 2 + 14, -CARD_HEIGHT / 2 + 14, 12, 0x222266, 0.9);
+        const costBadge = this.add.circle(
+            -CARD_WIDTH / 2 + 14,
+            -CARD_HEIGHT / 2 + 14,
+            12,
+            breakpointHighlight?.badgeColor ?? 0x222266,
+            0.9,
+        );
         container.add(costBadge);
         const costText = this.add.text(-CARD_WIDTH / 2 + 14, -CARD_HEIGHT / 2 + 14, `${card.cost}`, {
             fontSize: '14px',
-            color: canAfford ? '#ffdd44' : '#888888',
+            color: canAfford
+                ? breakpointHighlight?.textColor ?? '#ffdd44'
+                : '#888888',
             fontFamily: 'monospace',
             fontStyle: 'bold',
         }).setOrigin(0.5);
@@ -1566,7 +2001,7 @@ export class BattleScene extends Phaser.Scene {
 
         const effectText = this.add.text(0, 58, this.getCardEffectTag(card), {
             fontSize: '7px',
-            color: '#ffaa44',
+            color: breakpointHighlight ? '#fff2b3' : '#ffaa44',
             fontFamily: 'monospace',
         }).setOrigin(0.5);
         container.add(effectText);
@@ -1588,7 +2023,7 @@ export class BattleScene extends Phaser.Scene {
             if (!this.isInputLocked) {
                 container.setScale(baseScale);
             }
-            bg.setStrokeStyle(2, this.getCardBorderColor(card), canAfford ? 0.8 : 0.35);
+            bg.setStrokeStyle(2, borderColor, canAfford ? 0.8 : 0.35);
             this.clearCardDetail();
         });
         bg.on('pointerdown', () => {
@@ -1614,6 +2049,7 @@ export class BattleScene extends Phaser.Scene {
     private startPlayerTurn(): void {
         this.turnNumber++;
         this.martyrStrengthGainedThisTurn = 0;
+        this.dreadRuleSelfDamageTriggeredThisTurn = false;
         if (this.turnNumber > 1) {
             this.openingHandCardIds.clear();
         }
@@ -1639,10 +2075,17 @@ export class BattleScene extends Phaser.Scene {
         );
         this.pendingNextTurnDrawBonus = 0;
         this.captureOpeningHandCardIds();
+        this.syncPlayerBreakpointState();
+        this.appendBreakpointCardReactions();
+        if (this.dreadRuleService.isBlackoutTurn(this.dreadRule, this.turnNumber)) {
+            this.appendBattleLog('Blackout: intent hidden');
+        }
 
         // UI 갱신
         this.isInputLocked = false;
         this.updateTurnDisplay();
+        this.updateDreadRuleDisplay();
+        this.updateEnemyIntentDisplay(false);
         this.updateAllDisplays();
         this.displayHandCards();
     }
@@ -1684,6 +2127,9 @@ export class BattleScene extends Phaser.Scene {
                 current: this.energyState.current + effectResult.energyGained,
             };
         }
+        if (effectResult.selfDamageTaken > 0) {
+            this.appendBattleLog(`Self-Damage ${effectResult.selfDamageTaken}`);
+        }
         this.playerDamageTakenWindow += effectResult.selfDamageTaken;
 
         this.applyPlayerCardStatusEffects(effectResult);
@@ -1695,6 +2141,9 @@ export class BattleScene extends Phaser.Scene {
             this.queuedAttackPowerBonus = 0;
         }
         this.handlePlayerHealthLost(effectResult.selfDamageTaken);
+        this.trackPlayerSelfDamage(effectResult.selfDamageTaken);
+        this.applyDreadRuleSelfDamageReaction(effectResult.selfDamageTaken);
+        this.syncPlayerBreakpointState();
         this.applyEquipmentAttackAftermath(card);
         if (effectResult.damageDealt > 0 && modifier.extraEnemyStatusEffects.length > 0) {
             this.enemyStatusEffects = this.applyStatusEffectsToState(
@@ -1718,6 +2167,7 @@ export class BattleScene extends Phaser.Scene {
         // 효과 텍스트 표시
         this.showEffectText(card, effectResult);
         this.playResolvedActionMotion('player', card, effectResult);
+        this.appendBreakpointCardReactions();
 
         // 카드 사용 애니메이션 후 상태 갱신
         this.time.delayedCall(CARD_PLAY_ANIM_MS, () => {
@@ -1739,6 +2189,7 @@ export class BattleScene extends Phaser.Scene {
             if (this.enemyState.health <= 0) {
                 this.applyCardKillReward(card);
                 this.applyKillRewards();
+                this.syncPlayerBreakpointState();
                 this.showBattleEnd('player-win');
                 return;
             }
@@ -1758,12 +2209,16 @@ export class BattleScene extends Phaser.Scene {
     private onEndTurn(): void {
         this.isInputLocked = true;
         this.pendingNextTurnDrawBonus = this.calculateDeferredDrawBonus();
+        const remainingEnergy = this.energyState.current;
 
         // 손패 정리 (Retain 카드 유지, 나머지 버림패)
         const turnEndResult = this.drawCycleService.endTurn(this.drawCycleState);
         this.drawCycleState = turnEndResult.state;
         this.applyPlayerHandEndTurnEffects(turnEndResult.effects);
         this.resolveTurnEndStatusEffects('player');
+        if (this.applyDreadRuleTurnEndPenalty(remainingEnergy)) {
+            return;
+        }
         this.playerDamageTakenWindow = 0;
         this.clearCardSprites();
         this.updateAllDisplays();
@@ -1833,16 +2288,27 @@ export class BattleScene extends Phaser.Scene {
         this.resolveSelfDamageStrengthTriggers('enemy', effectResult.selfDamageTaken);
         this.resolveHealthLossStrengthTriggers('player', effectResult.damageDealt);
         this.handlePlayerHealthLost(effectResult.damageDealt);
+        this.syncPlayerBreakpointState();
         this.applyReactiveDefenseEffects(effectResult.damageDealt);
 
         // 적 행동 텍스트
         this.playResolvedActionMotion('enemy', enemyCard, effectResult);
-        this.showEnemyActionText(
-            enemyCard,
-            effectResult.damageDealt,
-            effectResult.blockGained,
-            effectResult.damageBlocked,
-        );
+        if (effectResult.hitDamages && effectResult.hitDamages.length > 0) {
+            this.showEnemyActionText(
+                enemyCard,
+                effectResult.damageDealt,
+                effectResult.blockGained,
+                effectResult.damageBlocked,
+                effectResult.hitDamages,
+            );
+        } else {
+            this.showEnemyActionText(
+                enemyCard,
+                effectResult.damageDealt,
+                effectResult.blockGained,
+                effectResult.damageBlocked,
+            );
+        }
 
         this.time.delayedCall(ENEMY_TURN_DELAY_MS, () => {
             this.clearEffectText();
@@ -1902,8 +2368,12 @@ export class BattleScene extends Phaser.Scene {
         };
         this.resolveHealthLossStrengthTriggers('player', damage);
         this.handlePlayerHealthLost(damage);
+        this.trackPlayerSelfDamage(damage);
+        this.applyDreadRuleSelfDamageReaction(damage);
         this.showPopupBatch('player-hp', [{ type: 'damage', value: damage }]);
         this.appendBattleLog(`${effect.cardName} deals ${damage} self-damage in hand`);
+        this.syncPlayerBreakpointState();
+        this.appendBreakpointCardReactions();
     }
 
     private applyCardKillReward(card: Card): void {
@@ -1929,6 +2399,7 @@ export class BattleScene extends Phaser.Scene {
         };
         this.showPopupBatch('player-hp', [{ type: 'heal', value: actualHealing }]);
         this.appendBattleLog(`${card.name} restores ${actualHealing} HP on kill`);
+        this.syncPlayerBreakpointState();
     }
 
     private applyPlayerCardStatusEffects(effectResult: CardEffectResult): void {
@@ -2197,24 +2668,35 @@ export class BattleScene extends Phaser.Scene {
         cardsDrawn: number;
         energyGained: number;
         healthRestored: number;
+        selfDamageTaken: number;
+        hitsResolved: number;
+        hitDamages?: readonly number[];
         buffApplied?: CardEffectResult['buffApplied'];
         statusApplied?: CardStatusEffect;
     }): void {
         this.clearEffectText();
         const actionLog = this.formatPlayerActionLog(card, effect);
+        const selfDamageTaken = effect.selfDamageTaken ?? 0;
+        const hitsResolved = effect.hitsResolved ?? (effect.damageDealt > 0 ? 1 : 0);
         this.appendBattleLog(actionLog);
 
         this.showPopupBatch('enemy-hp', [
             ...(effect.damageBlocked && effect.damageBlocked > 0
                 ? [{ type: 'blocked', value: effect.damageBlocked } satisfies DamagePopupRequest]
                 : []),
-            ...(effect.damageDealt > 0
-                ? [{ type: 'damage', value: effect.damageDealt } satisfies DamagePopupRequest]
+            ...this.buildHitPopupRequests(effect.damageDealt, hitsResolved, effect.hitDamages),
+        ]);
+        this.showPopupBatch('player-hp', [
+            ...(selfDamageTaken > 0
+                ? [{ type: 'damage', value: selfDamageTaken } satisfies DamagePopupRequest]
+                : []),
+            ...(effect.blockGained > 0
+                ? [{ type: 'block_gain', value: effect.blockGained } satisfies DamagePopupRequest]
+                : []),
+            ...(effect.healthRestored > 0
+                ? [{ type: 'heal', value: effect.healthRestored } satisfies DamagePopupRequest]
                 : []),
         ]);
-        this.showPopupBatch('player-hp', effect.blockGained > 0
-            ? [{ type: 'block_gain', value: effect.blockGained }]
-            : []);
 
         if (effect.fled) {
             this.createFallbackEffectText(actionLog, '#66ffaa');
@@ -2332,15 +2814,28 @@ export class BattleScene extends Phaser.Scene {
             damageBlocked?: number;
             blockGained: number;
             fled: boolean;
+            selfDamageTaken?: number;
+            hitsResolved?: number;
             buffApplied?: CardEffectResult['buffApplied'];
             statusApplied?: CardStatusEffect;
         },
     ): void {
+        if (actor === 'player' && (effect.selfDamageTaken ?? 0) > 0) {
+            this.playPanelImpactMotion('player', COLOR_ACTION_ATTACK);
+        }
+
         switch (card.effectType) {
             case CARD_EFFECT_TYPE.DAMAGE:
                 if (effect.damageDealt > 0 || (effect.damageBlocked ?? 0) > 0 || card.power > 0) {
                     this.playPanelImpactMotion(actor === 'player' ? 'enemy' : 'player', COLOR_ACTION_ATTACK);
                 }
+                return;
+            case CARD_EFFECT_TYPE.MULTI_HIT:
+                this.playRepeatedImpactMotion(
+                    actor === 'player' ? 'enemy' : 'player',
+                    Math.max(1, effect.hitsResolved ?? 1),
+                    COLOR_ACTION_ATTACK,
+                );
                 return;
             case CARD_EFFECT_TYPE.BLOCK:
                 if (effect.blockGained > 0) {
@@ -2361,6 +2856,27 @@ export class BattleScene extends Phaser.Scene {
                 if (effect.fled) {
                     this.playPanelPulseMotion(actor, COLOR_ACTION_FLEE);
                 }
+        }
+    }
+
+    private playRepeatedImpactMotion(
+        actor: 'player' | 'enemy',
+        hitsResolved: number,
+        color: number,
+    ): void {
+        const sceneTime = (this as Phaser.Scene & {
+            time?: { delayedCall?: (delay: number, callback: () => void) => void };
+        }).time;
+
+        for (let hitIndex = 0; hitIndex < hitsResolved; hitIndex += 1) {
+            if (!sceneTime?.delayedCall) {
+                this.playPanelImpactMotion(actor, color);
+                continue;
+            }
+
+            sceneTime.delayedCall(hitIndex * 90, () => {
+                this.playPanelImpactMotion(actor, color);
+            });
         }
     }
 
@@ -2462,7 +2978,13 @@ export class BattleScene extends Phaser.Scene {
         tweens?.add(config);
     }
 
-    private showEnemyActionText(card: Card, damage: number, blockGained: number, damageBlocked = 0): void {
+    private showEnemyActionText(
+        card: Card,
+        damage: number,
+        blockGained: number,
+        damageBlocked = 0,
+        hitDamages?: readonly number[],
+    ): void {
         this.clearEffectText();
         this.appendBattleLog(this.formatEnemyActionLog(card, damage, blockGained, damageBlocked));
 
@@ -2470,16 +2992,24 @@ export class BattleScene extends Phaser.Scene {
             ...(damageBlocked > 0
                 ? [{ type: 'blocked', value: damageBlocked } satisfies DamagePopupRequest]
                 : []),
-            ...(damage > 0
-                ? [{ type: 'damage', value: damage } satisfies DamagePopupRequest]
-                : []),
+            ...this.buildHitPopupRequests(
+                damage,
+                hitDamages?.length ?? (card.hitCount ?? card.effectPayload?.hitCount ?? (damage > 0 ? 1 : 0)),
+                hitDamages,
+            ),
         ]);
         this.showPopupBatch('enemy-hp', blockGained > 0
             ? [{ type: 'block_gain', value: blockGained }]
             : []);
 
         if (damage > 0 || damageBlocked > 0) {
-            this.createFallbackEffectText(`Enemy ${card.name}: attack`, '#ff8f8f');
+            const hitCount = hitDamages?.length ?? card.hitCount ?? card.effectPayload?.hitCount ?? 1;
+            this.createFallbackEffectText(
+                hitCount > 1
+                    ? `Enemy ${card.name}: flurry`
+                    : `Enemy ${card.name}: attack`,
+                '#ff8f8f',
+            );
             return;
         }
 
@@ -2508,6 +3038,7 @@ export class BattleScene extends Phaser.Scene {
         const isPlayer = actor === 'player';
         const label = isPlayer ? 'Player' : this.getEnemyLabel();
         const statusBeforeTurnEnd = isPlayer ? this.playerStatusEffects : this.enemyStatusEffects;
+        const poisonDecayBlocked = this.shouldPreventPoisonDecay(actor, statusBeforeTurnEnd);
         const statusResult = this.statusEffectService.processTurnEnd(
             isPlayer ? this.playerState : this.enemyState,
             statusBeforeTurnEnd,
@@ -2520,11 +3051,18 @@ export class BattleScene extends Phaser.Scene {
         } else {
             this.enemyState = statusResult.combatant;
             this.enemyStatusEffects = statusResult.statusEffects;
-            if (this.equipmentConfig.poisonDoesNotDecay && statusBeforeTurnEnd.poison > 0) {
-                this.enemyStatusEffects = {
-                    ...this.enemyStatusEffects,
-                    poison: statusBeforeTurnEnd.poison,
-                };
+        }
+
+        if (poisonDecayBlocked) {
+            const nextStatusEffects = isPlayer ? this.playerStatusEffects : this.enemyStatusEffects;
+            const preservedPoisonState = {
+                ...nextStatusEffects,
+                poison: statusBeforeTurnEnd.poison,
+            };
+            if (isPlayer) {
+                this.playerStatusEffects = preservedPoisonState;
+            } else {
+                this.enemyStatusEffects = preservedPoisonState;
             }
         }
 
@@ -2535,7 +3073,7 @@ export class BattleScene extends Phaser.Scene {
             ]);
         }
 
-        const statusEvents = !isPlayer && this.equipmentConfig.poisonDoesNotDecay && statusBeforeTurnEnd.poison > 0
+        const statusEvents = poisonDecayBlocked
             ? statusResult.events.filter((event) => event.status !== STATUS_EFFECT_TYPE.POISON)
             : statusResult.events;
         this.appendStatusEventLogs(statusEvents);
@@ -2543,10 +3081,21 @@ export class BattleScene extends Phaser.Scene {
             this.playerDamageTakenWindow += statusResult.poisonDamage;
             this.handlePlayerHealthLost(statusResult.poisonDamage);
         }
+
+        if (isPlayer) {
+            this.syncPlayerBreakpointState();
+        }
     }
 
     private createFallbackEffectText(text: string, color: string): void {
-        this.effectText = this.add.text(MAIN_PANEL_CENTER_X, EFFECT_TEXT_Y, text, {
+        const add = (this as Phaser.Scene & {
+            add?: { text?: (x: number, y: number, value: string, style: object) => Phaser.GameObjects.Text };
+        }).add;
+        if (!add?.text) {
+            return;
+        }
+
+        this.effectText = add.text(MAIN_PANEL_CENTER_X, EFFECT_TEXT_Y, text, {
             fontSize: '14px',
             color,
             fontFamily: 'monospace',
@@ -2562,6 +3111,47 @@ export class BattleScene extends Phaser.Scene {
         }
 
         this.damagePopupController.showBatch(this.getPopupAnchor(anchorId), requests);
+    }
+
+    private buildHitPopupRequests(
+        damageDealt: number,
+        hitsResolved: number,
+        hitDamages?: readonly number[],
+    ): DamagePopupRequest[] {
+        const explicitHitRequests = hitDamages
+            ?.filter((value) => Number.isFinite(value) && value > 0)
+            .map((value) => ({ type: 'damage', value }) satisfies DamagePopupRequest);
+        if (explicitHitRequests && explicitHitRequests.length > 0) {
+            return explicitHitRequests;
+        }
+
+        if (damageDealt <= 0) {
+            return [];
+        }
+
+        const resolvedHits = Number.isFinite(hitsResolved) && hitsResolved > 1
+            ? Math.min(hitsResolved, damageDealt)
+            : 1;
+
+        if (resolvedHits <= 1) {
+            return [{ type: 'damage', value: damageDealt }];
+        }
+
+        const baseHitDamage = Math.floor(damageDealt / resolvedHits);
+        let remainder = damageDealt % resolvedHits;
+
+        const requests: DamagePopupRequest[] = [];
+
+        for (let hitIndex = 0; hitIndex < resolvedHits; hitIndex += 1) {
+            const value = baseHitDamage + (remainder > 0 ? 1 : 0);
+            remainder = Math.max(0, remainder - 1);
+
+            if (value > 0) {
+                requests.push({ type: 'damage', value });
+            }
+        }
+
+        return requests;
     }
 
     private getPopupAnchor(anchorId: DamagePopupAnchorId): DamagePopupAnchor {
@@ -2778,6 +3368,7 @@ export class BattleScene extends Phaser.Scene {
                 ),
             };
             this.appendBattleLog(`Player restores ${this.equipmentConfig.turnStartHeal} HP`);
+            this.syncPlayerBreakpointState();
         }
 
         if (this.equipmentConfig.turnStartSelfDamage > 0) {
@@ -2787,7 +3378,11 @@ export class BattleScene extends Phaser.Scene {
             };
             this.playerDamageTakenWindow += this.equipmentConfig.turnStartSelfDamage;
             this.handlePlayerHealthLost(this.equipmentConfig.turnStartSelfDamage);
+            this.trackPlayerSelfDamage(this.equipmentConfig.turnStartSelfDamage);
+            this.applyDreadRuleSelfDamageReaction(this.equipmentConfig.turnStartSelfDamage);
+            this.showPopupBatch('player-hp', [{ type: 'damage', value: this.equipmentConfig.turnStartSelfDamage }]);
             this.appendBattleLog(`Player pays ${this.equipmentConfig.turnStartSelfDamage} HP`);
+            this.syncPlayerBreakpointState();
             if (this.playerState.health <= 0) {
                 this.showBattleEnd('player-lose');
                 return true;
@@ -2849,9 +3444,15 @@ export class BattleScene extends Phaser.Scene {
             (card) => card.id === intent.sourceCardId,
         );
         if (sourceCard) {
+            const hitCount = sourceCard.hitCount ?? sourceCard.effectPayload?.hitCount ?? 1;
             this.currentEnemyIntent = {
                 ...intent,
-                damage: sourceCard.power,
+                pattern: hitCount > 1
+                    ? ENEMY_INTENT_PATTERN.FLURRY
+                    : ENEMY_INTENT_PATTERN.STRIKE,
+                damage: sourceCard.power * hitCount,
+                hitCount: hitCount > 1 ? hitCount : undefined,
+                damagePerHit: hitCount > 1 ? sourceCard.power : undefined,
             };
             if (this.enemyIntentQueue.length > 0) {
                 this.enemyIntentQueue[0] = this.currentEnemyIntent;
@@ -2921,6 +3522,10 @@ export class BattleScene extends Phaser.Scene {
             return '';
         }
 
+        if (this.shouldHideEnemyIntent()) {
+            return 'Next ???';
+        }
+
         const intent = this.currentEnemyIntent;
         if (!intent) {
             return '';
@@ -2937,23 +3542,32 @@ export class BattleScene extends Phaser.Scene {
     private formatSingleEnemyIntentText(intent: EnemyIntent): string {
         switch (intent.type) {
             case ENEMY_INTENT_TYPE.ATTACK:
-                return `Next ⚔️ ${intent.damage}`;
+                return this.formatAttackIntentText('Next', intent);
             case ENEMY_INTENT_TYPE.DEFEND:
-                return `Next 🛡️ +${intent.block}`;
+                return `Next GUARD 🛡️ +${intent.block}`;
             case ENEMY_INTENT_TYPE.BUFF:
-                return `Next ⬆️ ${this.formatEnemyIntentBuffStat(intent.stat)} +${intent.amount}`;
+                return `Next RITUAL ⬆️ ${this.formatEnemyIntentBuffStat(intent.stat)} +${intent.amount}`;
         }
     }
 
     private formatSecondaryEnemyIntentText(intent: EnemyIntent): string {
         switch (intent.type) {
             case ENEMY_INTENT_TYPE.ATTACK:
-                return `Then ⚔️ ${intent.damage}`;
+                return this.formatAttackIntentText('Then', intent);
             case ENEMY_INTENT_TYPE.DEFEND:
-                return `Then 🛡️ +${intent.block}`;
+                return `Then GUARD 🛡️ +${intent.block}`;
             case ENEMY_INTENT_TYPE.BUFF:
-                return `Then ⬆️ ${this.formatEnemyIntentBuffStat(intent.stat)} +${intent.amount}`;
+                return `Then RITUAL ⬆️ ${this.formatEnemyIntentBuffStat(intent.stat)} +${intent.amount}`;
         }
+    }
+
+    private formatAttackIntentText(prefix: 'Next' | 'Then', intent: AttackIntent): string {
+        const dangerHint = this.formatEnemyIntentDangerHint(intent);
+        if ((intent.hitCount ?? 1) > 1 && (intent.damagePerHit ?? 0) > 0) {
+            return `${prefix} FLURRY ⚔️ ${intent.damagePerHit}x${intent.hitCount}${dangerHint}`;
+        }
+
+        return `${prefix} STRIKE ⚔️ ${intent.damage}${dangerHint}`;
     }
 
     private formatEnemyIntentBuffStat(stat: EnemyIntentBuffStat): string {
@@ -2961,6 +3575,35 @@ export class BattleScene extends Phaser.Scene {
             case 'attack':
                 return 'ATK';
         }
+    }
+
+    private formatEnemyIntentDangerHint(intent: EnemyIntent): string {
+        if (intent.type !== ENEMY_INTENT_TYPE.ATTACK) {
+            return '';
+        }
+
+        const projectedDamage = Math.max(0, intent.damage - this.playerState.block);
+        if (projectedDamage <= 0) {
+            return ' · Blocked';
+        }
+
+        const projectedHealth = Math.max(0, this.playerState.health - projectedDamage);
+        if (projectedHealth <= 0) {
+            return ' · Lethal';
+        }
+
+        const currentState = this.getPlayerBreakpointState();
+        const projectedHealthRatio = this.playerState.maxHealth <= 0
+            ? 0
+            : projectedHealth / this.playerState.maxHealth;
+        if (projectedHealthRatio <= DESPERATION_HP_THRESHOLD && currentState !== 'desperation') {
+            return ' · Desperation';
+        }
+        if (projectedHealthRatio <= BLOODIED_HP_THRESHOLD && currentState === 'stable') {
+            return ' · Bloodied';
+        }
+
+        return '';
     }
 
     private getEffectiveEnemyCardPool(): readonly Card[] {
@@ -2987,6 +3630,17 @@ export class BattleScene extends Phaser.Scene {
             if (sourceCard) {
                 return sourceCard;
             }
+        }
+
+        if (intent.type === ENEMY_INTENT_TYPE.ATTACK && (intent.hitCount ?? 1) > 1) {
+            return createCard({
+                name: intent.label,
+                type: CARD_TYPE.ATTACK,
+                power: intent.damagePerHit ?? Math.max(1, Math.floor(intent.damage / Math.max(1, intent.hitCount ?? 1))),
+                effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                hitCount: intent.hitCount,
+                effectPayload: { hitCount: intent.hitCount },
+            });
         }
 
         return this.buildFallbackEnemyCard(intent.type);
@@ -3039,6 +3693,7 @@ export class BattleScene extends Phaser.Scene {
 
     private updateAllDisplays(): void {
         this.updateHpBars();
+        this.updateDreadRuleDisplay();
         this.updateZoneCountDisplays();
         this.updateEnergyDisplay();
         this.updateBlockDisplays();

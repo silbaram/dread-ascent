@@ -8,9 +8,12 @@ import {
     resetCardSequence,
 } from '../../../src/domain/entities/Card';
 import { CardEffectService } from '../../../src/domain/services/CardEffectService';
+import { CardBattleService } from '../../../src/domain/services/CardBattleService';
 import { DrawCycleService } from '../../../src/domain/services/DrawCycleService';
 import { EnergyService } from '../../../src/domain/services/EnergyService';
+import { DREAD_RULE_ID } from '../../../src/domain/services/DreadRuleService';
 import {
+    ENEMY_INTENT_PATTERN,
     ENEMY_INTENT_TYPE,
     EnemyIntentService,
 } from '../../../src/domain/services/EnemyIntentService';
@@ -109,9 +112,25 @@ interface TestScene {
     isInputLocked: boolean;
     battleLogLines: string[];
     enemyAttackBuff: number;
+    dreadRule?: {
+        id: string;
+        name: string;
+        summary: string;
+        description: string;
+        effects: {
+            hideEnemyIntentOnEvenTurns?: boolean;
+            firstSelfDamageStrength?: number;
+            turnEndSelfDamagePerUnspentEnergy?: number;
+            poisonDoesNotDecay?: boolean;
+        };
+    };
+    dreadRuleSelfDamageTriggeredThisTurn?: boolean;
     currentEnemyIntent?: {
         type: 'attack' | 'defend' | 'buff';
+        pattern?: 'strike' | 'flurry' | 'guard' | 'ritual';
         damage?: number;
+        hitCount?: number;
+        damagePerHit?: number;
         block?: number;
         amount?: number;
         stat?: 'attack';
@@ -125,11 +144,30 @@ interface TestScene {
         setText: ReturnType<typeof vi.fn>;
         setAlpha: ReturnType<typeof vi.fn>;
     };
+    playerStatusText?: {
+        setText: ReturnType<typeof vi.fn>;
+    };
+    playerBreakpointText?: {
+        setText: ReturnType<typeof vi.fn>;
+        setColor: ReturnType<typeof vi.fn>;
+        setAlpha: ReturnType<typeof vi.fn>;
+    };
     playerPowerText?: {
         setText: ReturnType<typeof vi.fn>;
     };
     enemyPowerText?: {
         setText: ReturnType<typeof vi.fn>;
+    };
+    playerStatusText?: {
+        setText: ReturnType<typeof vi.fn>;
+    };
+    enemyStatusText?: {
+        setText: ReturnType<typeof vi.fn>;
+    };
+    playerBreakpointText?: {
+        setText: ReturnType<typeof vi.fn>;
+        setColor: ReturnType<typeof vi.fn>;
+        setAlpha: ReturnType<typeof vi.fn>;
     };
     cardDetailTitleText?: {
         setText: ReturnType<typeof vi.fn>;
@@ -161,6 +199,7 @@ interface TestScene {
     openingHandCardIds?: Set<string>;
     battleStartEnergyBonus?: number;
     nextBattleStartEnergyBonus?: number;
+    playerSelfDamageTotal?: number;
 }
 
 describe('BattleScene block lifecycle', () => {
@@ -254,6 +293,8 @@ describe('BattleScene block lifecycle', () => {
         scene.isInputLocked = false;
         scene.battleLogLines = [];
         scene.enemyAttackBuff = 0;
+        scene.dreadRule = undefined;
+        scene.dreadRuleSelfDamageTriggeredThisTurn = false;
         scene.currentEnemyIntent = undefined;
         scene.damagePopupController = {
             showBatch: vi.fn(),
@@ -262,11 +303,30 @@ describe('BattleScene block lifecycle', () => {
             setText: vi.fn(),
             setAlpha: vi.fn(),
         };
+        scene.playerStatusText = {
+            setText: vi.fn(),
+        };
+        scene.playerBreakpointText = {
+            setText: vi.fn(),
+            setColor: vi.fn(),
+            setAlpha: vi.fn(),
+        };
         scene.playerPowerText = {
             setText: vi.fn(),
         };
         scene.enemyPowerText = {
             setText: vi.fn(),
+        };
+        scene.playerStatusText = {
+            setText: vi.fn(),
+        };
+        scene.enemyStatusText = {
+            setText: vi.fn(),
+        };
+        scene.playerBreakpointText = {
+            setText: vi.fn(),
+            setColor: vi.fn(),
+            setAlpha: vi.fn(),
         };
         scene.cardDetailTitleText = {
             setText: vi.fn(),
@@ -298,6 +358,7 @@ describe('BattleScene block lifecycle', () => {
         scene.openingHandCardIds = new Set();
         scene.battleStartEnergyBonus = 0;
         scene.nextBattleStartEnergyBonus = 0;
+        scene.playerSelfDamageTotal = 0;
         scene.updateTurnDisplay = vi.fn();
 
         return scene;
@@ -380,6 +441,72 @@ describe('BattleScene block lifecycle', () => {
         expect(scene.enemyState.health).toBe(36);
         expect(scene.enemyState.block).toBe(0);
         expect(scene.totalEnemyDamage).toBe(4);
+    });
+
+    it('drops stale battle log text refs before breakpoint sync runs in a relaunched scene', () => {
+        const staleBattleLogText = {
+            setText: vi.fn(() => {
+                throw new Error('stale battle log should not be used');
+            }),
+        };
+        const scene = new BattleScene() as unknown as TestScene & {
+            battleLogText?: typeof staleBattleLogText;
+            battleLogMaskGraphics?: object;
+            activeBreakpointReactionKeys: Set<string>;
+            playPanelPulseMotion: ReturnType<typeof vi.fn>;
+            playPanelImpactMotion: ReturnType<typeof vi.fn>;
+            appendBreakpointCardReactions: ReturnType<typeof vi.fn>;
+        };
+
+        scene.battleLogText = staleBattleLogText;
+        scene.battleLogMaskGraphics = {};
+        scene.playerStatusText = { setText: vi.fn() };
+        scene.enemyStatusText = { setText: vi.fn() };
+        scene.playerBreakpointText = {
+            setText: vi.fn(),
+            setColor: vi.fn(),
+            setAlpha: vi.fn(),
+        };
+        scene.playPanelPulseMotion = vi.fn();
+        scene.playPanelImpactMotion = vi.fn();
+        scene.appendBreakpointCardReactions = vi.fn();
+
+        (BattleScene.prototype as unknown as {
+            init: (data: {
+                player: { stats: { health: number; maxHealth: number } };
+                enemy: {
+                    stats: { health: number; maxHealth: number };
+                    kind: 'normal' | 'boss';
+                    elite: boolean;
+                };
+                deckService: { getCards: () => ReturnType<typeof createCard>[] };
+                cardBattleService: CardBattleService;
+                itemService: { getInventory: () => readonly object[] };
+                enemyName: string;
+            }) => void;
+        }).init.call(scene, {
+            player: { stats: { health: 40, maxHealth: 40 } },
+            enemy: {
+                stats: { health: 24, maxHealth: 24 },
+                kind: 'normal',
+                elite: true,
+            },
+            deckService: { getCards: () => [] },
+            cardBattleService: new CardBattleService(),
+            itemService: { getInventory: () => [] },
+            enemyName: 'Elite Enemy',
+        });
+
+        scene.playerState = { health: 18, maxHealth: 40, block: 0 };
+
+        expect(() => {
+            (BattleScene.prototype as unknown as {
+                updateStatusDisplays: () => void;
+            }).updateStatusDisplays.call(scene);
+        }).not.toThrow();
+        expect(scene.battleLogText).toBeUndefined();
+        expect(scene.battleLogLines).toContain('Bloodied');
+        expect(staleBattleLogText.setText).not.toHaveBeenCalled();
     });
 
     it('resolves Shockwave against the current enemy in the 1:1 battle model', () => {
@@ -548,6 +675,183 @@ describe('BattleScene block lifecycle', () => {
             expect.objectContaining({ name: 'Last Stand' }),
         ]);
         expect(scene.showBattleEnd).toHaveBeenCalledWith('player-win');
+    });
+
+    it('shows Bloodied breakpoint state in the player HUD', () => {
+        const scene = createScene();
+        scene.playerState = { health: 50, maxHealth: 100, block: 0 };
+
+        scene.updateStatusDisplays();
+
+        expect(scene.playerStatusText?.setText).toHaveBeenCalledWith('BLOODIED');
+        expect(scene.playerBreakpointText?.setText).toHaveBeenCalledWith('BLOODIED');
+        expect(scene.playerBreakpointText?.setColor).toHaveBeenCalledWith('#ffb347');
+    });
+
+    it('logs breakpoint reactions when self-damage pushes Bloodrush online', () => {
+        const scene = createScene();
+        scene.energyState = { current: 2, max: 3 };
+        scene.playerState = { health: 54, maxHealth: 100, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Blood Price',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DRAW,
+                    effectPayload: {
+                        drawCount: 2,
+                        selfDamage: 4,
+                    },
+                }),
+                createCard({
+                    name: 'Bloodrush',
+                    type: CARD_TYPE.ATTACK,
+                    power: 20,
+                    cost: 2,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    condition: { type: 'HP_PERCENT_THRESHOLD', value: 50 },
+                    effectPayload: {
+                        costWhenConditionMet: 0,
+                    },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.battleLogLines).toContain('Bloodied');
+        expect(scene.battleLogLines).toContain('Bloodrush cost 0');
+        expect(scene.isInputLocked).toBe(false);
+    });
+
+    it('splits multi-hit damage popups and self-damage popups in the reaction feed', () => {
+        const scene = createScene();
+        const recklessFury = createCard({
+            name: 'Reckless Fury',
+            type: CARD_TYPE.ATTACK,
+            power: 3,
+            cost: 1,
+            effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+            effectPayload: { hitCount: 4, selfDamage: 2 },
+        });
+
+        BattleScene.prototype.showEffectText.call(scene, recklessFury, {
+            damageDealt: 12,
+            damageBlocked: 0,
+            blockGained: 0,
+            fled: false,
+            cardsDrawn: 0,
+            energyGained: 0,
+            healthRestored: 0,
+            selfDamageTaken: 2,
+            hitsResolved: 4,
+        });
+
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            1,
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [
+                { type: 'damage', value: 3 },
+                { type: 'damage', value: 3 },
+                { type: 'damage', value: 3 },
+                { type: 'damage', value: 3 },
+            ],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            2,
+            { id: 'player-hp', x: 292, y: 248 },
+            [{ type: 'damage', value: 2 }],
+        );
+    });
+
+    it('does not overstate multi-hit damage popups when only some hits connect', () => {
+        const scene = createScene();
+        const recklessFury = createCard({
+            name: 'Reckless Fury',
+            type: CARD_TYPE.ATTACK,
+            power: 3,
+            cost: 1,
+            effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+            effectPayload: { hitCount: 4, selfDamage: 2 },
+        });
+
+        BattleScene.prototype.showEffectText.call(scene, recklessFury, {
+            damageDealt: 2,
+            damageBlocked: 10,
+            blockGained: 0,
+            fled: false,
+            cardsDrawn: 0,
+            energyGained: 0,
+            healthRestored: 0,
+            selfDamageTaken: 0,
+            hitsResolved: 4,
+        });
+
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            1,
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [
+                { type: 'blocked', value: 10 },
+                { type: 'damage', value: 1 },
+                { type: 'damage', value: 1 },
+            ],
+        );
+    });
+
+    it('plays repeated impact motion for multi-hit attacks', () => {
+        const scene = createScene();
+        const recklessFury = createCard({
+            name: 'Reckless Fury',
+            type: CARD_TYPE.ATTACK,
+            power: 3,
+            cost: 1,
+            effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+            effectPayload: { hitCount: 4, selfDamage: 2 },
+        });
+        scene.playPanelImpactMotion = vi.fn();
+
+        BattleScene.prototype.playResolvedActionMotion.call(scene, 'player', recklessFury, {
+            damageDealt: 12,
+            damageBlocked: 0,
+            blockGained: 0,
+            fled: false,
+            selfDamageTaken: 2,
+            hitsResolved: 4,
+        });
+
+        expect(scene.playPanelImpactMotion).toHaveBeenNthCalledWith(1, 'player', 0xff8f8f);
+        expect(scene.playPanelImpactMotion).toHaveBeenCalledTimes(5);
+        expect(scene.playPanelImpactMotion).toHaveBeenLastCalledWith('enemy', 0xff8f8f);
+    });
+
+    it('describes Desperation breakpoints in card intel for Last Stand', () => {
+        const scene = createScene();
+        const lastStand = createCard({
+            name: 'Last Stand',
+            type: CARD_TYPE.ATTACK,
+            power: 40,
+            cost: 3,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+            keywords: [CARD_KEYWORD.EXHAUST],
+            rarity: CARD_RARITY.RARE,
+            condition: { type: 'HP_PERCENT_THRESHOLD', value: 25 },
+            effectPayload: {
+                costWhenConditionMet: 0,
+                healOnKillPercent: 30,
+            },
+        });
+        scene.playerState = { health: 25, maxHealth: 100, block: 0 };
+
+        scene.showCardDetail(lastStand);
+
+        expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
+            expect.stringContaining('Breakpoint active: Desperation'),
+        );
     });
 
     it('grants energy and draw when Adrenaline Rush resolves', () => {
@@ -1273,6 +1577,139 @@ describe('BattleScene block lifecycle', () => {
         expect(scene.playerState.health).toBe(96);
     });
 
+    it('adds self-damage to the reaction feed when Blood Price resolves', () => {
+        const scene = createScene();
+        scene.enemyCardPool = [];
+        scene.showEffectText = BattleScene.prototype.showEffectText;
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Blood Price',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DRAW,
+                    effectPayload: { drawCount: 2, selfDamage: 4 },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.battleLogLines).toContain('Self-Damage 4');
+        expect(scene.damagePopupController.showBatch).toHaveBeenCalledWith(
+            expect.objectContaining({ id: 'player-hp' }),
+            expect.arrayContaining([expect.objectContaining({ type: 'damage', value: 4 })]),
+        );
+        expect(
+            scene.damagePopupController.showBatch.mock.calls.filter(
+                ([anchor, requests]) => anchor.id === 'player-hp'
+                    && requests.some((request: { type: string; value: number }) => (
+                        request.type === 'damage'
+                        && request.value === 4
+                    )),
+            ),
+        ).toHaveLength(1);
+    });
+
+    it('surfaces bloodied breakpoints in the reaction feed and status strip', () => {
+        const scene = createScene() as TestScene & {
+            playerSelfDamageTotal: number;
+            playerBreakpointState: 'stable' | 'bloodied' | 'desperation';
+            playerStatusText: {
+                setText: ReturnType<typeof vi.fn>;
+            };
+            enemyStatusText: {
+                setText: ReturnType<typeof vi.fn>;
+            };
+            playerBreakpointText: {
+                setText: ReturnType<typeof vi.fn>;
+                setColor: ReturnType<typeof vi.fn>;
+                setAlpha: ReturnType<typeof vi.fn>;
+            };
+            playPanelPulseMotion: ReturnType<typeof vi.fn>;
+            updateStatusDisplays: () => void;
+        };
+        scene.playerState = { health: 18, maxHealth: 40, block: 0 };
+        scene.playerSelfDamageTotal = 4;
+        scene.playerBreakpointState = 'stable';
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Bloodrush',
+                    type: CARD_TYPE.ATTACK,
+                    power: 20,
+                    cost: 2,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    condition: { type: 'HP_PERCENT_THRESHOLD', value: 50 },
+                    effectPayload: { costWhenConditionMet: 0 },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+        scene.playerStatusText = { setText: vi.fn() };
+        scene.enemyStatusText = { setText: vi.fn() };
+        scene.playerBreakpointText = {
+            setText: vi.fn(),
+            setColor: vi.fn(),
+            setAlpha: vi.fn(),
+        };
+        scene.playPanelPulseMotion = vi.fn();
+
+        (BattleScene.prototype as unknown as {
+            syncPlayerBreakpointState: () => void;
+        }).syncPlayerBreakpointState.call(scene);
+        (BattleScene.prototype as unknown as {
+            updateStatusDisplays: () => void;
+        }).updateStatusDisplays.call(scene);
+
+        expect(scene.battleLogLines).toContain('Bloodied');
+        expect(scene.battleLogLines).toContain('Bloodrush cost 0');
+        expect(scene.playerStatusText.setText).toHaveBeenCalledWith('BLOODIED');
+        expect(scene.playerBreakpointText.setText).toHaveBeenCalledWith('BLOODIED');
+    });
+
+    it('does not spam repeated breakpoint reaction logs when the active hand state is unchanged', () => {
+        const scene = createScene() as TestScene & {
+            playerSelfDamageTotal: number;
+            playerBreakpointState: 'stable' | 'bloodied' | 'desperation';
+            appendBreakpointCardReactions: () => void;
+        };
+        scene.playerState = { health: 18, maxHealth: 40, block: 0 };
+        scene.playerSelfDamageTotal = 4;
+        scene.playerBreakpointState = 'stable';
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Bloodrush',
+                    type: CARD_TYPE.ATTACK,
+                    power: 20,
+                    cost: 2,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    condition: { type: 'HP_PERCENT_THRESHOLD', value: 50 },
+                    effectPayload: { costWhenConditionMet: 0 },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        (BattleScene.prototype as unknown as {
+            syncPlayerBreakpointState: () => void;
+        }).syncPlayerBreakpointState.call(scene);
+        (BattleScene.prototype as unknown as {
+            appendBreakpointCardReactions: () => void;
+        }).appendBreakpointCardReactions.call(scene);
+
+        expect(scene.battleLogLines.filter((line) => line === 'Bloodrush cost 0')).toHaveLength(1);
+    });
+
     it('does not grant strength from poison ticks when Berserker Rage is active', () => {
         const scene = createScene();
         scene.playerOngoingBuffs = {
@@ -1626,7 +2063,7 @@ describe('BattleScene block lifecycle', () => {
             expect.stringContaining('ATTACK · RARE · Blood Oath · Cost 3'),
         );
         expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
-            expect.stringContaining('Condition unmet: HP 60% is above 25%.'),
+            expect.stringContaining('Breakpoint locked: Desperation at 25%. HP 60% is above it.'),
         );
 
         scene.cardDetailBodyText?.setText.mockClear();
@@ -1637,7 +2074,7 @@ describe('BattleScene block lifecycle', () => {
             expect.stringContaining('ATTACK · RARE · Blood Oath · Cost 0'),
         );
         expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
-            expect.stringContaining('Condition active: HP 25% is at or below 25%.'),
+            expect.stringContaining('Breakpoint active: Desperation. HP 25% is at or below 25%.'),
         );
     });
 
@@ -1727,6 +2164,7 @@ describe('BattleScene block lifecycle', () => {
         scene.enemyState = { health: 40, maxHealth: 40, block: 0 };
         scene.currentEnemyIntent = {
             type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.GUARD,
             block: 5,
             label: 'Enemy Guard 5',
             sourceCardId: 'enemy-guard-5',
@@ -1764,6 +2202,7 @@ describe('BattleScene block lifecycle', () => {
         const scene = createScene();
         scene.currentEnemyIntent = {
             type: ENEMY_INTENT_TYPE.BUFF,
+            pattern: ENEMY_INTENT_PATTERN.RITUAL,
             stat: 'attack',
             amount: 4,
             label: 'Battle Cry',
@@ -1773,14 +2212,33 @@ describe('BattleScene block lifecycle', () => {
             updateEnemyIntentDisplay: (animated: boolean) => void;
         }).updateEnemyIntentDisplay(false);
 
-        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next ⬆️ ATK +4');
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next RITUAL ⬆️ ATK +4');
         expect(scene.enemyIntentText?.setAlpha).toHaveBeenCalledWith(1);
+    });
+
+    it('annotates attack intent that would push the player into desperation', () => {
+        const scene = createScene();
+        scene.playerState = { health: 20, maxHealth: 40, block: 0 };
+        scene.currentEnemyIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE,
+            damage: 12,
+            label: 'Enemy Strike 12',
+            sourceCardId: 'enemy-strike-12',
+        };
+
+        (scene as TestScene & {
+            updateEnemyIntentDisplay: (animated: boolean) => void;
+        }).updateEnemyIntentDisplay(false);
+
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next STRIKE ⚔️ 12 · Desperation');
     });
 
     it('renders defend intent as the next-turn block preview', () => {
         const scene = createScene();
         scene.currentEnemyIntent = {
             type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.GUARD,
             block: 4,
             label: 'Enemy Guard 4',
             sourceCardId: 'enemy-guard-4',
@@ -1790,8 +2248,148 @@ describe('BattleScene block lifecycle', () => {
             updateEnemyIntentDisplay: (animated: boolean) => void;
         }).updateEnemyIntentDisplay(false);
 
-        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next 🛡️ +4');
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next GUARD 🛡️ +4');
         expect(scene.enemyIntentText?.setAlpha).toHaveBeenCalledWith(1);
+    });
+
+    it('renders flurry intent with hit count and per-hit damage', () => {
+        const scene = createScene();
+        scene.playerState = { health: 40, maxHealth: 40, block: 0 };
+        scene.currentEnemyIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.FLURRY,
+            damage: 9,
+            hitCount: 3,
+            damagePerHit: 3,
+            label: 'Enemy Flurry 3',
+            sourceCardId: 'enemy-flurry-3',
+        };
+
+        (scene as TestScene & {
+            updateEnemyIntentDisplay: (animated: boolean) => void;
+        }).updateEnemyIntentDisplay(false);
+
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next FLURRY ⚔️ 3x3');
+    });
+
+    it('renders the active dread rule summary in the header', () => {
+        const scene = new BattleScene() as unknown as {
+            dreadRule?: TestScene['dreadRule'];
+            dreadRuleText?: { setText: ReturnType<typeof vi.fn> };
+        };
+        scene.dreadRule = {
+            id: DREAD_RULE_ID.BLOOD_MOON,
+            name: 'Blood Moon',
+            summary: 'First self-damage each turn grants +1 STR.',
+            description: '매 턴 첫 self-damage 시 Strength +1.',
+            effects: { firstSelfDamageStrength: 1 },
+        };
+        scene.dreadRuleText = { setText: vi.fn() };
+
+        (BattleScene.prototype as unknown as {
+            updateDreadRuleDisplay: () => void;
+        }).updateDreadRuleDisplay.call(scene);
+
+        expect(scene.dreadRuleText.setText).toHaveBeenCalledWith(
+            'Rule: Blood Moon · First self-damage each turn grants +1 STR.',
+        );
+    });
+
+    it('grants strength only on the first self-damage each turn under Blood Moon', () => {
+        const scene = createScene() as TestScene & {
+            playPanelPulseMotion: ReturnType<typeof vi.fn>;
+        };
+        scene.turnNumber = 1;
+        scene.dreadRule = {
+            id: DREAD_RULE_ID.BLOOD_MOON,
+            name: 'Blood Moon',
+            summary: 'First self-damage each turn grants +1 STR.',
+            description: '매 턴 첫 self-damage 시 Strength +1.',
+            effects: { firstSelfDamageStrength: 1 },
+        };
+        scene.battleLogLines = [];
+        scene.playPanelPulseMotion = vi.fn();
+
+        const applyDreadRuleSelfDamageReaction = (
+            BattleScene.prototype as unknown as {
+                applyDreadRuleSelfDamageReaction: (selfDamageTaken: number) => void;
+            }
+        ).applyDreadRuleSelfDamageReaction;
+
+        applyDreadRuleSelfDamageReaction.call(scene, 2);
+        applyDreadRuleSelfDamageReaction.call(scene, 3);
+
+        expect(scene.playerStatusEffects.strength).toBe(1);
+        expect(scene.battleLogLines).toContain('Blood Moon: +1 STR');
+        expect(scene.playPanelPulseMotion).toHaveBeenCalledTimes(1);
+    });
+
+    it('hides even-turn intent previews under Blackout', () => {
+        const scene = createScene();
+        scene.turnNumber = 2;
+        scene.dreadRule = {
+            id: DREAD_RULE_ID.BLACKOUT,
+            name: 'Blackout',
+            summary: 'Even turns hide enemy intent.',
+            description: '짝수 턴에는 적 intent가 숨겨진다.',
+            effects: { hideEnemyIntentOnEvenTurns: true },
+        };
+        scene.currentEnemyIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE,
+            damage: 12,
+            label: 'Enemy Strike',
+            sourceCardId: 'enemy-strike',
+        };
+
+        (scene as TestScene & {
+            updateEnemyIntentDisplay: (animated: boolean) => void;
+        }).updateEnemyIntentDisplay(false);
+
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next ???');
+    });
+
+    it('applies Panic Room self-damage from unspent energy at turn end', () => {
+        const scene = createScene();
+        scene.playerState = { health: 40, maxHealth: 40, block: 0 };
+        scene.dreadRule = {
+            id: DREAD_RULE_ID.PANIC_ROOM,
+            name: 'Panic Room',
+            summary: 'Unspent energy deals 1 self-damage each turn end.',
+            description: '턴 종료 시 남은 에너지 1당 자해 1.',
+            effects: { turnEndSelfDamagePerUnspentEnergy: 1 },
+        };
+        scene.battleLogLines = [];
+
+        const applyDreadRuleTurnEndPenalty = (
+            BattleScene.prototype as unknown as {
+                applyDreadRuleTurnEndPenalty: (remainingEnergy: number) => boolean;
+            }
+        ).applyDreadRuleTurnEndPenalty;
+
+        expect(applyDreadRuleTurnEndPenalty.call(scene, 2)).toBe(false);
+        expect(scene.playerState.health).toBe(38);
+        expect(scene.battleLogLines).toContain('Panic Room: 2 self-damage for 2 unspent energy');
+    });
+
+    it('keeps player poison stacks from decaying under Suffocating Fog', () => {
+        const scene = createScene();
+        scene.playerStatusEffects = {
+            ...scene.playerStatusEffects,
+            poison: 2,
+        };
+        scene.dreadRule = {
+            id: DREAD_RULE_ID.SUFFOCATING_FOG,
+            name: 'Suffocating Fog',
+            summary: 'Poison does not decay at turn end.',
+            description: 'Poison이 턴 종료에 감소하지 않는다.',
+            effects: { poisonDoesNotDecay: true },
+        };
+
+        scene.resolveTurnEndStatusEffects('player');
+
+        expect(scene.playerState.health).toBe(98);
+        expect(scene.playerStatusEffects.poison).toBe(2);
     });
 
     it('does not reapply battle-start equipment when the first player turn begins', () => {
@@ -2203,7 +2801,7 @@ describe('BattleScene popup feedback', () => {
         expect(battleLogText.setText).toHaveBeenCalledWith('Strike: strike');
     });
 
-    it('keeps only the latest three battle history entries', () => {
+    it('keeps only the latest five battle history entries', () => {
         const scene = new BattleScene() as unknown as {
             battleLogLines: string[];
             updateBattleLog: ReturnType<typeof vi.fn>;
@@ -2221,8 +2819,117 @@ describe('BattleScene popup feedback', () => {
         appendBattleLog.call(scene, 'Entry 2');
         appendBattleLog.call(scene, 'Entry 3');
         appendBattleLog.call(scene, 'Entry 4');
+        appendBattleLog.call(scene, 'Entry 5');
+        appendBattleLog.call(scene, 'Entry 6');
 
-        expect(scene.battleLogLines).toEqual(['Entry 2', 'Entry 3', 'Entry 4']);
+        expect(scene.battleLogLines).toEqual(['Entry 2', 'Entry 3', 'Entry 4', 'Entry 5', 'Entry 6']);
+    });
+
+    it('queues breakpoint log updates until the battle log UI is recreated', () => {
+        const staleBattleLogText = { setText: vi.fn() };
+        const scene = new BattleScene() as unknown as {
+            battleLogLines: string[];
+            battleLogText?: { setText: ReturnType<typeof vi.fn> };
+            isBattleLogReady: boolean;
+            playerState: { health: number; maxHealth: number; block: number };
+            playerStatusEffects: StatusEffectState;
+            playerSelfDamageTotal: number;
+            playerBreakpointState: 'stable' | 'bloodied' | 'desperation';
+            activeBreakpointReactionKeys: Set<string>;
+            playerStatusText?: { setText: ReturnType<typeof vi.fn> };
+            playerBreakpointText?: {
+                setText: ReturnType<typeof vi.fn>;
+                setColor: ReturnType<typeof vi.fn>;
+                setAlpha: ReturnType<typeof vi.fn>;
+            };
+            playPanelPulseMotion: ReturnType<typeof vi.fn>;
+            playPanelImpactMotion: ReturnType<typeof vi.fn>;
+            appendBreakpointCardReactions: ReturnType<typeof vi.fn>;
+        };
+        scene.battleLogLines = [];
+        scene.battleLogText = staleBattleLogText;
+        scene.isBattleLogReady = false;
+        scene.playerState = { health: 40, maxHealth: 100, block: 0 };
+        scene.playerStatusEffects = new StatusEffectService().createState();
+        scene.playerSelfDamageTotal = 0;
+        scene.playerBreakpointState = 'stable';
+        scene.activeBreakpointReactionKeys = new Set();
+        scene.playerStatusText = { setText: vi.fn() };
+        scene.playerBreakpointText = {
+            setText: vi.fn(),
+            setColor: vi.fn(),
+            setAlpha: vi.fn(),
+        };
+        scene.playPanelPulseMotion = vi.fn();
+        scene.playPanelImpactMotion = vi.fn();
+        scene.appendBreakpointCardReactions = vi.fn();
+
+        (BattleScene.prototype as unknown as {
+            syncPlayerBreakpointState: () => void;
+        }).syncPlayerBreakpointState.call(scene);
+
+        expect(scene.battleLogLines).toEqual(['Bloodied']);
+        expect(staleBattleLogText.setText).not.toHaveBeenCalled();
+    });
+
+    it('repeats impact motion for multi-hit cards and mirrors self-damage on the player panel', () => {
+        const scene = new BattleScene() as unknown as TestScene & {
+            playPanelImpactMotion: ReturnType<typeof vi.fn>;
+        };
+        scene.playPanelImpactMotion = vi.fn();
+        const addEvent = vi.fn(({ callback }: { callback: () => void }) => {
+            callback();
+            return undefined;
+        });
+        scene.time = {
+            addEvent,
+            delayedCall(delayMs: number, callback: () => void) {
+                return this.addEvent({ delay: delayMs, callback });
+            },
+        } as unknown as TestScene['time'];
+
+        (BattleScene.prototype as unknown as {
+            playResolvedActionMotion: (
+                actor: 'player' | 'enemy',
+                card: ReturnType<typeof createCard>,
+                effect: {
+                    damageDealt: number;
+                    damageBlocked?: number;
+                    blockGained: number;
+                    fled: boolean;
+                    selfDamageTaken?: number;
+                    hitsResolved?: number;
+                },
+            ) => void;
+        }).playResolvedActionMotion.call(
+            scene,
+            'player',
+            createCard({
+                name: 'Reckless Fury',
+                type: CARD_TYPE.ATTACK,
+                power: 3,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+            }),
+            {
+                damageDealt: 12,
+                damageBlocked: 0,
+                blockGained: 0,
+                fled: false,
+                selfDamageTaken: 2,
+                hitsResolved: 4,
+            },
+        );
+
+        expect(scene.playPanelImpactMotion.mock.calls.map(([actor]) => actor)).toEqual([
+            'player',
+            'enemy',
+            'enemy',
+            'enemy',
+            'enemy',
+        ]);
+        expect(addEvent).toHaveBeenCalledTimes(4);
+        expect(addEvent.mock.calls.map(([config]) => config.delay)).toEqual([0, 90, 180, 270]);
     });
 
     it('writes enemy action summaries into the battle history', () => {
@@ -2276,6 +2983,71 @@ describe('BattleScene popup feedback', () => {
         );
 
         expect(scene.appendBattleLog).toHaveBeenCalledWith('Enemy Enemy Guard: +5 Block');
+    });
+
+    it('splits enemy flurry damage into repeated player-side popups', () => {
+        const fallbackText = createFallbackText();
+        const scene = new BattleScene() as unknown as {
+            damagePopupController: { showBatch: ReturnType<typeof vi.fn> };
+            add: { text: ReturnType<typeof vi.fn> };
+            effectText?: { destroy: ReturnType<typeof vi.fn> };
+            appendBattleLog: ReturnType<typeof vi.fn>;
+            formatEnemyActionLog: (
+                card: ReturnType<typeof createCard>,
+                damage: number,
+                blockGained: number,
+                damageBlocked?: number,
+            ) => string;
+        };
+        scene.damagePopupController = { showBatch: vi.fn() };
+        scene.add = {
+            text: vi.fn(() => fallbackText),
+        };
+        scene.appendBattleLog = vi.fn();
+        scene.formatEnemyActionLog = (
+            BattleScene.prototype as unknown as {
+                formatEnemyActionLog: (
+                    card: ReturnType<typeof createCard>,
+                    damage: number,
+                    blockGained: number,
+                    damageBlocked?: number,
+                ) => string;
+            }
+        ).formatEnemyActionLog;
+
+        (BattleScene.prototype as unknown as {
+            showEnemyActionText: (
+                card: ReturnType<typeof createCard>,
+                damage: number,
+                blockGained: number,
+                damageBlocked?: number,
+                hitDamages?: readonly number[],
+            ) => void;
+        }).showEnemyActionText.call(
+            scene,
+            createCard({
+                name: 'Enemy Flurry',
+                type: CARD_TYPE.ATTACK,
+                power: 3,
+                effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                hitCount: 3,
+            }),
+            9,
+            0,
+            0,
+            [3, 3, 3],
+        );
+
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            1,
+            { id: 'player-hp', x: 292, y: 248 },
+            [
+                { type: 'damage', value: 3 },
+                { type: 'damage', value: 3 },
+                { type: 'damage', value: 3 },
+            ],
+        );
+        expect(scene.appendBattleLog).toHaveBeenCalledWith('Enemy Enemy Flurry: flurry');
     });
 
     it('shows player-side poison popups when turn-end poison damage resolves', () => {
