@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
     DrawCycleService,
     DEFAULT_HAND_SIZE,
+    HAND_END_TURN_EFFECT_TYPE,
     type DrawCycleState,
 } from '../../../../src/domain/services/DrawCycleService';
 import { CARD_KEYWORD, CARD_TYPE, CARD_EFFECT_TYPE, createCard, resetCardSequence, type Card } from '../../../../src/domain/entities/Card';
@@ -55,6 +56,10 @@ describe('DrawCycleService', () => {
                 power: i + 1,
             }),
         );
+    }
+
+    function finishTurn(service: DrawCycleService, state: DrawCycleState): DrawCycleState {
+        return service.endTurn(state).state;
     }
 
     // -----------------------------------------------------------------------
@@ -145,9 +150,9 @@ describe('DrawCycleService', () => {
             // 이제 drawPile=0, discardPile=10 상태
             let state = service.initialize(cards);
             state = service.drawCards(state, 5);
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
             state = service.drawCards(state, 5);
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
 
             expect(state.drawPile).toHaveLength(0);
             expect(state.discardPile).toHaveLength(10);
@@ -167,7 +172,7 @@ describe('DrawCycleService', () => {
             // 4장 → 뽑기 4장 → 턴종료(4장 버림) → drawPile=0, discard=4
             let state = service.initialize(cards);
             state = service.drawCards(state, 4);
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
 
             // 5장 요청, 하지만 총 4장밖에 없으므로 4장만 드로우
             const result = service.drawCards(state, 5);
@@ -185,7 +190,7 @@ describe('DrawCycleService', () => {
             let state = service.initialize(cards);
             state = service.drawCards(state, 5);
             // 턴 종료 → drawPile=3, discard=5
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
 
             // 5장 드로우 요청: drawPile에서 3장 + discard 셔플 후 2장
             const result = service.drawCards(state, 5);
@@ -205,7 +210,7 @@ describe('DrawCycleService', () => {
             state = service.drawCards(state);
             expect(service.getZoneCounts(state).total).toBe(10);
 
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
             expect(service.getZoneCounts(state).total).toBe(10);
 
             state = service.drawCards(state);
@@ -334,11 +339,12 @@ describe('DrawCycleService', () => {
             const handBefore = [...state.hand];
             const result = service.endTurn(state);
 
-            expect(result.hand).toHaveLength(0);
-            expect(result.discardPile).toHaveLength(5);
+            expect(result.state.hand).toHaveLength(0);
+            expect(result.state.discardPile).toHaveLength(5);
+            expect(result.effects).toEqual([]);
             // 버림패에 손패의 모든 카드가 있어야 함
             for (const card of handBefore) {
-                expect(result.discardPile.some((c) => c.id === card.id)).toBe(true);
+                expect(result.state.discardPile.some((c) => c.id === card.id)).toBe(true);
             }
         });
 
@@ -349,7 +355,8 @@ describe('DrawCycleService', () => {
 
             const result = service.endTurn(state);
 
-            expect(result).toBe(state);
+            expect(result.state).toBe(state);
+            expect(result.effects).toEqual([]);
         });
 
         it('appends to existing discard pile', () => {
@@ -363,9 +370,102 @@ describe('DrawCycleService', () => {
             expect(state.discardPile).toHaveLength(1);
 
             // 턴 종료 → 나머지 4장도 버림패로
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
             expect(state.discardPile).toHaveLength(5);
             expect(state.hand).toHaveLength(0);
+        });
+
+        it('moves ETHEREAL cards to exhaust pile before retain resolution', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const retainCard = createCard({
+                name: 'Brace',
+                type: CARD_TYPE.GUARD,
+                power: 4,
+                keywords: [CARD_KEYWORD.RETAIN],
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            });
+            const etherealCard = createCard({
+                name: 'Dread',
+                type: CARD_TYPE.CURSE,
+                power: 0,
+                keywords: [CARD_KEYWORD.ETHEREAL, CARD_KEYWORD.UNPLAYABLE],
+                effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+            });
+
+            const state: DrawCycleState = {
+                drawPile: [],
+                hand: [etherealCard, retainCard],
+                discardPile: [],
+                exhaustPile: [],
+            };
+
+            const result = service.endTurn(state);
+
+            expect(result.state.hand.map((card) => card.id)).toEqual([retainCard.id]);
+            expect(result.state.exhaustPile.map((card) => card.id)).toEqual([etherealCard.id]);
+            expect(result.effects).toContainEqual({
+                type: HAND_END_TURN_EFFECT_TYPE.ETHEREAL_EXHAUSTED,
+                cardId: etherealCard.id,
+                cardName: etherealCard.name,
+            });
+        });
+
+        it('exhausts a card when ETHEREAL and RETAIN are both present', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const dualKeywordCard = createCard({
+                name: 'Fleeting Guard',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                keywords: [CARD_KEYWORD.RETAIN, CARD_KEYWORD.ETHEREAL],
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            });
+
+            const state: DrawCycleState = {
+                drawPile: [],
+                hand: [dualKeywordCard],
+                discardPile: [],
+                exhaustPile: [],
+            };
+
+            const result = service.endTurn(state);
+
+            expect(result.state.hand).toEqual([]);
+            expect(result.state.discardPile).toEqual([]);
+            expect(result.state.exhaustPile.map((card) => card.id)).toEqual([dualKeywordCard.id]);
+            expect(result.effects).toContainEqual({
+                type: HAND_END_TURN_EFFECT_TYPE.ETHEREAL_EXHAUSTED,
+                cardId: dualKeywordCard.id,
+                cardName: dualKeywordCard.name,
+            });
+        });
+
+        it('reports held curse self-damage as an end-turn effect', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const curseCard = createCard({
+                name: 'Hemorrhage',
+                type: CARD_TYPE.CURSE,
+                power: 0,
+                keywords: [CARD_KEYWORD.UNPLAYABLE],
+                effectType: CARD_EFFECT_TYPE.CONDITIONAL,
+                selfDamage: 1,
+            });
+
+            const state: DrawCycleState = {
+                drawPile: [],
+                hand: [curseCard],
+                discardPile: [],
+                exhaustPile: [],
+            };
+
+            const result = service.endTurn(state);
+
+            expect(result.effects).toContainEqual({
+                type: HAND_END_TURN_EFFECT_TYPE.HELD_CURSE_SELF_DAMAGE,
+                cardId: curseCard.id,
+                cardName: curseCard.name,
+                value: 1,
+            });
+            expect(result.state.discardPile.map((card) => card.id)).toEqual([curseCard.id]);
         });
     });
 
@@ -419,7 +519,7 @@ describe('DrawCycleService', () => {
             });
 
             // 턴 종료: 남은 3장 → 버림패
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
             expect(service.getZoneCounts(state)).toEqual({
                 drawPile: 2, hand: 0, discardPile: 5, exhaustPile: 0, total: 7,
             });
@@ -431,7 +531,7 @@ describe('DrawCycleService', () => {
             });
 
             // 턴 종료
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
             expect(service.getZoneCounts(state)).toEqual({
                 drawPile: 2, hand: 0, discardPile: 5, exhaustPile: 0, total: 7,
             });
@@ -456,7 +556,7 @@ describe('DrawCycleService', () => {
                 drawPile: 0, hand: 5, discardPile: 0, exhaustPile: 0, total: 5,
             });
 
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
             expect(service.getZoneCounts(state)).toEqual({
                 drawPile: 0, hand: 0, discardPile: 5, exhaustPile: 0, total: 5,
             });
@@ -482,7 +582,7 @@ describe('DrawCycleService', () => {
                 while (state.hand.length > 0) {
                     state = service.playCard(state, state.hand[0].id);
                 }
-                state = service.endTurn(state);
+                state = finishTurn(service, state);
             }
 
             // 모든 카드가 여전히 존재하는지 확인
@@ -544,7 +644,7 @@ describe('DrawCycleService', () => {
             // exhaust 카드 사용
             const exhaustInHand = state.hand.find((c) => c.keywords.includes(CARD_KEYWORD.EXHAUST));
             state = service.playCard(state, exhaustInHand!.id);
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
 
             // 다음 턴: 4장만 순환, exhaust 카드는 제외
             state = service.drawCards(state, 5);
@@ -588,7 +688,7 @@ describe('DrawCycleService', () => {
             state = service.playCard(state, state.hand[0].id);
 
             // 턴 종료: retain 카드는 유지, 나머지는 버림패
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
 
             const retainInHand = state.hand.find((c) => c.keywords.includes(CARD_KEYWORD.RETAIN));
             expect(retainInHand).toBeDefined();
@@ -606,7 +706,7 @@ describe('DrawCycleService', () => {
             state = service.drawCards(state, 5);
 
             // 턴 종료: 4장 버림, 1장(retain) 유지
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
 
             expect(state.hand).toHaveLength(1);
             expect(state.discardPile).toHaveLength(4);
@@ -622,7 +722,7 @@ describe('DrawCycleService', () => {
 
             // 턴 1: 5장 드로우 → 턴 종료 (retain 있으면 유지)
             state = service.drawCards(state, 5);
-            state = service.endTurn(state);
+            state = finishTurn(service, state);
 
             // 턴 2: 기존 retain + 새 드로우
             state = service.drawCards(state, 5);
@@ -630,7 +730,7 @@ describe('DrawCycleService', () => {
 
             // retain 카드가 손패에 있다면 턴 종료 후에도 유지
             if (retainInHand.length > 0) {
-                state = service.endTurn(state);
+                state = finishTurn(service, state);
                 expect(state.hand.some((c) => c.keywords.includes(CARD_KEYWORD.RETAIN))).toBe(true);
             }
         });

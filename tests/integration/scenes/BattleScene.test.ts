@@ -382,22 +382,55 @@ describe('BattleScene block lifecycle', () => {
         expect(scene.totalEnemyDamage).toBe(4);
     });
 
-    it('disables Last Stand in hand when player health is above the threshold', () => {
+    it('resolves Shockwave against the current enemy in the 1:1 battle model', () => {
         const scene = createScene();
         scene.energyState = { current: 3, max: 3 };
-        scene.playerState = { health: 10, maxHealth: 100, block: 0 };
+        scene.playerState = { health: 100, maxHealth: 100, block: 0 };
+        scene.enemyState = { health: 20, maxHealth: 20, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Shockwave',
+                    type: CARD_TYPE.ATTACK,
+                    power: 8,
+                    cost: 2,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    rarity: CARD_RARITY.COMMON,
+                    archetype: 'NEUTRAL',
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.enemyState.health).toBe(12);
+        expect(scene.totalEnemyDamage).toBe(8);
+        expect(scene.energyState.current).toBe(1);
+    });
+
+    it('renders Last Stand as playable at full cost when the HP discount is not active', () => {
+        const scene = createScene();
+        scene.energyState = { current: 3, max: 3 };
+        scene.playerState = { health: 60, maxHealth: 100, block: 0 };
         scene.drawCycleState = {
             drawPile: [],
             hand: [
                 createCard({
                     name: 'Last Stand',
                     type: CARD_TYPE.ATTACK,
-                    power: 30,
+                    power: 40,
                     cost: 3,
                     effectType: CARD_EFFECT_TYPE.DAMAGE,
-                    keywords: [CARD_KEYWORD.RETAIN],
+                    keywords: [CARD_KEYWORD.EXHAUST],
                     rarity: CARD_RARITY.RARE,
-                    condition: { type: 'HP_THRESHOLD', value: 5 },
+                    condition: { type: 'HP_PERCENT_THRESHOLD', value: 25 },
+                    effectPayload: {
+                        costWhenConditionMet: 0,
+                        healOnKillPercent: 30,
+                    },
                 }),
             ],
             discardPile: [],
@@ -407,11 +440,11 @@ describe('BattleScene block lifecycle', () => {
         scene.displayHandCards();
 
         expect(scene.createCardVisual).toHaveBeenCalledWith(
-            expect.objectContaining({ name: 'Last Stand' }),
+            expect.objectContaining({ name: 'Last Stand', cost: 3 }),
             expect.any(Number),
             expect.any(Number),
             0,
-            false,
+            true,
             1,
         );
     });
@@ -443,20 +476,62 @@ describe('BattleScene block lifecycle', () => {
         expect(lastCall?.[1]).toBeLessThanOrEqual(505);
     });
 
-    it('prevents Last Stand from being played when player health is above the threshold', () => {
+    it('discounts Last Stand to zero cost when the HP threshold is met', () => {
         const scene = createScene();
         const lastStand = createCard({
             name: 'Last Stand',
             type: CARD_TYPE.ATTACK,
-            power: 30,
+            power: 40,
             cost: 3,
             effectType: CARD_EFFECT_TYPE.DAMAGE,
-            keywords: [CARD_KEYWORD.RETAIN],
+            keywords: [CARD_KEYWORD.EXHAUST],
             rarity: CARD_RARITY.RARE,
-            condition: { type: 'HP_THRESHOLD', value: 5 },
+            condition: { type: 'HP_PERCENT_THRESHOLD', value: 25 },
+            effectPayload: {
+                costWhenConditionMet: 0,
+                healOnKillPercent: 30,
+            },
         });
-        scene.energyState = { current: 3, max: 3 };
-        scene.playerState = { health: 9, maxHealth: 100, block: 0 };
+        scene.energyState = { current: 0, max: 3 };
+        scene.playerState = { health: 25, maxHealth: 100, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [lastStand],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.displayHandCards();
+
+        expect(scene.createCardVisual).toHaveBeenCalledWith(
+            expect.objectContaining({ name: 'Last Stand', cost: 0 }),
+            expect.any(Number),
+            expect.any(Number),
+            0,
+            true,
+            1,
+        );
+    });
+
+    it('plays Last Stand for zero cost at low health and restores health on kill', () => {
+        const scene = createScene();
+        const lastStand = createCard({
+            name: 'Last Stand',
+            type: CARD_TYPE.ATTACK,
+            power: 40,
+            cost: 3,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+            keywords: [CARD_KEYWORD.EXHAUST],
+            rarity: CARD_RARITY.RARE,
+            condition: { type: 'HP_PERCENT_THRESHOLD', value: 25 },
+            effectPayload: {
+                costWhenConditionMet: 0,
+                healOnKillPercent: 30,
+            },
+        });
+        scene.energyState = { current: 0, max: 3 };
+        scene.playerState = { health: 20, maxHealth: 100, block: 0 };
+        scene.enemyState = { health: 40, maxHealth: 40, block: 0 };
         scene.drawCycleState = {
             drawPile: [],
             hand: [lastStand],
@@ -466,9 +541,134 @@ describe('BattleScene block lifecycle', () => {
 
         scene.onPlayCard(0);
 
+        expect(scene.energyState.current).toBe(0);
+        expect(scene.playerState.health).toBe(50);
+        expect(scene.drawCycleState.hand).toEqual([]);
+        expect(scene.drawCycleState.exhaustPile).toEqual([
+            expect.objectContaining({ name: 'Last Stand' }),
+        ]);
+        expect(scene.showBattleEnd).toHaveBeenCalledWith('player-win');
+    });
+
+    it('grants energy and draw when Adrenaline Rush resolves', () => {
+        const scene = createScene();
+        scene.enemyCardPool = [];
+        scene.energyState = { current: 1, max: 3 };
+        scene.playerState = { health: 100, maxHealth: 100, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [
+                createCard({
+                    name: 'Strike A',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    name: 'Strike B',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    name: 'Strike C',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+            hand: [
+                createCard({
+                    name: 'Adrenaline Rush',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DRAW,
+                    keywords: [CARD_KEYWORD.EXHAUST],
+                    effectPayload: {
+                        drawCount: 3,
+                        selfDamage: 5,
+                        energyChange: 3,
+                    },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
         expect(scene.energyState.current).toBe(3);
-        expect(scene.drawCycleState.hand).toEqual([lastStand]);
-        expect(scene.showEffectText).not.toHaveBeenCalled();
+        expect(scene.playerState.health).toBe(95);
+        expect(scene.drawCycleState.hand).toHaveLength(3);
+        expect(scene.showEffectText).toHaveBeenCalled();
+    });
+
+    it('treats self-inflicted lethal damage as a player loss even when the enemy also dies', () => {
+        const scene = createScene();
+        scene.energyState = { current: 3, max: 3 };
+        scene.playerState = { health: 2, maxHealth: 100, block: 0 };
+        scene.enemyState = { health: 3, maxHealth: 3, block: 0 };
+        scene.enemyCardPool = [];
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Reckless Fury',
+                    type: CARD_TYPE.ATTACK,
+                    power: 3,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                    effectPayload: { hitCount: 4, selfDamage: 2 },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.playerState.health).toBe(0);
+        expect(scene.enemyState.health).toBe(0);
+        expect(scene.showBattleEnd).toHaveBeenCalledWith('player-lose');
+        expect(scene.showBattleEnd).not.toHaveBeenCalledWith('player-win');
+    });
+
+    it('restores health when Last Stand kills the target', () => {
+        const scene = createScene();
+        scene.energyState = { current: 3, max: 3 };
+        scene.playerState = { health: 20, maxHealth: 100, block: 0 };
+        scene.enemyState = { health: 40, maxHealth: 40, block: 0 };
+        scene.enemyCardPool = [];
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Last Stand',
+                    type: CARD_TYPE.ATTACK,
+                    power: 40,
+                    cost: 3,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    keywords: [CARD_KEYWORD.EXHAUST],
+                    rarity: CARD_RARITY.RARE,
+                    condition: { type: 'HP_PERCENT_THRESHOLD', value: 25 },
+                    effectPayload: {
+                        costWhenConditionMet: 0,
+                        healOnKillPercent: 30,
+                    },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.enemyState.health).toBe(0);
+        expect(scene.playerState.health).toBe(50);
+        expect(scene.battleLogLines).toContain('Last Stand restores 30 HP on kill');
     });
 
     it('plays card selection motion before resolving a playable card effect', () => {
@@ -872,6 +1072,27 @@ describe('BattleScene block lifecycle', () => {
         expect(scene.playerStatusEffects.strength).toBe(1);
     });
 
+    it('grants Strength when Berserker Rage owner is hit by an enemy attack', () => {
+        const scene = createScene();
+        scene.playerState = { health: 100, maxHealth: 100, block: 0 };
+        scene.playerOngoingBuffs = {
+            blockPersist: false,
+            blockPersistCharges: 0,
+            strengthOnSelfDamage: 1,
+            poisonPerTurn: 0,
+        };
+        scene.currentEnemyIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            damage: 4,
+            label: 'Enemy Strike 4',
+        };
+
+        scene.executeEnemyTurn();
+
+        expect(scene.playerState.health).toBe(96);
+        expect(scene.playerStatusEffects.strength).toBe(1);
+    });
+
     it('applies status effects from damage cards after dealing damage', () => {
         const scene = createScene();
         scene.drawCycleState = {
@@ -1168,7 +1389,7 @@ describe('BattleScene block lifecycle', () => {
 
         scene.onPlayCard(0);
 
-        scene.energyState = { current: 1, max: 3 };
+        scene.energyState = { current: 2, max: 3 };
         scene.drawCycleState = {
             drawPile: [],
             hand: [
@@ -1176,10 +1397,11 @@ describe('BattleScene block lifecycle', () => {
                     name: 'Death Wish',
                     type: CARD_TYPE.ATTACK,
                     power: 0,
-                    cost: 1,
+                    cost: 2,
                     effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    keywords: [CARD_KEYWORD.RETAIN],
                     effectPayload: {
-                        scaling: { source: 'MISSING_HEALTH', multiplier: 1 },
+                        scaling: { source: 'MISSING_HEALTH', multiplier: 1.5 },
                     },
                 }),
             ],
@@ -1191,7 +1413,7 @@ describe('BattleScene block lifecycle', () => {
 
         expect(scene.playerState.health).toBe(96);
         expect(scene.playerStatusEffects.strength).toBe(1);
-        expect(scene.enemyState.health).toBe(35);
+        expect(scene.enemyState.health).toBe(33);
     });
 
     it('executes the Shadow Arts poison setup into payoff loop', () => {
@@ -1360,6 +1582,65 @@ describe('BattleScene block lifecycle', () => {
         );
     });
 
+    it('describes Shockwave as current-target damage in the card detail panel', () => {
+        const scene = createScene();
+        const shockwave = createCard({
+            name: 'Shockwave',
+            type: CARD_TYPE.ATTACK,
+            power: 8,
+            cost: 2,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+            rarity: CARD_RARITY.COMMON,
+            archetype: 'NEUTRAL',
+        });
+
+        scene.showCardDetail(shockwave);
+
+        expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
+            expect.stringContaining('Deal 8 damage to the current enemy.'),
+        );
+    });
+
+    it('shows current cost and condition status for cost-discount cards in the detail panel', () => {
+        const scene = createScene();
+        const lastStand = createCard({
+            name: 'Last Stand',
+            type: CARD_TYPE.ATTACK,
+            power: 40,
+            cost: 3,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+            keywords: [CARD_KEYWORD.EXHAUST],
+            rarity: CARD_RARITY.RARE,
+            archetype: 'BLOOD_OATH',
+            condition: { type: 'HP_PERCENT_THRESHOLD', value: 25 },
+            effectPayload: {
+                costWhenConditionMet: 0,
+                healOnKillPercent: 30,
+            },
+        });
+
+        scene.playerState = { health: 60, maxHealth: 100, block: 0 };
+        scene.showCardDetail(lastStand);
+
+        expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
+            expect.stringContaining('ATTACK · RARE · Blood Oath · Cost 3'),
+        );
+        expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
+            expect.stringContaining('Condition unmet: HP 60% is above 25%.'),
+        );
+
+        scene.cardDetailBodyText?.setText.mockClear();
+        scene.playerState = { health: 25, maxHealth: 100, block: 0 };
+        scene.showCardDetail(lastStand);
+
+        expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
+            expect.stringContaining('ATTACK · RARE · Blood Oath · Cost 0'),
+        );
+        expect(scene.cardDetailBodyText?.setText).toHaveBeenCalledWith(
+            expect.stringContaining('Condition active: HP 25% is at or below 25%.'),
+        );
+    });
+
     it('applies Poison at turn end and records status expiry in the battle log', () => {
         const scene = createScene();
         scene.enemyCardPool = [];
@@ -1380,6 +1661,64 @@ describe('BattleScene block lifecycle', () => {
         });
         expect(scene.battleLogLines).toContain('Player takes 3 poison');
         expect(scene.battleLogLines).toContain('Player Vulnerable expired');
+    });
+
+    it('exhausts ETHEREAL cards that remain in hand at turn end', () => {
+        const scene = createScene();
+        scene.enemyCardPool = [];
+        const dread = createCard({
+            name: 'Dread',
+            type: CARD_TYPE.CURSE,
+            power: 0,
+            cost: 0,
+            keywords: [CARD_KEYWORD.UNPLAYABLE, CARD_KEYWORD.ETHEREAL],
+            effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+        });
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [dread],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onEndTurn();
+
+        expect(scene.drawCycleState.hand).toHaveLength(0);
+        expect(scene.drawCycleState.exhaustPile.map((card) => card.id)).toEqual([dread.id]);
+        expect(scene.battleLogLines).toContain('Dread vanishes at turn end');
+    });
+
+    it('applies held curse self-damage at turn end and triggers Berserker Rage strength gain', () => {
+        const scene = createScene();
+        scene.enemyCardPool = [];
+        scene.playerState = { health: 20, maxHealth: 20, block: 0 };
+        scene.playerOngoingBuffs = {
+            blockPersist: false,
+            blockPersistCharges: 0,
+            strengthOnSelfDamage: 1,
+            poisonPerTurn: 0,
+        };
+        const hemorrhage = createCard({
+            name: 'Hemorrhage',
+            type: CARD_TYPE.CURSE,
+            power: 0,
+            cost: 0,
+            keywords: [CARD_KEYWORD.UNPLAYABLE],
+            effectType: CARD_EFFECT_TYPE.CONDITIONAL,
+            selfDamage: 1,
+        });
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [hemorrhage],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onEndTurn();
+
+        expect(scene.playerState.health).toBe(19);
+        expect(scene.playerStatusEffects.strength).toBe(1);
+        expect(scene.battleLogLines).toContain('Hemorrhage deals 1 self-damage in hand');
     });
 
     it('executes the revealed defend intent instead of choosing a random attack', () => {
@@ -1736,6 +2075,90 @@ describe('BattleScene popup feedback', () => {
         );
         expect(scene.appendBattleLog).toHaveBeenCalledWith('Strike: strike');
         expect(fallbackText.setAlpha).toHaveBeenCalledWith(0.78);
+    });
+
+    it('uses current-enemy wording for Shockwave action feedback', () => {
+        const fallbackText = createFallbackText();
+        const scene = new BattleScene() as unknown as {
+            damagePopupController: { showBatch: ReturnType<typeof vi.fn> };
+            add: { text: ReturnType<typeof vi.fn> };
+            effectText?: { destroy: ReturnType<typeof vi.fn> };
+            appendBattleLog: ReturnType<typeof vi.fn>;
+            formatPlayerActionLog: (
+                card: ReturnType<typeof createCard>,
+                effect: {
+                    damageDealt: number;
+                    damageBlocked: number;
+                    blockGained: number;
+                    fled: boolean;
+                    cardsDrawn: number;
+                    energyGained: number;
+                    healthRestored: number;
+                },
+            ) => string;
+        };
+        scene.damagePopupController = { showBatch: vi.fn() };
+        scene.add = {
+            text: vi.fn(() => fallbackText),
+        };
+        scene.appendBattleLog = vi.fn();
+        scene.formatPlayerActionLog = (
+            BattleScene.prototype as unknown as {
+                formatPlayerActionLog: (
+                    card: ReturnType<typeof createCard>,
+                    effect: {
+                        damageDealt: number;
+                        damageBlocked: number;
+                        blockGained: number;
+                        fled: boolean;
+                        cardsDrawn: number;
+                        energyGained: number;
+                        healthRestored: number;
+                    },
+                ) => string;
+            }
+        ).formatPlayerActionLog;
+
+        (BattleScene.prototype as unknown as {
+            showEffectText: (
+                card: ReturnType<typeof createCard>,
+                effect: {
+                    damageDealt: number;
+                    damageBlocked: number;
+                    blockGained: number;
+                    fled: boolean;
+                    cardsDrawn: number;
+                    energyGained: number;
+                    healthRestored: number;
+                },
+            ) => void;
+        }).showEffectText.call(
+            scene,
+            createCard({
+                name: 'Shockwave',
+                type: CARD_TYPE.ATTACK,
+                power: 8,
+                cost: 2,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            }),
+            {
+                damageDealt: 8,
+                damageBlocked: 0,
+                blockGained: 0,
+                fled: false,
+                cardsDrawn: 0,
+                energyGained: 0,
+                healthRestored: 0,
+            },
+        );
+
+        expect(scene.add.text).toHaveBeenCalledWith(
+            292,
+            188,
+            'Shockwave: strike current enemy',
+            expect.objectContaining({ fontSize: '14px' }),
+        );
+        expect(scene.appendBattleLog).toHaveBeenCalledWith('Shockwave: strike current enemy');
     });
 
     it('clips battle history text to the activity panel bounds', () => {

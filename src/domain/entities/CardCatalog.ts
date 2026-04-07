@@ -136,6 +136,7 @@ export const ARCHETYPE_CARD_IDS = {
     ],
     [CARD_ARCHETYPE.BLOOD_OATH]: [
         CARD_CATALOG_ID.BLOOD_PRICE,
+        CARD_CATALOG_ID.ADRENALINE_RUSH,
         CARD_CATALOG_ID.CRIMSON_PACT,
         CARD_CATALOG_ID.BLOOD_SHIELD,
         CARD_CATALOG_ID.DEATH_WISH,
@@ -187,10 +188,11 @@ export const DROPPABLE_CARD_IDS: readonly CardCatalogId[] = CARD_TEMPLATES
     .map((template) => template.catalogId);
 
 export interface CardConditionContext {
+    readonly playerMaxHealth?: number;
     readonly turnDamageTaken?: number;
 }
 
-export function checkCardCondition(
+function isCardConditionMet(
     card: Card,
     playerHealth: number,
     context: CardConditionContext = {},
@@ -203,6 +205,15 @@ export function checkCardCondition(
         return playerHealth <= card.condition.value;
     }
 
+    if (card.condition.type === 'HP_PERCENT_THRESHOLD') {
+        const playerMaxHealth = context.playerMaxHealth ?? playerHealth;
+        if (playerMaxHealth <= 0) {
+            return false;
+        }
+
+        return (playerHealth / playerMaxHealth) * 100 <= card.condition.value;
+    }
+
     if (card.condition.type === 'TURN_DAMAGE_TAKEN_AT_LEAST') {
         return (context.turnDamageTaken ?? 0) >= card.condition.value;
     }
@@ -212,4 +223,31 @@ export function checkCardCondition(
     }
 
     return true;
+}
+
+export function checkCardCondition(
+    card: Card,
+    playerHealth: number,
+    context: CardConditionContext = {},
+): boolean {
+    if (card.effectPayload?.costWhenConditionMet !== undefined) {
+        return true;
+    }
+
+    return isCardConditionMet(card, playerHealth, context);
+}
+
+export function resolveCardCost(
+    card: Card,
+    playerHealth: number,
+    context: CardConditionContext = {},
+): number {
+    const conditionalCost = card.effectPayload?.costWhenConditionMet;
+    if (conditionalCost === undefined || !card.condition) {
+        return card.cost;
+    }
+
+    return isCardConditionMet(card, playerHealth, context)
+        ? conditionalCost
+        : card.cost;
 }

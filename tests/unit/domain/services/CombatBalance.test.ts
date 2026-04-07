@@ -11,7 +11,7 @@ import {
 
 describe('CombatBalance', () => {
     it('defines the expanded card catalog in a shared balance table', () => {
-        expect(Object.keys(CARD_BALANCE_TABLE)).toHaveLength(35);
+        expect(Object.keys(CARD_BALANCE_TABLE)).toHaveLength(36);
         expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.STRIKE]).toMatchObject({
             name: 'Strike',
             cost: 1,
@@ -29,6 +29,15 @@ describe('CombatBalance', () => {
             cost: 3,
             effectPayload: {
                 buff: { type: 'BLOCK_PERSIST', value: 1, target: 'SELF' },
+            },
+        });
+        expect(CARD_BALANCE_TABLE[CARD_CATALOG_ID.ADRENALINE_RUSH]).toMatchObject({
+            cost: 1,
+            rarity: 'RARE',
+            effectPayload: {
+                drawCount: 3,
+                selfDamage: 5,
+                energyChange: 3,
             },
         });
     });

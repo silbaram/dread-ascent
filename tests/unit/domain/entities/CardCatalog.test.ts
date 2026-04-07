@@ -10,6 +10,7 @@ import {
     createCardFromCatalog,
     createStarterDeckCards,
     getCardTemplate,
+    resolveCardCost,
 } from '../../../../src/domain/entities/CardCatalog';
 import {
     CARD_ARCHETYPE,
@@ -25,8 +26,8 @@ describe('CardCatalog', () => {
     });
 
     describe('expanded catalog definitions', () => {
-        it('defines the 35-card expansion catalog', () => {
-            expect(CARD_TEMPLATES).toHaveLength(35);
+        it('defines the 36-card expansion catalog', () => {
+            expect(CARD_TEMPLATES).toHaveLength(36);
         });
 
         it('keeps starter cards intact', () => {
@@ -116,6 +117,7 @@ describe('CardCatalog', () => {
 
         it('groups cards by archetype and rarity', () => {
             expect(ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.BLOOD_OATH]).toContain(CARD_CATALOG_ID.BLOOD_PRICE);
+            expect(ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.BLOOD_OATH]).toContain(CARD_CATALOG_ID.ADRENALINE_RUSH);
             expect(ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.SHADOW_ARTS]).toContain(CARD_CATALOG_ID.MIASMA);
             expect(ARCHETYPE_CARD_IDS[CARD_ARCHETYPE.IRON_WILL]).toContain(CARD_CATALOG_ID.BARRICADE);
             expect(RARITY_CARD_IDS[CARD_RARITY.UNCOMMON]).toContain(CARD_CATALOG_ID.CRIMSON_PACT);
@@ -133,11 +135,22 @@ describe('CardCatalog', () => {
             expect(checkCardCondition(createCardFromCatalog(CARD_CATALOG_ID.STRIKE), 100)).toBe(true);
         });
 
-        it('checks the Last Stand HP threshold condition', () => {
-            const card = createCardFromCatalog(CARD_CATALOG_ID.LAST_STAND);
+        it('keeps cost-conditional payoff cards playable', () => {
+            const bloodrush = createCardFromCatalog(CARD_CATALOG_ID.BLOODRUSH);
+            const lastStand = createCardFromCatalog(CARD_CATALOG_ID.LAST_STAND);
 
-            expect(checkCardCondition(card, 5)).toBe(true);
-            expect(checkCardCondition(card, 6)).toBe(false);
+            expect(checkCardCondition(bloodrush, 80, { playerMaxHealth: 100 })).toBe(true);
+            expect(checkCardCondition(lastStand, 40, { playerMaxHealth: 100 })).toBe(true);
+        });
+
+        it('resolves HP-percent cost discounts with max-health context', () => {
+            const bloodrush = createCardFromCatalog(CARD_CATALOG_ID.BLOODRUSH);
+            const lastStand = createCardFromCatalog(CARD_CATALOG_ID.LAST_STAND);
+
+            expect(resolveCardCost(bloodrush, 60, { playerMaxHealth: 100 })).toBe(2);
+            expect(resolveCardCost(bloodrush, 50, { playerMaxHealth: 100 })).toBe(0);
+            expect(resolveCardCost(lastStand, 30, { playerMaxHealth: 100 })).toBe(3);
+            expect(resolveCardCost(lastStand, 25, { playerMaxHealth: 100 })).toBe(0);
         });
 
         it('checks turn-damage conditions with the combat context', () => {

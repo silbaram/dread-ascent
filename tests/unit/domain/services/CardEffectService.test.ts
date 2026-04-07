@@ -72,6 +72,7 @@ describe('CardEffectService', () => {
             expect(result.userState.health).toBe(96);
             expect(result.selfDamageTaken).toBe(4);
             expect(result.cardsDrawn).toBe(2);
+            expect(result.energyGained).toBe(0);
         });
 
         it('preserves attached status effects on damage cards', () => {
@@ -183,20 +184,61 @@ describe('CardEffectService', () => {
             expect(result.healthRestored).toBe(6);
         });
 
+        it('reports energy gain for draw-based resource cards', () => {
+            const card = createCard({
+                name: 'Adrenaline Rush',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                effectType: CARD_EFFECT_TYPE.DRAW,
+                effectPayload: {
+                    drawCount: 3,
+                    selfDamage: 5,
+                    energyChange: 3,
+                },
+            });
+
+            const result = service.applyEffect(card, makePlayer(), makeEnemy());
+
+            expect(result.cardsDrawn).toBe(3);
+            expect(result.energyGained).toBe(3);
+            expect(result.selfDamageTaken).toBe(5);
+            expect(result.userState.health).toBe(95);
+        });
+
         it('applies repeated hits through target block', () => {
             const card = createCard({
-                name: 'Flurry',
+                name: 'Reckless Fury',
                 type: CARD_TYPE.ATTACK,
                 power: 3,
                 effectType: CARD_EFFECT_TYPE.MULTI_HIT,
-                effectPayload: { hitCount: 3 },
+                effectPayload: { hitCount: 4, selfDamage: 2 },
             });
 
             const result = service.applyEffect(card, makePlayer(), makeEnemy({ block: 4 }));
 
             expect(result.damageBlocked).toBe(4);
+            expect(result.damageDealt).toBe(8);
+            expect(result.targetState.health).toBe(42);
+            expect(result.selfDamageTaken).toBe(2);
+            expect(result.userState.health).toBe(98);
+        });
+
+        it('stops multi-hit resolution once the target is defeated', () => {
+            const card = createCard({
+                name: 'Reckless Fury',
+                type: CARD_TYPE.ATTACK,
+                power: 3,
+                effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                effectPayload: { hitCount: 4, selfDamage: 2 },
+            });
+
+            const result = service.applyEffect(card, makePlayer(), makeEnemy({ health: 5, maxHealth: 5, block: 0 }));
+
             expect(result.damageDealt).toBe(5);
-            expect(result.targetState.health).toBe(45);
+            expect(result.hitsResolved).toBe(2);
+            expect(result.targetState.health).toBe(0);
+            expect(result.selfDamageTaken).toBe(2);
+            expect(result.userState.health).toBe(98);
         });
 
         it('combines damage and block in one result', () => {
@@ -257,7 +299,7 @@ describe('CardEffectService', () => {
                 power: 0,
                 effectType: CARD_EFFECT_TYPE.DAMAGE,
                 effectPayload: {
-                    scaling: { source: 'MISSING_HEALTH', multiplier: 1 },
+                    scaling: { source: 'MISSING_HEALTH', multiplier: 1.5 },
                 },
             });
 
@@ -267,8 +309,8 @@ describe('CardEffectService', () => {
                 makeEnemy(),
             );
 
-            expect(result.damageDealt).toBe(17);
-            expect(result.targetState.health).toBe(33);
+            expect(result.damageDealt).toBe(25);
+            expect(result.targetState.health).toBe(25);
         });
 
         it('scales user-block attacks and target-debuff attacks from the combat context', () => {

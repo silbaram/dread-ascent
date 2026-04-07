@@ -75,6 +75,7 @@ interface NormalizedInventoryItemResult {
 
 const CARD_CONDITION_TYPES = [
     'HP_THRESHOLD',
+    'HP_PERCENT_THRESHOLD',
     'MISSING_HEALTH_DAMAGE',
     'TURN_DAMAGE_TAKEN_AT_LEAST',
 ] as const satisfies readonly CardCondition['type'][];
@@ -787,6 +788,8 @@ export class RunPersistenceService {
         const discardCount = this.normalizeStat(candidate.discardCount);
         const selfDamage = this.normalizeStat(candidate.selfDamage);
         const energyChange = this.normalizeOptionalStat(candidate.energyChange);
+        const costWhenConditionMet = this.normalizeOptionalStat(candidate.costWhenConditionMet);
+        const healOnKillPercent = this.normalizeOptionalStat(candidate.healOnKillPercent);
         const scaling = candidate.scaling && typeof candidate.scaling === 'object'
             ? {
                 source: this.normalizeCardScalingSource(candidate.scaling.source),
@@ -803,6 +806,8 @@ export class RunPersistenceService {
             || discardCount !== undefined
             || selfDamage !== undefined
             || energyChange !== undefined
+            || costWhenConditionMet !== undefined
+            || healOnKillPercent !== undefined
             || (scaling?.source !== undefined)
             || (buff?.type !== undefined && buff.value !== undefined)
             || (statusEffects !== undefined && statusEffects.length > 0);
@@ -819,6 +824,8 @@ export class RunPersistenceService {
             discardCount,
             selfDamage,
             energyChange,
+            costWhenConditionMet,
+            healOnKillPercent,
             scaling: scaling?.source
                 ? {
                     source: scaling.source,

@@ -12,7 +12,7 @@ import {
     CARD_TYPE,
     createCard,
 } from '../domain/entities/Card';
-import { checkCardCondition } from '../domain/entities/CardCatalog';
+import { checkCardCondition, resolveCardCost } from '../domain/entities/CardCatalog';
 import { Enemy, type Enemy as EnemyEntity } from '../domain/entities/Enemy';
 import { DEFAULT_MOVEMENT_SPEED } from '../domain/entities/CombatStats';
 import type { InventoryItem } from '../domain/entities/Item';
@@ -36,7 +36,13 @@ import {
 } from '../domain/services/EquipmentEffectService';
 import type { ItemService } from '../domain/services/ItemService';
 import type { DeckService } from '../domain/services/DeckService';
-import { DrawCycleService, DEFAULT_HAND_SIZE, type DrawCycleState } from '../domain/services/DrawCycleService';
+import {
+    DrawCycleService,
+    DEFAULT_HAND_SIZE,
+    HAND_END_TURN_EFFECT_TYPE,
+    type DrawCycleState,
+    type HandEndTurnEffect,
+} from '../domain/services/DrawCycleService';
 import {
     CardEffectService,
     type CardEffectResult,
@@ -851,11 +857,13 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private showCardDetail(card: Card): void {
+        const resolvedCost = this.resolveCardDetailCost(card);
         this.cardDetailTitleText?.setText(card.name);
         this.cardDetailBodyText?.setText([
-            `${this.getCardTypeLabel(card)} · ${this.getCardRarityLabel(card)} · ${this.getCardArchetypeLabel(card)}`,
+            `${this.getCardTypeLabel(card)} · ${this.getCardRarityLabel(card)} · ${this.getCardArchetypeLabel(card)} · Cost ${resolvedCost}`,
             `${this.describeCardEffect(card)} ${card.keywords.length > 0 ? `Keywords: ${card.keywords.join(', ')}` : 'Keywords: none'}`,
-        ].join('\n'));
+            this.describeCardCondition(card),
+        ].filter(Boolean).join('\n'));
     }
 
     private clearCardDetail(): void {
@@ -899,6 +907,7 @@ export class BattleScene extends Phaser.Scene {
         blockGained: number;
         fled: boolean;
         cardsDrawn: number;
+        energyGained: number;
         healthRestored: number;
         buffApplied?: CardEffectResult['buffApplied'];
         statusApplied?: CardStatusEffect;
@@ -908,6 +917,9 @@ export class BattleScene extends Phaser.Scene {
         }
 
         if (effect.damageDealt > 0 || (effect.damageBlocked ?? 0) > 0) {
+            if (card.name === 'Shockwave') {
+                return `${card.name}: strike current enemy`;
+            }
             return `${card.name}: strike`;
         }
 
@@ -928,7 +940,13 @@ export class BattleScene extends Phaser.Scene {
         }
 
         if (effect.cardsDrawn > 0) {
-            return `${card.name}: draw ${effect.cardsDrawn}`;
+            return effect.energyGained > 0
+                ? `${card.name}: draw ${effect.cardsDrawn}, gain ${effect.energyGained} energy`
+                : `${card.name}: draw ${effect.cardsDrawn}`;
+        }
+
+        if (effect.energyGained > 0) {
+            return `${card.name}: gain ${effect.energyGained} energy`;
         }
 
         return `${card.name} used`;
@@ -1021,7 +1039,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private getEffectivePlayerCard(card: Card): Card {
-        return this.resolvePlayerCardModifier(card).card;
+        return this.applyRuntimeCardAdjustments(this.resolvePlayerCardModifier(card).card);
     }
 
     private resolvePlayerCardModifier(card: Card): {
@@ -1060,6 +1078,22 @@ export class BattleScene extends Phaser.Scene {
                 : modifier.card,
             extraEnemyStatusEffects: modifier.extraEnemyStatusEffects,
             consumesNextAttackBonus: modifier.consumesNextAttackBonus,
+        };
+    }
+
+    private applyRuntimeCardAdjustments(card: Card): Card {
+        const resolvedCost = resolveCardCost(card, this.playerState.health, {
+            playerMaxHealth: this.playerState.maxHealth,
+            turnDamageTaken: this.playerDamageTakenWindow,
+        });
+
+        if (resolvedCost === card.cost) {
+            return card;
+        }
+
+        return {
+            ...card,
+            cost: resolvedCost,
         };
     }
 
@@ -1227,6 +1261,7 @@ export class BattleScene extends Phaser.Scene {
 
         return this.energyService.canAfford(this.energyState, card.cost)
             && checkCardCondition(card, this.playerState.health, {
+                playerMaxHealth: this.playerState.maxHealth,
                 turnDamageTaken: this.playerDamageTakenWindow,
             });
     }
@@ -1351,7 +1386,17 @@ export class BattleScene extends Phaser.Scene {
     private describeCardEffect(card: Card): string {
         switch (card.effectType) {
             case CARD_EFFECT_TYPE.DAMAGE:
-                return `Deal ${card.power} damage.`;
+                return [
+                    card.name === 'Shockwave'
+                        ? `Deal ${card.power} damage to the current enemy.`
+                        : `Deal ${card.power} damage.`,
+                    card.effectPayload?.costWhenConditionMet !== undefined && card.condition?.type === 'HP_PERCENT_THRESHOLD'
+                        ? `Costs ${card.effectPayload.costWhenConditionMet} at ${card.condition.value}% HP or lower.`
+                        : undefined,
+                    (card.effectPayload?.healOnKillPercent ?? 0) > 0
+                        ? `Restore ${card.effectPayload?.healOnKillPercent ?? 0}% max health on kill.`
+                        : undefined,
+                ].filter(Boolean).join(' ');
             case CARD_EFFECT_TYPE.BLOCK:
                 return `Gain ${card.secondaryPower ?? card.power} block.`;
             case CARD_EFFECT_TYPE.STATUS_EFFECT:
@@ -1359,11 +1404,21 @@ export class BattleScene extends Phaser.Scene {
             case CARD_EFFECT_TYPE.FLEE:
                 return 'Escape the battle.';
             case CARD_EFFECT_TYPE.DRAW:
-                return `Draw ${card.drawCount ?? card.effectPayload?.drawCount ?? 0} card(s).`;
+                return [
+                    `Draw ${card.drawCount ?? card.effectPayload?.drawCount ?? 0} card(s).`,
+                    (card.effectPayload?.energyChange ?? 0) > 0
+                        ? `Gain ${card.effectPayload?.energyChange ?? 0} energy.`
+                        : undefined,
+                ].filter(Boolean).join(' ');
             case CARD_EFFECT_TYPE.HEAL:
                 return `Restore ${card.healAmount ?? card.effectPayload?.healAmount ?? 0} health.`;
             case CARD_EFFECT_TYPE.MULTI_HIT:
-                return `Hit ${card.hitCount ?? card.effectPayload?.hitCount ?? 1} time(s) for ${card.power}.`;
+                return [
+                    `Hit ${card.hitCount ?? card.effectPayload?.hitCount ?? 1} time(s) for ${card.power}.`,
+                    (card.selfDamage ?? card.effectPayload?.selfDamage ?? 0) > 0
+                        ? `Lose ${card.selfDamage ?? card.effectPayload?.selfDamage ?? 0} health.`
+                        : undefined,
+                ].filter(Boolean).join(' ');
             case CARD_EFFECT_TYPE.DAMAGE_BLOCK:
                 return `Deal ${card.power} and gain ${card.secondaryPower ?? card.effectPayload?.blockAmount ?? 0} block.`;
             case CARD_EFFECT_TYPE.BUFF:
@@ -1374,6 +1429,66 @@ export class BattleScene extends Phaser.Scene {
                 return 'Conditional payoff card.';
             default:
                 return 'Resolve card effect.';
+        }
+    }
+
+    private resolveCardDetailCost(card: Card): number {
+        if (card.effectPayload?.costWhenConditionMet === undefined || !card.condition) {
+            return card.cost;
+        }
+
+        if (!this.playerState) {
+            return card.cost;
+        }
+
+        return resolveCardCost(card, this.playerState.health, {
+            playerMaxHealth: this.playerState.maxHealth,
+            turnDamageTaken: this.playerDamageTakenWindow,
+        });
+    }
+
+    private describeCardCondition(card: Card): string | undefined {
+        if (!card.condition) {
+            return undefined;
+        }
+
+        const playerHealth = this.playerState?.health;
+        const playerMaxHealth = this.playerState?.maxHealth;
+
+        switch (card.condition.type) {
+            case 'HP_THRESHOLD': {
+                if (playerHealth === undefined) {
+                    return `Condition: HP ${card.condition.value} or lower.`;
+                }
+
+                return playerHealth <= card.condition.value
+                    ? `Condition active: HP ${playerHealth} is at or below ${card.condition.value}.`
+                    : `Condition unmet: HP ${playerHealth} is above ${card.condition.value}.`;
+            }
+            case 'HP_PERCENT_THRESHOLD': {
+                if (playerHealth === undefined || playerMaxHealth === undefined || playerMaxHealth <= 0) {
+                    return `Condition: HP ${card.condition.value}% or lower.`;
+                }
+
+                const currentPercent = (playerHealth / playerMaxHealth) * 100;
+                const normalizedPercent = Number.isInteger(currentPercent)
+                    ? `${currentPercent}`
+                    : currentPercent.toFixed(1);
+
+                return currentPercent <= card.condition.value
+                    ? `Condition active: HP ${normalizedPercent}% is at or below ${card.condition.value}%.`
+                    : `Condition unmet: HP ${normalizedPercent}% is above ${card.condition.value}%.`;
+            }
+            case 'TURN_DAMAGE_TAKEN_AT_LEAST': {
+                const turnDamageTaken = this.playerDamageTakenWindow ?? 0;
+                return turnDamageTaken >= card.condition.value
+                    ? `Condition active: took ${turnDamageTaken} damage this turn.`
+                    : `Condition unmet: took ${turnDamageTaken} damage this turn, need ${card.condition.value}.`;
+            }
+            case 'MISSING_HEALTH_DAMAGE':
+                return 'Condition: scales with missing health.';
+            default:
+                return undefined;
         }
     }
 
@@ -1536,7 +1651,7 @@ export class BattleScene extends Phaser.Scene {
         const baseCard = this.drawCycleState.hand[handIndex];
         if (!baseCard) return;
         const modifier = this.resolvePlayerCardModifier(baseCard);
-        const card = modifier.card;
+        const card = this.applyRuntimeCardAdjustments(modifier.card);
 
         if (!this.canPlayCard(card)) {
             return;
@@ -1563,12 +1678,19 @@ export class BattleScene extends Phaser.Scene {
         );
         this.playerState = effectResult.userState;
         this.enemyState = effectResult.targetState;
+        if (effectResult.energyGained > 0) {
+            this.energyState = {
+                ...this.energyState,
+                current: this.energyState.current + effectResult.energyGained,
+            };
+        }
         this.playerDamageTakenWindow += effectResult.selfDamageTaken;
 
         this.applyPlayerCardStatusEffects(effectResult);
         this.applyPlayerCardBuff(card, effectResult);
         this.trackActivePower(card);
         this.resolveSelfDamageStrengthTriggers('player', effectResult.selfDamageTaken);
+        this.resolveHealthLossStrengthTriggers('enemy', effectResult.damageDealt);
         if (modifier.consumesNextAttackBonus && this.queuedAttackPowerBonus > 0) {
             this.queuedAttackPowerBonus = 0;
         }
@@ -1602,6 +1724,11 @@ export class BattleScene extends Phaser.Scene {
             this.clearEffectText();
             this.updateAllDisplays();
 
+            if (this.playerState.health <= 0) {
+                this.showBattleEnd('player-lose');
+                return;
+            }
+
             // 전투 이탈 체크
             if (effectResult.fled) {
                 this.showBattleEnd('player-win', 'escape');
@@ -1610,13 +1737,14 @@ export class BattleScene extends Phaser.Scene {
 
             // 적 사망 체크
             if (this.enemyState.health <= 0) {
+                this.applyCardKillReward(card);
                 this.applyKillRewards();
                 this.showBattleEnd('player-win');
                 return;
             }
 
             // 에너지 0 자동 턴 종료
-            if (spendResult.autoEndTurn) {
+            if (spendResult.autoEndTurn && this.energyState.current === 0) {
                 this.onEndTurn();
                 return;
             }
@@ -1632,7 +1760,9 @@ export class BattleScene extends Phaser.Scene {
         this.pendingNextTurnDrawBonus = this.calculateDeferredDrawBonus();
 
         // 손패 정리 (Retain 카드 유지, 나머지 버림패)
-        this.drawCycleState = this.drawCycleService.endTurn(this.drawCycleState);
+        const turnEndResult = this.drawCycleService.endTurn(this.drawCycleState);
+        this.drawCycleState = turnEndResult.state;
+        this.applyPlayerHandEndTurnEffects(turnEndResult.effects);
         this.resolveTurnEndStatusEffects('player');
         this.playerDamageTakenWindow = 0;
         this.clearCardSprites();
@@ -1701,6 +1831,7 @@ export class BattleScene extends Phaser.Scene {
         this.applyEnemyCardStatusEffects(effectResult);
         this.applyEnemyCardBuff(enemyCard, effectResult);
         this.resolveSelfDamageStrengthTriggers('enemy', effectResult.selfDamageTaken);
+        this.resolveHealthLossStrengthTriggers('player', effectResult.damageDealt);
         this.handlePlayerHealthLost(effectResult.damageDealt);
         this.applyReactiveDefenseEffects(effectResult.damageDealt);
 
@@ -1742,6 +1873,62 @@ export class BattleScene extends Phaser.Scene {
 
         // 다음 플레이어 턴
         this.startPlayerTurn();
+    }
+
+    private applyPlayerHandEndTurnEffects(effects: readonly HandEndTurnEffect[]): void {
+        for (const effect of effects) {
+            switch (effect.type) {
+                case HAND_END_TURN_EFFECT_TYPE.ETHEREAL_EXHAUSTED:
+                    this.appendBattleLog(`${effect.cardName} vanishes at turn end`);
+                    break;
+                case HAND_END_TURN_EFFECT_TYPE.HELD_CURSE_SELF_DAMAGE:
+                    this.applyHeldCurseSelfDamage(effect);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    private applyHeldCurseSelfDamage(effect: HandEndTurnEffect): void {
+        const damage = effect.value ?? 0;
+        if (damage <= 0) {
+            return;
+        }
+
+        this.playerState = {
+            ...this.playerState,
+            health: Math.max(0, this.playerState.health - damage),
+        };
+        this.resolveHealthLossStrengthTriggers('player', damage);
+        this.handlePlayerHealthLost(damage);
+        this.showPopupBatch('player-hp', [{ type: 'damage', value: damage }]);
+        this.appendBattleLog(`${effect.cardName} deals ${damage} self-damage in hand`);
+    }
+
+    private applyCardKillReward(card: Card): void {
+        const healOnKillPercent = card.effectPayload?.healOnKillPercent ?? 0;
+        if (healOnKillPercent <= 0) {
+            return;
+        }
+
+        const healAmount = Math.max(0, Math.floor(this.playerState.maxHealth * (healOnKillPercent / 100)));
+        if (healAmount <= 0) {
+            return;
+        }
+
+        const nextHealth = Math.min(this.playerState.maxHealth, this.playerState.health + healAmount);
+        const actualHealing = nextHealth - this.playerState.health;
+        if (actualHealing <= 0) {
+            return;
+        }
+
+        this.playerState = {
+            ...this.playerState,
+            health: nextHealth,
+        };
+        this.showPopupBatch('player-hp', [{ type: 'heal', value: actualHealing }]);
+        this.appendBattleLog(`${card.name} restores ${actualHealing} HP on kill`);
     }
 
     private applyPlayerCardStatusEffects(effectResult: CardEffectResult): void {
@@ -2008,12 +2195,14 @@ export class BattleScene extends Phaser.Scene {
         blockGained: number;
         fled: boolean;
         cardsDrawn: number;
+        energyGained: number;
         healthRestored: number;
         buffApplied?: CardEffectResult['buffApplied'];
         statusApplied?: CardStatusEffect;
     }): void {
         this.clearEffectText();
-        this.appendBattleLog(this.formatPlayerActionLog(card, effect));
+        const actionLog = this.formatPlayerActionLog(card, effect);
+        this.appendBattleLog(actionLog);
 
         this.showPopupBatch('enemy-hp', [
             ...(effect.damageBlocked && effect.damageBlocked > 0
@@ -2028,12 +2217,12 @@ export class BattleScene extends Phaser.Scene {
             : []);
 
         if (effect.fled) {
-            this.createFallbackEffectText(`${card.name}: retreat`, '#66ffaa');
+            this.createFallbackEffectText(actionLog, '#66ffaa');
             return;
         }
 
         if (effect.damageDealt > 0 || (effect.damageBlocked ?? 0) > 0) {
-            this.createFallbackEffectText(`${card.name}: strike`, '#ff8f8f');
+            this.createFallbackEffectText(actionLog, '#ff8f8f');
             return;
         }
 
@@ -2064,7 +2253,17 @@ export class BattleScene extends Phaser.Scene {
         }
 
         if (effect.cardsDrawn > 0) {
-            this.createFallbackEffectText(`${card.name}: draw ${effect.cardsDrawn}`, '#8cd5ff');
+            this.createFallbackEffectText(
+                effect.energyGained > 0
+                    ? `${card.name}: draw ${effect.cardsDrawn}, +${effect.energyGained} energy`
+                    : `${card.name}: draw ${effect.cardsDrawn}`,
+                '#8cd5ff',
+            );
+            return;
+        }
+
+        if (effect.energyGained > 0) {
+            this.createFallbackEffectText(`${card.name}: +${effect.energyGained} energy`, '#8cd5ff');
             return;
         }
 

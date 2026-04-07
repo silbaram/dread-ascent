@@ -19,6 +19,7 @@ export interface CardEffectResult {
     readonly blockGained: number;
     readonly fled: boolean;
     readonly cardsDrawn: number;
+    readonly energyGained: number;
     readonly healthRestored: number;
     readonly healingGained: number;
     readonly discardCount: number;
@@ -102,6 +103,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: false,
             cardsDrawn: 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
@@ -131,6 +133,7 @@ export class CardEffectService {
             blockGained: blockAmount,
             fled: false,
             cardsDrawn,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
@@ -156,6 +159,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: false,
             cardsDrawn: card.drawCount ?? card.effectPayload?.drawCount ?? 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
@@ -180,6 +184,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: true,
             cardsDrawn: 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
@@ -198,6 +203,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: false,
             cardsDrawn: card.drawCount ?? card.effectPayload?.drawCount ?? 0,
+            energyGained: card.effectPayload?.energyChange ?? 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
@@ -219,6 +225,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: false,
             cardsDrawn: 0,
+            energyGained: 0,
             healthRestored: actualHealing,
             healingGained: actualHealing,
             discardCount: 0,
@@ -235,34 +242,43 @@ export class CardEffectService {
     ): CardEffectResult {
         const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
         const resolvedPower = this.resolveDamagePower(card, user, context);
+        const selfDamage = card.selfDamage ?? card.effectPayload?.selfDamage ?? 0;
         let currentTarget = target;
         let damageDealt = 0;
         let damageBlocked = 0;
+        let hitsResolved = 0;
 
         for (let hitIndex = 0; hitIndex < hitCount; hitIndex += 1) {
             const damageResult = this.calculateDamageAfterBlock(resolvedPower, currentTarget.block);
+            const actualDamage = Math.min(currentTarget.health, damageResult.actualDamage);
             currentTarget = {
                 ...currentTarget,
-                health: Math.max(0, currentTarget.health - damageResult.actualDamage),
+                health: Math.max(0, currentTarget.health - actualDamage),
                 block: damageResult.remainingBlock,
             };
-            damageDealt += damageResult.actualDamage;
+            damageDealt += actualDamage;
             damageBlocked += damageResult.damageBlocked;
+            hitsResolved += 1;
+
+            if (currentTarget.health <= 0) {
+                break;
+            }
         }
 
         return {
             targetState: currentTarget,
-            userState: user,
+            userState: this.applySelfDamage(user, selfDamage),
             damageDealt,
             damageBlocked,
             blockGained: 0,
             fled: false,
             cardsDrawn: 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
-            selfDamageTaken: 0,
-            hitsResolved: hitCount,
+            selfDamageTaken: selfDamage,
+            hitsResolved,
         };
     }
 
@@ -290,6 +306,7 @@ export class CardEffectService {
             blockGained,
             fled: false,
             cardsDrawn: card.drawCount ?? card.effectPayload?.drawCount ?? 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
@@ -310,6 +327,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: false,
             cardsDrawn: card.drawCount ?? card.effectPayload?.drawCount ?? 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,
@@ -347,6 +365,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: false,
             cardsDrawn: card.drawCount ?? card.effectPayload?.drawCount ?? 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: card.discardCount ?? card.effectPayload?.discardCount ?? 1,
@@ -440,13 +459,13 @@ export class CardEffectService {
 
         switch (scaling.source) {
             case 'MISSING_HEALTH':
-                return Math.max(0, (user.maxHealth - user.health) * scaling.multiplier);
+                return Math.max(0, Math.floor((user.maxHealth - user.health) * scaling.multiplier));
             case 'USER_BLOCK':
-                return Math.max(0, user.block * scaling.multiplier);
+                return Math.max(0, Math.floor(user.block * scaling.multiplier));
             case 'TARGET_DEBUFF_COUNT':
-                return Math.max(0, this.countTargetDebuffs(context?.targetStatusEffects) * scaling.multiplier);
+                return Math.max(0, Math.floor(this.countTargetDebuffs(context?.targetStatusEffects) * scaling.multiplier));
             case 'TURN_DAMAGE_TAKEN':
-                return Math.max(0, (context?.turnDamageTaken ?? 0) * scaling.multiplier);
+                return Math.max(0, Math.floor((context?.turnDamageTaken ?? 0) * scaling.multiplier));
             default:
                 return card.power;
         }
@@ -504,6 +523,7 @@ export class CardEffectService {
             blockGained: 0,
             fled: false,
             cardsDrawn: 0,
+            energyGained: 0,
             healthRestored: 0,
             healingGained: 0,
             discardCount: 0,

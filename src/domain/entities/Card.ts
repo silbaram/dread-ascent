@@ -102,6 +102,8 @@ export interface CardEffectPayload {
     readonly discardCount?: number;
     readonly selfDamage?: number;
     readonly energyChange?: number;
+    readonly costWhenConditionMet?: number;
+    readonly healOnKillPercent?: number;
     readonly buff?: CardBuffEffect;
     readonly scaling?: CardScalingEffect;
     readonly statusEffects?: readonly CardStatusEffect[];
@@ -229,6 +231,9 @@ export function createCard(params: CreateCardParams): Card {
     const hitCount = params.hitCount ?? params.effectPayload?.hitCount;
     const discardCount = params.discardCount ?? params.effectPayload?.discardCount;
     const selfDamage = params.selfDamage ?? params.effectPayload?.selfDamage;
+    const energyChange = params.effectPayload?.energyChange;
+    const costWhenConditionMet = params.effectPayload?.costWhenConditionMet;
+    const healOnKillPercent = params.effectPayload?.healOnKillPercent;
     const secondaryPower = params.secondaryPower ?? params.effectPayload?.blockAmount;
     const normalizedEffectPayload = cloneEffectPayload(params.effectPayload) ?? {
         drawCount,
@@ -236,6 +241,9 @@ export function createCard(params: CreateCardParams): Card {
         hitCount,
         discardCount,
         selfDamage,
+        energyChange,
+        costWhenConditionMet,
+        healOnKillPercent,
         buff: normalizedBuff,
         statusEffects: normalizedStatusEffects,
     };

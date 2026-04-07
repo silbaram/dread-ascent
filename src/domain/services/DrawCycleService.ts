@@ -38,6 +38,26 @@ export interface DrawCycleZoneCounts {
     readonly total: number;
 }
 
+export const HAND_END_TURN_EFFECT_TYPE = {
+    ETHEREAL_EXHAUSTED: 'ETHEREAL_EXHAUSTED',
+    HELD_CURSE_SELF_DAMAGE: 'HELD_CURSE_SELF_DAMAGE',
+} as const;
+
+export type HandEndTurnEffectType =
+    (typeof HAND_END_TURN_EFFECT_TYPE)[keyof typeof HAND_END_TURN_EFFECT_TYPE];
+
+export interface HandEndTurnEffect {
+    readonly type: HandEndTurnEffectType;
+    readonly cardId: string;
+    readonly cardName: string;
+    readonly value?: number;
+}
+
+export interface DrawCycleEndTurnResult {
+    readonly state: DrawCycleState;
+    readonly effects: readonly HandEndTurnEffect[];
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -172,18 +192,45 @@ export class DrawCycleService {
 
     /**
      * 턴 종료 시 손패를 정리한다.
+     * - ETHEREAL 키워드가 있는 카드는 RETAIN보다 우선하여 소멸 영역으로 이동한다.
      * - Retain 키워드가 있는 카드는 손패에 유지한다.
+     * - 손패 저주 패널티처럼 전투 레이어가 적용해야 하는 후속 효과를 함께 반환한다.
      * - 그 외 카드는 버림패로 이동한다.
      */
-    endTurn(state: DrawCycleState): DrawCycleState {
+    endTurn(state: DrawCycleState): DrawCycleEndTurnResult {
         if (state.hand.length === 0) {
-            return state;
+            return {
+                state,
+                effects: [],
+            };
         }
 
         const retainedCards: Card[] = [];
         const discardedCards: Card[] = [];
+        const exhaustedCards: Card[] = [];
+        const effects: HandEndTurnEffect[] = [];
 
         for (const card of state.hand) {
+            const heldCurseDamage = card.selfDamage ?? card.effectPayload?.selfDamage ?? 0;
+            if (card.type === 'CURSE' && heldCurseDamage > 0) {
+                effects.push({
+                    type: HAND_END_TURN_EFFECT_TYPE.HELD_CURSE_SELF_DAMAGE,
+                    cardId: card.id,
+                    cardName: card.name,
+                    value: heldCurseDamage,
+                });
+            }
+
+            if (hasKeyword(card, CARD_KEYWORD.ETHEREAL)) {
+                exhaustedCards.push(card);
+                effects.push({
+                    type: HAND_END_TURN_EFFECT_TYPE.ETHEREAL_EXHAUSTED,
+                    cardId: card.id,
+                    cardName: card.name,
+                });
+                continue;
+            }
+
             if (hasKeyword(card, CARD_KEYWORD.RETAIN)) {
                 retainedCards.push(card);
             } else {
@@ -192,9 +239,13 @@ export class DrawCycleService {
         }
 
         return {
-            ...state,
-            hand: retainedCards,
-            discardPile: [...state.discardPile, ...discardedCards],
+            state: {
+                ...state,
+                hand: retainedCards,
+                discardPile: [...state.discardPile, ...discardedCards],
+                exhaustPile: [...state.exhaustPile, ...exhaustedCards],
+            },
+            effects,
         };
     }
 
