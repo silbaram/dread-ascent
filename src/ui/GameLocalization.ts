@@ -241,6 +241,7 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
         },
         enemies: {
             'ash-crawler': 'Ash Crawler',
+            'mire-broodling': 'Mire Broodling',
             'blade-raider': 'Blade Raider',
             'dread-sentinel': 'Dread Sentinel',
             'final-boss': 'Final Boss',
@@ -435,6 +436,7 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
         },
         enemies: {
             'ash-crawler': '잿더미 크롤러',
+            'mire-broodling': '수렁 브루들링',
             'blade-raider': '블레이드 레이더',
             'dread-sentinel': '드레드 센티널',
             'final-boss': '최종 보스',

@@ -312,6 +312,22 @@ describe('MainScene battle result handling', () => {
             'ash-crawler',
             false,
         );
+        const encounterCompanion = new Enemy(
+            'enemy-2:encounter:back-harasser:1',
+            'Ash Crawler',
+            { x: 2, y: 1 },
+            {
+                health: 18,
+                maxHealth: 18,
+                attack: 4,
+                defense: 1,
+                movementSpeed: 100,
+            },
+            0,
+            'normal',
+            'ash-crawler',
+            false,
+        );
         const setOnBattleEnd = vi.fn();
         const scene = {
             deckService: {},
@@ -323,6 +339,7 @@ describe('MainScene battle result handling', () => {
             pendingBattleStartEnergy: 2,
             floorDirector: {
                 getFloorSnapshot: vi.fn(() => ({ number: 4 })),
+                buildBattleEncounter: vi.fn(() => [enemy, encounterCompanion]),
             },
             getEnemyName: vi.fn(() => 'Ash Crawler'),
             handleBattleSceneResult: vi.fn(),
@@ -345,6 +362,7 @@ describe('MainScene battle result handling', () => {
         expect(scene.scene.launch).toHaveBeenCalledWith('BattleScene', expect.objectContaining({
             player,
             enemy,
+            encounterEnemies: [enemy, encounterCompanion],
             enemyName: 'Ash Crawler',
             floorNumber: 4,
             startEnergyBonus: 2,

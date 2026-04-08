@@ -88,6 +88,18 @@ export class FloorDirector {
         return this.enemyEntities.find((enemy) => enemy.id === enemyId);
     }
 
+    public buildBattleEncounter(leadEnemy: Enemy) {
+        if (!this.mapData || this.mapData.floorType === 'safe') {
+            return [leadEnemy];
+        }
+
+        return this.enemySpawner.buildBattleEncounter({
+            leadEnemy,
+            floorNumber: this.floorProgression.getSnapshot().number,
+            floorType: this.mapData.floorType,
+        });
+    }
+
     public getBossEnemy() {
         return this.enemyEntities.find((enemy) => enemy.isBoss());
     }

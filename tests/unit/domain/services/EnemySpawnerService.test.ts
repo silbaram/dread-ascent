@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Enemy } from '../../../../src/domain/entities/Enemy';
 import {
     DEFAULT_ELITE_CHANCE,
     EnemySpawnerService,
@@ -100,6 +101,7 @@ describe('EnemySpawnerService', () => {
         // Arrange
         const lowFloorService = new EnemySpawnerService(new SequenceRandomSource([0]), 1, 0);
         const midFloorService = new EnemySpawnerService(new SequenceRandomSource([0.9]), 1, 0);
+        const mireFloorService = new EnemySpawnerService(new SequenceRandomSource([0.1]), 1, 0);
         const highFloorService = new EnemySpawnerService(new SequenceRandomSource([0.9]), 1, 0);
         const request = {
             floorType: 'normal' as const,
@@ -117,6 +119,10 @@ describe('EnemySpawnerService', () => {
             floorNumber: 35,
             ...request,
         });
+        const [mireEnemy] = mireFloorService.spawn({
+            floorNumber: 55,
+            ...request,
+        });
         const [highEnemy] = highFloorService.spawn({
             floorNumber: 75,
             ...request,
@@ -125,7 +131,55 @@ describe('EnemySpawnerService', () => {
         // Assert
         expect(lowEnemy.archetypeId).toBe('ash-crawler');
         expect(midEnemy.archetypeId).toBe('blade-raider');
+        expect(mireEnemy.archetypeId).toBe('mire-broodling');
         expect(highEnemy.archetypeId).toBe('dread-sentinel');
+    });
+
+    it('keeps single-enemy spawns compatible while selecting archetypes from encounter compositions', () => {
+        const service = new EnemySpawnerService(new SequenceRandomSource([0.99, 0, 0]), 1, 0);
+
+        const [enemy] = service.spawn({
+            floorNumber: 75,
+            floorType: 'normal',
+            tiles: createTiles(8, 8, rooms),
+            rooms,
+            blockedPositions: [{ x: 1, y: 1 }],
+        });
+
+        expect(['Blade Raider', 'Dread Sentinel']).toContain(enemy.label);
+        expect(['blade-raider', 'dread-sentinel']).toContain(enemy.archetypeId);
+    });
+
+    it('expands a field enemy into a battle-only multi-enemy encounter roster', () => {
+        const service = new EnemySpawnerService(new SequenceRandomSource([0]), 1, 0);
+        const leadEnemy = new Enemy(
+            'enemy-1',
+            'Ash Crawler',
+            { x: 5, y: 1 },
+            {
+                health: 100,
+                maxHealth: 100,
+                attack: 10,
+                defense: 5,
+                movementSpeed: 100,
+            },
+            25,
+            'normal',
+            'ash-crawler',
+            false,
+        );
+
+        const encounter = service.buildBattleEncounter({
+            leadEnemy,
+            floorNumber: 10,
+            floorType: 'normal',
+        });
+
+        expect(encounter).toHaveLength(2);
+        expect(encounter[0]).toBe(leadEnemy);
+        expect(encounter[1]?.id).toBe('enemy-1:encounter:back-harasser:1');
+        expect(encounter[1]?.archetypeId).toBe('ash-crawler');
+        expect(encounter[1]?.experienceReward).toBe(0);
     });
 
     it('upgrades spawned enemies to elite variants when the elite roll succeeds', () => {

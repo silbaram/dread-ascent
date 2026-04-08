@@ -8,6 +8,7 @@ export const DREAD_RULE_ID = {
     BLOOD_MOON: 'blood-moon',
     PANIC_ROOM: 'panic-room',
     SUFFOCATING_FOG: 'suffocating-fog',
+    THIN_WALL: 'thin-wall',
 } as const;
 
 export type DreadRuleId = (typeof DREAD_RULE_ID)[keyof typeof DREAD_RULE_ID];
@@ -17,6 +18,7 @@ export interface DreadRuleEffects {
     readonly firstSelfDamageStrength?: number;
     readonly turnEndSelfDamagePerUnspentEnergy?: number;
     readonly poisonDoesNotDecay?: boolean;
+    readonly blockRetainRatio?: number;
 }
 
 export interface DreadRuleDefinition {
@@ -64,10 +66,20 @@ export const BATTLE_DREAD_RULES: Record<DreadRuleId, DreadRuleDefinition> = {
             poisonDoesNotDecay: true,
         },
     },
+    [DREAD_RULE_ID.THIN_WALL]: {
+        id: DREAD_RULE_ID.THIN_WALL,
+        name: 'Thin Wall',
+        summary: 'Retained Block is cut in half.',
+        description: '턴 경계에 남는 Block은 절반만 유지된다.',
+        effects: {
+            blockRetainRatio: 0.5,
+        },
+    },
 };
 
 const NORMAL_ARCHETYPE_RULE_MAP: Record<EnemyArchetypeId, DreadRuleId> = {
     'ash-crawler': DREAD_RULE_ID.BLOOD_MOON,
+    'mire-broodling': DREAD_RULE_ID.THIN_WALL,
     'blade-raider': DREAD_RULE_ID.PANIC_ROOM,
     'dread-sentinel': DREAD_RULE_ID.SUFFOCATING_FOG,
     'final-boss': DREAD_RULE_ID.BLACKOUT,

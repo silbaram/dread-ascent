@@ -219,6 +219,114 @@ describe('EnemyIntentService', () => {
         });
     });
 
+    it('recognizes charge cards as charge intent previews', () => {
+        const enemy = createEnemy();
+        const service = new EnemyIntentService(new FixedRandom(0));
+
+        const intent = service.decideNextIntent({
+            enemy,
+            enemyCardPool: [
+                createCard({
+                    id: 'enemy-charge-12',
+                    name: 'Enemy Charge 12',
+                    type: CARD_TYPE.ATTACK,
+                    power: 12,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+        });
+
+        expect(intent).toEqual({
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.CHARGE,
+            damage: 12,
+            label: 'Enemy Charge 12',
+            warning: 'Next turn burst',
+            sourceCardId: 'enemy-charge-12',
+        });
+    });
+
+    it('recognizes ambush cards as ambush intent previews', () => {
+        const enemy = createEnemy();
+        const service = new EnemyIntentService(new FixedRandom(0));
+
+        const intent = service.decideNextIntent({
+            enemy,
+            enemyCardPool: [
+                createCard({
+                    id: 'enemy-ambush-7',
+                    name: 'Enemy Ambush 7',
+                    type: CARD_TYPE.ATTACK,
+                    power: 7,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+        });
+
+        expect(intent).toEqual({
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.AMBUSH,
+            damage: 7,
+            label: 'Enemy Ambush 7',
+            warning: 'Hidden prep',
+            sourceCardId: 'enemy-ambush-7',
+        });
+    });
+
+    it('recognizes cleanse cards as cleanse intent previews', () => {
+        const enemy = createEnemy({ health: 20, maxHealth: 100 });
+        const service = new EnemyIntentService(new FixedRandom(0.5));
+
+        const intent = service.decideNextIntent({
+            enemy,
+            enemyCardPool: [
+                createCard({
+                    id: 'enemy-cleanse-shell',
+                    name: 'Enemy Cleanse Poison',
+                    type: CARD_TYPE.GUARD,
+                    power: 7,
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                }),
+            ],
+        });
+
+        expect(intent).toEqual({
+            type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.CLEANSE,
+            block: 7,
+            label: 'Enemy Cleanse Poison',
+            cleansedStatuses: ['Poison'],
+            sourceCardId: 'enemy-cleanse-shell',
+        });
+    });
+
+    it('recognizes curse cards as curse intent previews', () => {
+        const boss = createEnemy({ kind: 'boss' });
+        const service = new EnemyIntentService(new FixedRandom(0.8));
+
+        const intent = service.decideNextIntent({
+            enemy: boss,
+            enemyCardPool: [
+                createCard({
+                    id: 'enemy-dread-hex',
+                    name: 'Enemy Dread Hex',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                    effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+                }),
+            ],
+        });
+
+        expect(intent).toEqual({
+            type: ENEMY_INTENT_TYPE.BUFF,
+            pattern: ENEMY_INTENT_PATTERN.CURSE,
+            label: 'Enemy Dread Hex',
+            curseCardName: 'Hex',
+            curseCount: 1,
+            sourceCardId: 'enemy-dread-hex',
+        });
+    });
+
     it('clears stored intents when requested', () => {
         const enemy = createEnemy();
         const service = new EnemyIntentService(new FixedRandom(0));

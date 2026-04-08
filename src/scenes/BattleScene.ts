@@ -65,6 +65,7 @@ import {
 } from '../domain/services/DreadRuleService';
 import {
     STATUS_EFFECT_TYPE,
+    STATUS_EVENT_TYPE,
     StatusEffectService,
     type StatusApplyEvent,
     type StatusEffectApplication,
@@ -77,6 +78,18 @@ import {
     type DamagePopupAnchorId,
     type DamagePopupRequest,
 } from './effects/DamagePopup';
+import {
+    BattlePresentationFacade,
+    type BattlePresentationAction,
+} from './effects/BattlePresentationFacade';
+import {
+    BATTLE_EVENT_NAME,
+    LEGACY_BATTLE_EVENT_NAME,
+    createBattleEventBus,
+    type BattleActionResolvedPayload,
+    type BattleActionStatusDelta,
+    type BattleEventBus,
+} from './events/BattleEventBus.ts';
 import { BATTLE_SCENE_LAYOUT } from './battleSceneLayout';
 
 // ---------------------------------------------------------------------------
@@ -87,6 +100,7 @@ import { BATTLE_SCENE_LAYOUT } from './battleSceneLayout';
 export interface BattleSceneData {
     readonly player: Player;
     readonly enemy: EnemyEntity;
+    readonly encounterEnemies?: readonly EnemyEntity[];
     readonly deckService: DeckService;
     readonly cardBattleService: CardBattleService;
     readonly itemService: ItemService;
@@ -108,6 +122,7 @@ export interface BattleSceneResult {
     readonly enemyRemainingHealth: number;
     readonly nextBattleStartEnergyBonus: number;
     readonly enemy: EnemyEntity;
+    readonly enemies: readonly EnemyEntity[];
 }
 
 interface OngoingBattleBuffState {
@@ -121,6 +136,24 @@ interface HandLayoutMetrics {
     readonly startX: number;
     readonly stride: number;
     readonly scale: number;
+}
+
+interface QueuedPresentationSequence {
+    readonly actions: readonly BattlePresentationAction[];
+    readonly nextDelayMs: number;
+}
+
+interface EncounterEnemyState {
+    readonly enemy: EnemyEntity;
+    readonly state: CombatantState;
+    readonly statusEffects?: StatusEffectState;
+    readonly cardPool?: readonly Card[];
+    readonly intentQueue?: readonly EnemyIntent[];
+    readonly currentIntent?: EnemyIntent;
+    readonly ongoingBuffs?: OngoingBattleBuffState;
+    readonly attackBuff?: number;
+    readonly attackDebuff?: number;
+    readonly attackDebuffDuration?: number;
 }
 
 type PlayerBreakpointState = 'stable' | 'bloodied' | 'desperation';
@@ -152,6 +185,7 @@ const EFFECT_TEXT_Y = 188;
 const HP_LOW_THRESHOLD = 0.3;
 const CARD_PLAY_ANIM_MS = 300;
 const CARD_SELECTION_MOTION_MS = 220;
+const ACTION_QUEUE_STEP_MS = 90;
 const ENEMY_TURN_DELAY_MS = 800;
 const PANEL_IMPACT_MOTION_MS = 220;
 const PANEL_PULSE_MOTION_MS = 260;
@@ -264,6 +298,7 @@ export class BattleScene extends Phaser.Scene {
     private drawCycleState!: DrawCycleState;
     private playerState!: CombatantState;
     private enemyState!: CombatantState;
+    private encounterEnemyStates: EncounterEnemyState[] = [];
     private energyState!: EnergyState;
     private playerStatusEffects!: StatusEffectState;
     private enemyStatusEffects!: StatusEffectState;
@@ -296,6 +331,15 @@ export class BattleScene extends Phaser.Scene {
     private activeBreakpointReactionKeys = new Set<string>();
     private dreadRule?: DreadRuleDefinition;
     private dreadRuleSelfDamageTriggeredThisTurn = false;
+    private readonly battleEventBus: BattleEventBus = createBattleEventBus((name, payload) => {
+        const sceneEvents = (this as Phaser.Scene & {
+            events?: { emit?: (eventName: string, nextPayload: unknown) => void };
+        }).events;
+        sceneEvents?.emit?.(name, payload);
+    });
+    private battleId = 'battle:local';
+    private actionQueueIndex = 0;
+    private processedReactionActionKeys = new Set<string>();
 
     // UI elements
     private cardSprites: Phaser.GameObjects.Container[] = [];
@@ -322,10 +366,12 @@ export class BattleScene extends Phaser.Scene {
     private battleLogText?: Phaser.GameObjects.Text;
     private battleLogMaskGraphics?: Phaser.GameObjects.Graphics;
     private isBattleLogReady = false;
+    private enemyNameText?: Phaser.GameObjects.Text;
     private enemyIntentText?: Phaser.GameObjects.Text;
     private cardDetailTitleText?: Phaser.GameObjects.Text;
     private cardDetailBodyText?: Phaser.GameObjects.Text;
     private damagePopupController!: DamagePopupController;
+    private battlePresentationFacade!: BattlePresentationFacade;
     private enemyPanelMotionOverlay?: Phaser.GameObjects.Rectangle;
     private playerPanelMotionOverlay?: Phaser.GameObjects.Rectangle;
 
@@ -336,19 +382,31 @@ export class BattleScene extends Phaser.Scene {
 
     constructor() {
         super({ key: SCENE_KEY });
+        this.registerBattleEventSubscribers();
     }
 
     init(data: BattleSceneData): void {
-        this.sceneData = data;
-        this.battleLogText = undefined;
-        this.battleLogMaskGraphics = undefined;
-
         // 서비스 초기화
         this.drawCycleService = new DrawCycleService();
         this.cardEffectService = new CardEffectService();
         this.energyService = new EnergyService();
         this.statusEffectService = new StatusEffectService();
         this.enemyIntentService = new EnemyIntentService();
+
+        this.encounterEnemyStates = this.buildEncounterEnemyStates(data);
+        const leadEnemyState = this.encounterEnemyStates[0];
+        const leadEnemy = leadEnemyState?.enemy ?? data.enemy;
+        this.sceneData = {
+            ...data,
+            enemy: leadEnemy,
+            enemyName: leadEnemy.id === data.enemy.id ? data.enemyName : leadEnemy.label,
+        };
+        this.battleId = this.createBattleId(data);
+        this.actionQueueIndex = 0;
+        this.battleEventBus.clear();
+        this.processedReactionActionKeys.clear();
+        this.battleLogText = undefined;
+        this.battleLogMaskGraphics = undefined;
 
         // 장비 보너스 적용
         this.equipmentInventory = data.itemService.getInventory();
@@ -370,38 +428,38 @@ export class BattleScene extends Phaser.Scene {
             maxHealth: data.player.stats.maxHealth,
             block: 0,
         };
-        this.enemyState = {
-            health: data.enemy.stats.health,
-            maxHealth: data.enemy.stats.maxHealth,
-            block: 0,
-        };
         this.energyState = this.energyService.initialize();
         this.playerStatusEffects = this.statusEffectService.createState();
-        this.enemyStatusEffects = this.statusEffectService.createState();
-
-        // 적 카드 풀
-        this.enemyCardPool = data.cardBattleService.generateEnemyCardPool(
-            data.enemy.kind,
-            data.enemy.elite,
+        this.enemyState = {
+            health: leadEnemyState?.state.health ?? leadEnemy.stats.health,
+            maxHealth: leadEnemyState?.state.maxHealth ?? leadEnemy.stats.maxHealth,
+            block: leadEnemyState?.state.block ?? 0,
+        };
+        this.enemyStatusEffects = this.cloneStatusEffects(
+            leadEnemyState?.statusEffects ?? this.statusEffectService.createState(),
         );
-        this.dreadRule = this.dreadRuleService.decideRule(data.enemy);
+        this.enemyCardPool = [
+            ...(leadEnemyState?.cardPool
+                ?? data.cardBattleService.generateEnemyCardPool(leadEnemy.kind, leadEnemy.elite)),
+        ];
+        this.dreadRule = this.dreadRuleService.decideRule(leadEnemy);
 
         // 초기화
         this.turnNumber = 0;
         this.totalPlayerDamage = 0;
         this.totalEnemyDamage = 0;
-        this.enemyAttackBuff = 0;
+        this.enemyAttackBuff = leadEnemyState?.attackBuff ?? 0;
         this.isInputLocked = false;
         this.battleLogLines = [];
-        this.currentEnemyIntent = undefined;
-        this.enemyIntentQueue = [];
+        this.currentEnemyIntent = leadEnemyState?.currentIntent;
+        this.enemyIntentQueue = [...(leadEnemyState?.intentQueue ?? [])];
         this.battleResolution = 'victory';
         this.activePowerCards = [];
         this.playerDamageTakenWindow = 0;
         this.playerOngoingBuffs = EMPTY_ONGOING_BATTLE_BUFFS;
-        this.enemyOngoingBuffs = EMPTY_ONGOING_BATTLE_BUFFS;
-        this.enemyAttackDebuff = 0;
-        this.enemyAttackDebuffDuration = 0;
+        this.enemyOngoingBuffs = leadEnemyState?.ongoingBuffs ?? EMPTY_ONGOING_BATTLE_BUFFS;
+        this.enemyAttackDebuff = leadEnemyState?.attackDebuff ?? 0;
+        this.enemyAttackDebuffDuration = leadEnemyState?.attackDebuffDuration ?? 0;
         this.queuedAttackPowerBonus = 0;
         this.pendingNextTurnDrawBonus = 0;
         this.martyrStrengthGainedThisTurn = 0;
@@ -420,6 +478,7 @@ export class BattleScene extends Phaser.Scene {
 
     create(): void {
         this.damagePopupController = new DamagePopupController(this);
+        this.battlePresentationFacade = this.createBattlePresentationFacade();
         this.createBackground();
         this.createActionMotionLayers();
         this.createHpBars();
@@ -452,6 +511,418 @@ export class BattleScene extends Phaser.Scene {
         this.onBattleEndCallback = callback;
     }
 
+    private createBattlePresentationFacade(): BattlePresentationFacade {
+        return new BattlePresentationFacade({
+            scheduler: {
+                delayedCall: (delayMs: number, callback: () => void) => {
+                    const sceneTime = (this as Phaser.Scene & {
+                        time?: { delayedCall?: (delay: number, next: () => void) => void };
+                    }).time;
+                    if (!sceneTime?.delayedCall) {
+                        callback();
+                        return;
+                    }
+
+                    sceneTime.delayedCall(delayMs, callback);
+                },
+            },
+            appendBattleLog: (message: string) => {
+                this.appendBattleLog(message);
+            },
+            showPopupBatch: (anchorId: DamagePopupAnchorId, requests: readonly DamagePopupRequest[]) => {
+                this.showPopupBatch(anchorId, requests);
+            },
+            createFallbackEffectText: (text: string, color: string) => {
+                this.createFallbackEffectText(text, color);
+            },
+            clearEffectText: () => {
+                this.clearEffectText();
+            },
+            playPanelImpactMotion: (actor: 'player' | 'enemy', color: number) => {
+                this.playPanelImpactMotion(actor, color);
+            },
+            playPanelPulseMotion: (actor: 'player' | 'enemy', color: number) => {
+                this.playPanelPulseMotion(actor, color);
+            },
+        });
+    }
+
+    private createBattleId(data: BattleSceneData): string {
+        const enemyId = data.enemy.id || 'enemy';
+        const floorNumber = data.floorNumber ?? 0;
+        return `battle:${enemyId}:${floorNumber}`;
+    }
+
+    private cloneStatusEffects(state: StatusEffectState): StatusEffectState {
+        return { ...state };
+    }
+
+    private cloneOngoingBuffState(state: OngoingBattleBuffState): OngoingBattleBuffState {
+        return { ...state };
+    }
+
+    private buildEncounterEnemyStates(data: BattleSceneData): EncounterEnemyState[] {
+        const encounterEnemies = data.encounterEnemies?.length
+            ? data.encounterEnemies
+            : [data.enemy];
+
+        return encounterEnemies.map((enemy) => ({
+            enemy,
+            state: {
+                health: enemy.stats.health,
+                maxHealth: enemy.stats.maxHealth,
+                block: 0,
+            },
+            statusEffects: this.statusEffectService.createState(),
+            cardPool: data.cardBattleService.generateEnemyCardPool(enemy.kind, enemy.elite),
+            intentQueue: [],
+            currentIntent: undefined,
+            ongoingBuffs: EMPTY_ONGOING_BATTLE_BUFFS,
+            attackBuff: 0,
+            attackDebuff: 0,
+            attackDebuffDuration: 0,
+        }));
+    }
+
+    private getEncounterEnemyEntryById(enemyId: string): EncounterEnemyState | undefined {
+        return this.encounterEnemyStates.find((entry) => entry.enemy.id === enemyId);
+    }
+
+    private updateEncounterEnemyEntry(
+        enemyId: string,
+        updater: (entry: EncounterEnemyState) => EncounterEnemyState,
+    ): EncounterEnemyState | undefined {
+        let updatedEntry: EncounterEnemyState | undefined;
+        this.encounterEnemyStates = this.encounterEnemyStates.map((entry) => {
+            if (entry.enemy.id !== enemyId) {
+                return entry;
+            }
+
+            updatedEntry = updater(entry);
+            return updatedEntry;
+        });
+
+        return updatedEntry;
+    }
+
+    private getCurrentEncounterEnemyState(): EncounterEnemyState | undefined {
+        const currentEnemyId = this.sceneData?.enemy?.id;
+        if (!currentEnemyId) {
+            return this.encounterEnemyStates[0];
+        }
+
+        return this.getEncounterEnemyEntryById(currentEnemyId);
+    }
+
+    private syncEncounterEnemyRuntime(enemyId: string): void {
+        this.encounterEnemyStates = this.encounterEnemyStates.map((entry) =>
+            entry.enemy.id === enemyId
+                ? {
+                    ...entry,
+                    state: { ...this.enemyState },
+                    statusEffects: this.cloneStatusEffects(this.enemyStatusEffects),
+                    cardPool: [...this.enemyCardPool],
+                    intentQueue: [...this.enemyIntentQueue],
+                    currentIntent: this.currentEnemyIntent,
+                    ongoingBuffs: this.cloneOngoingBuffState(this.enemyOngoingBuffs),
+                    attackBuff: this.enemyAttackBuff,
+                    attackDebuff: this.enemyAttackDebuff,
+                    attackDebuffDuration: this.enemyAttackDebuffDuration,
+                }
+                : entry,
+        );
+    }
+
+    private syncCurrentEncounterEnemyRuntime(): void {
+        const currentEnemyId = this.sceneData?.enemy?.id;
+        if (!currentEnemyId) {
+            return;
+        }
+
+        this.syncEncounterEnemyRuntime(currentEnemyId);
+    }
+
+    private activateEncounterEnemy(enemyId: string): boolean {
+        const encounterEnemy = this.getEncounterEnemyEntryById(enemyId);
+        if (!encounterEnemy) {
+            return false;
+        }
+
+        const cardBattleService = (this.sceneData as Partial<BattleSceneData>).cardBattleService;
+        const nextCardPool = encounterEnemy.cardPool
+            ?? cardBattleService?.generateEnemyCardPool(encounterEnemy.enemy.kind, encounterEnemy.enemy.elite)
+            ?? [];
+        const nextStatusEffects = encounterEnemy.statusEffects
+            ?? this.statusEffectService.createState();
+
+        this.sceneData = {
+            ...this.sceneData,
+            enemy: encounterEnemy.enemy,
+            enemyName: encounterEnemy.enemy.label,
+        };
+        this.enemyNameText?.setText(encounterEnemy.enemy.label);
+        this.enemyState = {
+            ...encounterEnemy.state,
+        };
+        this.enemyStatusEffects = this.cloneStatusEffects(nextStatusEffects);
+        this.enemyCardPool = [...nextCardPool];
+        this.enemyIntentQueue = [...(encounterEnemy.intentQueue ?? [])];
+        this.currentEnemyIntent = encounterEnemy.currentIntent;
+        this.enemyOngoingBuffs = encounterEnemy.ongoingBuffs
+            ?? EMPTY_ONGOING_BATTLE_BUFFS;
+        this.enemyAttackBuff = encounterEnemy.attackBuff ?? 0;
+        this.enemyAttackDebuff = encounterEnemy.attackDebuff ?? 0;
+        this.enemyAttackDebuffDuration = encounterEnemy.attackDebuffDuration ?? 0;
+
+        return true;
+    }
+
+    private setCurrentEncounterEnemyState(nextState: CombatantState): void {
+        const currentEnemy = this.getCurrentEncounterEnemyState();
+        if (currentEnemy) {
+            this.encounterEnemyStates = this.encounterEnemyStates.map((entry) =>
+                entry.enemy.id === currentEnemy.enemy.id
+                    ? {
+                        ...entry,
+                        state: { ...nextState },
+                    }
+                    : entry,
+            );
+        }
+
+        this.enemyState = nextState;
+    }
+
+    public getEncounterEnemyStateById(enemyId: string): CombatantState | undefined {
+        return this.getEncounterEnemyEntryById(enemyId)?.state;
+    }
+
+    private hasRemainingEncounterEnemies(): boolean {
+        return this.encounterEnemyStates.some((entry) => entry.state.health > 0);
+    }
+
+    private getLivingEncounterEnemyStates(): EncounterEnemyState[] {
+        return this.encounterEnemyStates.filter((entry) => entry.state.health > 0);
+    }
+
+    private restoreEncounterTargetEnemy(preferredEnemyId?: string): void {
+        const preferredEnemy = preferredEnemyId
+            ? this.getEncounterEnemyEntryById(preferredEnemyId)
+            : undefined;
+        if (preferredEnemy && preferredEnemy.state.health > 0) {
+            this.activateEncounterEnemy(preferredEnemy.enemy.id);
+            return;
+        }
+
+        const fallbackEnemy = this.getLivingEncounterEnemyStates()[0];
+        if (fallbackEnemy) {
+            this.activateEncounterEnemy(fallbackEnemy.enemy.id);
+        }
+    }
+
+    private switchToNextLivingEnemy(): boolean {
+        this.syncCurrentEncounterEnemyRuntime();
+        const currentEnemyId = this.sceneData?.enemy.id;
+        const nextEnemy = this.encounterEnemyStates.find((entry) =>
+            entry.enemy.id !== currentEnemyId && entry.state.health > 0,
+        );
+
+        if (!nextEnemy) {
+            return false;
+        }
+
+        this.activateEncounterEnemy(nextEnemy.enemy.id);
+        this.appendBattleLog(`${nextEnemy.enemy.label} steps forward`);
+        this.revealNextEnemyIntent(nextEnemy.enemy.id);
+
+        return true;
+    }
+
+    private getPlayerActorId(): string {
+        return 'player';
+    }
+
+    private getEnemyActorId(): string {
+        return this.sceneData?.enemy.id ?? 'enemy';
+    }
+
+    private emitBattleTurnStarted(drawCount: number): void {
+        const payload = {
+            battleId: this.battleId,
+            turnNumber: this.turnNumber,
+            energy: this.energyState.current,
+            drawCount,
+            handCount: this.drawCycleState.hand.length,
+            dreadRuleId: this.dreadRule?.id ?? null,
+        } as const;
+
+        this.battleEventBus.emit(BATTLE_EVENT_NAME.TURN_STARTED, payload);
+        this.battleEventBus.emit(LEGACY_BATTLE_EVENT_NAME.TURN_STARTED, {
+            turnNumber: payload.turnNumber,
+            energy: payload.energy,
+            drawCount: payload.drawCount,
+            handCount: payload.handCount,
+        });
+    }
+
+    private emitBattleCardPlayed(card: Card, targetIds: readonly string[]): void {
+        const normalizedTargetIds = targetIds.length > 0 ? targetIds : [this.getEnemyActorId()];
+        const payload = {
+            battleId: this.battleId,
+            turnNumber: this.turnNumber,
+            cardId: card.id,
+            effectType: card.effectType,
+            cost: card.cost,
+            remainingEnergy: this.energyState.current,
+            targetIds: normalizedTargetIds,
+        } as const;
+
+        this.battleEventBus.emit(BATTLE_EVENT_NAME.CARD_PLAYED, payload);
+        this.battleEventBus.emit(LEGACY_BATTLE_EVENT_NAME.CARD_PLAYED, {
+            cardId: payload.cardId,
+            effectType: payload.effectType,
+            cost: payload.cost,
+            remainingEnergy: payload.remainingEnergy,
+            targetId: payload.targetIds[0],
+        });
+    }
+
+    private emitBattleActionResolved(payload: Omit<BattleActionResolvedPayload, 'battleId' | 'turnNumber' | 'queueIndex'>): void {
+        this.battleEventBus.emit(BATTLE_EVENT_NAME.ACTION_RESOLVED, {
+            battleId: this.battleId,
+            turnNumber: this.turnNumber,
+            queueIndex: this.actionQueueIndex,
+            ...payload,
+        });
+        this.actionQueueIndex += 1;
+    }
+
+    private emitBattleTurnEnded(
+        remainingEnergy: number,
+        retainedCount: number,
+        exhaustedCount: number,
+    ): void {
+        const payload = {
+            battleId: this.battleId,
+            turnNumber: this.turnNumber,
+            remainingEnergy,
+            handCount: this.drawCycleState.hand.length,
+            retainedCount,
+            exhaustedCount,
+        } as const;
+
+        this.battleEventBus.emit(BATTLE_EVENT_NAME.TURN_ENDED, payload);
+        this.battleEventBus.emit(LEGACY_BATTLE_EVENT_NAME.TURN_ENDED, {
+            turnNumber: payload.turnNumber,
+            remainingEnergy: payload.remainingEnergy,
+            handCount: payload.handCount,
+        });
+    }
+
+    private emitLegacyStatusApplied(events: readonly StatusEffectEvent[]): void {
+        events.forEach((event) => {
+            if (event.type !== STATUS_EVENT_TYPE.APPLY) {
+                return;
+            }
+
+            const applyEvent = event as StatusApplyEvent;
+            this.battleEventBus.emit(LEGACY_BATTLE_EVENT_NAME.STATUS_APPLIED, {
+                targetId: this.resolveStatusTargetId(applyEvent.target),
+                statusType: applyEvent.status,
+                value: applyEvent.value,
+                expiresAtTurn: typeof applyEvent.duration === 'number'
+                    ? this.turnNumber + applyEvent.duration
+                    : 0,
+            });
+        });
+    }
+
+    private resolveStatusTargetId(target: string): string {
+        return target === 'Player' ? this.getPlayerActorId() : this.getEnemyActorId();
+    }
+
+    private resolvePlayerCardTargetIds(card: Card, effectResult: CardEffectResult): readonly string[] {
+        if (
+            effectResult.damageDealt > 0
+            || (effectResult.damageBlocked ?? 0) > 0
+            || card.effectType === CARD_EFFECT_TYPE.STATUS_EFFECT
+            || effectResult.buffApplied?.target === 'TARGET'
+            || card.effectType === CARD_EFFECT_TYPE.FLEE
+        ) {
+            return [this.getEnemyActorId()];
+        }
+
+        return [this.getPlayerActorId()];
+    }
+
+    private buildStatusDelta(
+        targetId: string,
+        effectResult: CardEffectResult,
+    ): readonly BattleActionStatusDelta[] {
+        const appliedStatuses = effectResult.statusEffectsApplied
+            ?? (effectResult.statusApplied ? [effectResult.statusApplied] : []);
+
+        return appliedStatuses.map((status) => ({
+            targetId,
+            statusType: status.type,
+            value: typeof status.stacks === 'number'
+                ? status.stacks
+                : typeof status.duration === 'number'
+                    ? status.duration
+                    : typeof status.amount === 'number'
+                        ? status.amount
+                        : 0,
+        }));
+    }
+
+    private registerBattleEventSubscribers(): void {
+        this.battleEventBus.subscribe((event) => {
+            switch (event.name) {
+                case BATTLE_EVENT_NAME.TURN_STARTED:
+                    this.processedReactionActionKeys.clear();
+                    break;
+                case BATTLE_EVENT_NAME.ACTION_RESOLVED:
+                    this.handleBattleActionResolvedSubscribers(event.payload as BattleActionResolvedPayload);
+                    break;
+                default:
+                    break;
+            }
+        });
+    }
+
+    private handleBattleActionResolvedSubscribers(payload: BattleActionResolvedPayload): void {
+        if (payload.damage <= 0) {
+            return;
+        }
+
+        if (
+            payload.sourceId === this.getPlayerActorId()
+            && payload.targetIds.includes(this.getPlayerActorId())
+            && this.markReactionActionHandled(`self-damage:${payload.turnNumber}:${payload.queueIndex}`)
+        ) {
+            this.trackPlayerSelfDamage(payload.damage);
+            this.applyDreadRuleSelfDamageReaction(payload.damage);
+        }
+
+        if (
+            payload.targetIds.includes(this.getPlayerActorId())
+            && this.markReactionActionHandled(`player-health-loss:${payload.turnNumber}:${payload.queueIndex}`)
+        ) {
+            this.resolveHealthLossStrengthTriggers('player', payload.damage);
+            this.syncPlayerBreakpointState();
+            this.appendBreakpointCardReactions();
+        }
+    }
+
+    private markReactionActionHandled(key: string): boolean {
+        if (this.processedReactionActionKeys.has(key)) {
+            return false;
+        }
+
+        this.processedReactionActionKeys.add(key);
+        return true;
+    }
+
     // -----------------------------------------------------------------------
     // Background & Layout
     // -----------------------------------------------------------------------
@@ -464,7 +935,7 @@ export class BattleScene extends Phaser.Scene {
         this.createSectionPanel(LOG_PANEL_X, LOG_PANEL_Y, LOG_PANEL_WIDTH, LOG_PANEL_HEIGHT, 'Activity');
 
         // 적 이름 표시
-        this.add.text(MAIN_PANEL_CENTER_X, 42, this.sceneData.enemyName, {
+        this.enemyNameText = this.add.text(MAIN_PANEL_CENTER_X, 42, this.sceneData.enemyName, {
             fontSize: '20px',
             color: '#ff6666',
             fontFamily: 'monospace',
@@ -1121,18 +1592,19 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private formatEnemyActionLog(card: Card, damage: number, blockGained: number, damageBlocked = 0): string {
+        const enemyLabel = this.getEnemyLabel();
         if (damage > 0 || damageBlocked > 0) {
             const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
             return hitCount > 1
-                ? `Enemy ${card.name}: flurry`
-                : `Enemy ${card.name}: attack`;
+                ? `${enemyLabel} ${card.name}: flurry`
+                : `${enemyLabel} ${card.name}: attack`;
         }
 
         if (blockGained > 0) {
-            return `Enemy ${card.name}: +${blockGained} Block`;
+            return `${enemyLabel} ${card.name}: +${blockGained} Block`;
         }
 
-        return `Enemy ${card.name}`;
+        return `${enemyLabel} ${card.name}`;
     }
 
     // -----------------------------------------------------------------------
@@ -1283,11 +1755,16 @@ export class BattleScene extends Phaser.Scene {
                 health: Math.max(0, this.playerState.health - this.equipmentConfig.battleStartSelfDamage),
             };
             this.handlePlayerHealthLost(this.equipmentConfig.battleStartSelfDamage);
-            this.trackPlayerSelfDamage(this.equipmentConfig.battleStartSelfDamage);
-            this.applyDreadRuleSelfDamageReaction(this.equipmentConfig.battleStartSelfDamage);
             this.showPopupBatch('player-hp', [{ type: 'damage', value: this.equipmentConfig.battleStartSelfDamage }]);
             this.appendBattleLog(`Player sacrifices ${this.equipmentConfig.battleStartSelfDamage} HP`);
-            this.syncPlayerBreakpointState();
+            this.emitBattleActionResolved({
+                actionType: 'BATTLE_START_SELF_DAMAGE',
+                sourceId: this.getPlayerActorId(),
+                targetIds: [this.getPlayerActorId()],
+                damage: this.equipmentConfig.battleStartSelfDamage,
+                block: 0,
+                statusDelta: [],
+            });
         }
     }
 
@@ -1345,9 +1822,12 @@ export class BattleScene extends Phaser.Scene {
             },
         );
         this.playerStatusEffects = statusUpdate.statusEffects;
-        this.showPopupBatch('player-panel', [{ type: 'buff', value: strengthGain }]);
+        this.appendStatusEventLogs(statusUpdate.events);
+        this.ensureBattlePresentationFacade().present([
+            { kind: 'popups', anchorId: 'player-panel', requests: [{ type: 'buff', value: strengthGain }] },
+            { kind: 'pulse', actor: 'player', color: COLOR_ACTION_BUFF },
+        ]);
         this.appendBattleLog(`${this.dreadRule?.name}: +${strengthGain} STR`);
-        this.playPanelPulseMotion('player', COLOR_ACTION_BUFF);
     }
 
     private applyDreadRuleTurnEndPenalty(remainingEnergy: number): boolean {
@@ -1363,11 +1843,18 @@ export class BattleScene extends Phaser.Scene {
         };
         this.playerDamageTakenWindow += selfDamage;
         this.handlePlayerHealthLost(selfDamage);
-        this.trackPlayerSelfDamage(selfDamage);
-        this.applyDreadRuleSelfDamageReaction(selfDamage);
-        this.showPopupBatch('player-hp', [{ type: 'damage', value: selfDamage }]);
+        this.ensureBattlePresentationFacade().present([
+            { kind: 'popups', anchorId: 'player-hp', requests: [{ type: 'damage', value: selfDamage }] },
+        ]);
         this.appendBattleLog(`${this.dreadRule?.name}: ${selfDamage} self-damage for ${remainingEnergy} unspent energy`);
-        this.syncPlayerBreakpointState();
+        this.emitBattleActionResolved({
+            actionType: 'DREAD_RULE_SELF_DAMAGE',
+            sourceId: this.getPlayerActorId(),
+            targetIds: [this.getPlayerActorId()],
+            damage: selfDamage,
+            block: 0,
+            statusDelta: [],
+        });
 
         if (this.playerState.health > 0) {
             return false;
@@ -1429,10 +1916,10 @@ export class BattleScene extends Phaser.Scene {
         this.martyrStrengthGainedThisTurn = bonus.strengthGainConsumedThisTurn;
 
         if (bonus.reflectedDamage > 0) {
-            this.enemyState = {
+            this.setCurrentEncounterEnemyState({
                 ...this.enemyState,
                 health: Math.max(0, this.enemyState.health - bonus.reflectedDamage),
-            };
+            });
             this.appendBattleLog(`${this.getEnemyLabel()} takes ${bonus.reflectedDamage} thorns`);
             this.showPopupBatch('enemy-hp', [{ type: 'damage', value: bonus.reflectedDamage }]);
         }
@@ -2048,6 +2535,7 @@ export class BattleScene extends Phaser.Scene {
 
     private startPlayerTurn(): void {
         this.turnNumber++;
+        this.actionQueueIndex = 0;
         this.martyrStrengthGainedThisTurn = 0;
         this.dreadRuleSelfDamageTriggeredThisTurn = false;
         if (this.turnNumber > 1) {
@@ -2069,10 +2557,12 @@ export class BattleScene extends Phaser.Scene {
         }
 
         // 드로우
+        const handCountBeforeDraw = this.drawCycleState.hand.length;
         this.drawCycleState = this.drawCycleService.drawCards(
             this.drawCycleState,
             DEFAULT_HAND_SIZE + this.getTurnStartDrawBonus(),
         );
+        const drawCount = Math.max(0, this.drawCycleState.hand.length - handCountBeforeDraw);
         this.pendingNextTurnDrawBonus = 0;
         this.captureOpeningHandCardIds();
         this.syncPlayerBreakpointState();
@@ -2080,6 +2570,7 @@ export class BattleScene extends Phaser.Scene {
         if (this.dreadRuleService.isBlackoutTurn(this.dreadRule, this.turnNumber)) {
             this.appendBattleLog('Blackout: intent hidden');
         }
+        this.emitBattleTurnStarted(drawCount);
 
         // UI 갱신
         this.isInputLocked = false;
@@ -2120,7 +2611,7 @@ export class BattleScene extends Phaser.Scene {
             },
         );
         this.playerState = effectResult.userState;
-        this.enemyState = effectResult.targetState;
+        this.setCurrentEncounterEnemyState(effectResult.targetState);
         if (effectResult.energyGained > 0) {
             this.energyState = {
                 ...this.energyState,
@@ -2135,15 +2626,11 @@ export class BattleScene extends Phaser.Scene {
         this.applyPlayerCardStatusEffects(effectResult);
         this.applyPlayerCardBuff(card, effectResult);
         this.trackActivePower(card);
-        this.resolveSelfDamageStrengthTriggers('player', effectResult.selfDamageTaken);
         this.resolveHealthLossStrengthTriggers('enemy', effectResult.damageDealt);
         if (modifier.consumesNextAttackBonus && this.queuedAttackPowerBonus > 0) {
             this.queuedAttackPowerBonus = 0;
         }
         this.handlePlayerHealthLost(effectResult.selfDamageTaken);
-        this.trackPlayerSelfDamage(effectResult.selfDamageTaken);
-        this.applyDreadRuleSelfDamageReaction(effectResult.selfDamageTaken);
-        this.syncPlayerBreakpointState();
         this.applyEquipmentAttackAftermath(card);
         if (effectResult.damageDealt > 0 && modifier.extraEnemyStatusEffects.length > 0) {
             this.enemyStatusEffects = this.applyStatusEffectsToState(
@@ -2163,14 +2650,39 @@ export class BattleScene extends Phaser.Scene {
         // 드로우 사이클에서 카드 사용 처리 (Exhaust/Discard)
         this.drawCycleState = this.drawCycleService.playCard(this.drawCycleState, card.id, card);
         this.drawCycleState = this.resolvePostPlayDrawCycle(this.drawCycleState, effectResult);
+        const targetIds = this.resolvePlayerCardTargetIds(card, effectResult);
+        this.emitBattleCardPlayed(card, targetIds);
+        if (effectResult.selfDamageTaken > 0) {
+            this.emitBattleActionResolved({
+                actionType: 'SELF_DAMAGE',
+                sourceId: this.getPlayerActorId(),
+                targetIds: [this.getPlayerActorId()],
+                damage: effectResult.selfDamageTaken,
+                block: 0,
+                statusDelta: [],
+            });
+        }
+        this.emitBattleActionResolved({
+            actionType: card.effectType,
+            sourceId: this.getPlayerActorId(),
+            targetIds,
+            damage: effectResult.damageDealt,
+            block: effectResult.blockGained,
+            statusDelta: this.buildStatusDelta(targetIds[0], effectResult),
+        });
 
         // 효과 텍스트 표시
-        this.showEffectText(card, effectResult);
-        this.playResolvedActionMotion('player', card, effectResult);
+        const effectPresentationDelayMs = this.showEffectText(card, effectResult);
+        const motionPresentationDelayMs = this.playResolvedActionMotion('player', card, effectResult);
         this.appendBreakpointCardReactions();
+        const queuedPresentationDelayMs = Math.max(
+            CARD_PLAY_ANIM_MS,
+            effectPresentationDelayMs,
+            motionPresentationDelayMs,
+        ) + ACTION_QUEUE_STEP_MS;
 
         // 카드 사용 애니메이션 후 상태 갱신
-        this.time.delayedCall(CARD_PLAY_ANIM_MS, () => {
+        this.time.delayedCall(queuedPresentationDelayMs, () => {
             this.clearEffectText();
             this.updateAllDisplays();
 
@@ -2190,6 +2702,13 @@ export class BattleScene extends Phaser.Scene {
                 this.applyCardKillReward(card);
                 this.applyKillRewards();
                 this.syncPlayerBreakpointState();
+                if (this.hasRemainingEncounterEnemies() && this.switchToNextLivingEnemy()) {
+                    this.updateAllDisplays();
+                    this.isInputLocked = false;
+                    this.displayHandCards();
+                    return;
+                }
+
                 this.showBattleEnd('player-win');
                 return;
             }
@@ -2216,6 +2735,13 @@ export class BattleScene extends Phaser.Scene {
         this.drawCycleState = turnEndResult.state;
         this.applyPlayerHandEndTurnEffects(turnEndResult.effects);
         this.resolveTurnEndStatusEffects('player');
+        this.emitBattleTurnEnded(
+            remainingEnergy,
+            turnEndResult.state.hand.length,
+            turnEndResult.effects.filter(
+                (effect) => effect.type === HAND_END_TURN_EFFECT_TYPE.ETHEREAL_EXHAUSTED,
+            ).length,
+        );
         if (this.applyDreadRuleTurnEndPenalty(remainingEnergy)) {
             return;
         }
@@ -2230,7 +2756,7 @@ export class BattleScene extends Phaser.Scene {
 
         // 적 턴 실행
         this.time.delayedCall(ENEMY_TURN_DELAY_MS / 2, () => {
-            this.executeEnemyTurn();
+            this.startEncounterEnemyTurnCycle(this.sceneData?.enemy.id);
         });
     }
 
@@ -2238,11 +2764,59 @@ export class BattleScene extends Phaser.Scene {
     // Enemy Turn
     // -----------------------------------------------------------------------
 
-    private executeEnemyTurn(): void {
+    private startEncounterEnemyTurnCycle(preferredTargetEnemyId?: string): void {
+        const actingEnemyIds = this.getLivingEncounterEnemyStates()
+            .map((entry) => entry.enemy.id);
+
+        if (actingEnemyIds.length === 0) {
+            this.showBattleEnd('player-win');
+            return;
+        }
+
+        this.executeEncounterEnemyTurnAtIndex(actingEnemyIds, preferredTargetEnemyId, 0);
+    }
+
+    private executeEncounterEnemyTurnAtIndex(
+        actingEnemyIds: readonly string[],
+        preferredTargetEnemyId: string | undefined,
+        index: number,
+    ): void {
+        if (index >= actingEnemyIds.length) {
+            this.finishEncounterEnemyTurnCycle(preferredTargetEnemyId);
+            return;
+        }
+
+        const enemyId = actingEnemyIds[index];
+        const encounterEnemy = enemyId ? this.getEncounterEnemyEntryById(enemyId) : undefined;
+        if (!encounterEnemy || encounterEnemy.state.health <= 0) {
+            this.executeEncounterEnemyTurnAtIndex(actingEnemyIds, preferredTargetEnemyId, index + 1);
+            return;
+        }
+
+        this.syncCurrentEncounterEnemyRuntime();
+        this.activateEncounterEnemy(enemyId);
+        this.executeEnemyTurn(() => {
+            this.executeEncounterEnemyTurnAtIndex(actingEnemyIds, preferredTargetEnemyId, index + 1);
+        });
+    }
+
+    private finishEncounterEnemyTurnCycle(preferredTargetEnemyId?: string): void {
+        if (!this.hasRemainingEncounterEnemies()) {
+            this.showBattleEnd('player-win');
+            return;
+        }
+
+        this.restoreEncounterTargetEnemy(preferredTargetEnemyId);
+        this.prepareTurnStartState('player');
+        this.revealNextEnemyIntent(this.getEnemyActorId());
+        this.startPlayerTurn();
+    }
+
+    private executeEnemyTurn(onComplete?: () => void): void {
         this.prepareTurnStartState('enemy');
 
         if (this.enemyCardPool.length === 0) {
-            this.afterEnemyTurn();
+            this.afterEnemyTurn(onComplete);
             return;
         }
 
@@ -2250,19 +2824,37 @@ export class BattleScene extends Phaser.Scene {
 
         const intent = this.currentEnemyIntent ?? this.revealNextEnemyIntent();
         if (!intent) {
-            this.afterEnemyTurn();
+            this.afterEnemyTurn(onComplete);
             return;
         }
 
         if (intent.type === ENEMY_INTENT_TYPE.BUFF) {
-            this.enemyAttackBuff += intent.amount;
-            this.playPanelPulseMotion('enemy', COLOR_ACTION_BUFF);
-            this.showEnemyBuffText(intent);
+            if (intent.pattern === ENEMY_INTENT_PATTERN.RITUAL) {
+                this.enemyAttackBuff += intent.amount;
+            }
+            this.emitBattleActionResolved({
+                actionType: intent.type,
+                sourceId: this.getEnemyActorId(),
+                targetIds: [this.getEnemyActorId()],
+                damage: 0,
+                block: 0,
+                statusDelta: [],
+            });
+            const motionDelayMs = this.playResolvedActionMotion('enemy', this.resolveEnemyCardFromIntent(intent), {
+                damageDealt: 0,
+                damageBlocked: 0,
+                blockGained: 0,
+                fled: false,
+                buffApplied: intent.pattern === ENEMY_INTENT_PATTERN.RITUAL
+                    ? { type: 'ATTACK', value: intent.amount }
+                    : undefined,
+            });
+            const buffPresentationDelayMs = this.showEnemyBuffText(intent);
 
-            this.time.delayedCall(ENEMY_TURN_DELAY_MS, () => {
+            this.time.delayedCall(Math.max(ENEMY_TURN_DELAY_MS, motionDelayMs, buffPresentationDelayMs) + ACTION_QUEUE_STEP_MS, () => {
                 this.clearEffectText();
                 this.updateAllDisplays();
-                this.afterEnemyTurn();
+                this.afterEnemyTurn(onComplete);
             });
             return;
         }
@@ -2278,7 +2870,7 @@ export class BattleScene extends Phaser.Scene {
                 targetStatusEffects: this.playerStatusEffects,
             },
         );
-        this.enemyState = effectResult.userState;
+        this.setCurrentEncounterEnemyState(effectResult.userState);
         this.playerState = effectResult.targetState;
         this.totalPlayerDamage += effectResult.damageDealt;
         this.playerDamageTakenWindow += effectResult.damageDealt;
@@ -2286,38 +2878,43 @@ export class BattleScene extends Phaser.Scene {
         this.applyEnemyCardStatusEffects(effectResult);
         this.applyEnemyCardBuff(enemyCard, effectResult);
         this.resolveSelfDamageStrengthTriggers('enemy', effectResult.selfDamageTaken);
-        this.resolveHealthLossStrengthTriggers('player', effectResult.damageDealt);
         this.handlePlayerHealthLost(effectResult.damageDealt);
-        this.syncPlayerBreakpointState();
         this.applyReactiveDefenseEffects(effectResult.damageDealt);
+        const enemyTargetIds = effectResult.damageDealt > 0
+            || (effectResult.damageBlocked ?? 0) > 0
+            || enemyCard.effectType === CARD_EFFECT_TYPE.STATUS_EFFECT
+            ? [this.getPlayerActorId()]
+            : [this.getEnemyActorId()];
+        this.emitBattleActionResolved({
+            actionType: enemyCard.effectType,
+            sourceId: this.getEnemyActorId(),
+            targetIds: enemyTargetIds,
+            damage: effectResult.damageDealt,
+            block: effectResult.blockGained,
+            statusDelta: this.buildStatusDelta(enemyTargetIds[0], effectResult),
+        });
 
         // 적 행동 텍스트
-        this.playResolvedActionMotion('enemy', enemyCard, effectResult);
-        if (effectResult.hitDamages && effectResult.hitDamages.length > 0) {
-            this.showEnemyActionText(
-                enemyCard,
-                effectResult.damageDealt,
-                effectResult.blockGained,
-                effectResult.damageBlocked,
-                effectResult.hitDamages,
-            );
-        } else {
-            this.showEnemyActionText(
-                enemyCard,
-                effectResult.damageDealt,
-                effectResult.blockGained,
-                effectResult.damageBlocked,
-            );
-        }
+        const enemyMotionDelayMs = this.playResolvedActionMotion('enemy', enemyCard, effectResult);
+        const enemyEffectDelayMs = this.showEnemyActionText(
+            enemyCard,
+            effectResult.damageDealt,
+            effectResult.blockGained,
+            effectResult.damageBlocked,
+            effectResult.hitDamages,
+        );
 
-        this.time.delayedCall(ENEMY_TURN_DELAY_MS, () => {
+        this.time.delayedCall(
+            Math.max(ENEMY_TURN_DELAY_MS, enemyMotionDelayMs, enemyEffectDelayMs) + ACTION_QUEUE_STEP_MS,
+            () => {
             this.clearEffectText();
             this.updateAllDisplays();
-            this.afterEnemyTurn();
-        });
+            this.afterEnemyTurn(onComplete);
+            },
+        );
     }
 
-    private afterEnemyTurn(): void {
+    private afterEnemyTurn(onComplete?: () => void): void {
         // 플레이어 사망 체크
         if (this.playerState.health <= 0) {
             this.showBattleEnd('player-lose');
@@ -2326,19 +2923,23 @@ export class BattleScene extends Phaser.Scene {
 
         this.resolveTurnEndStatusEffects('enemy');
         this.tickEnemyAttackDebuff();
-        this.consumeCurrentEnemyIntent();
+        this.consumeCurrentEnemyIntent(this.getEnemyActorId());
+        this.syncCurrentEncounterEnemyRuntime();
 
         if (this.enemyState.health <= 0) {
             this.applyKillRewards();
-            this.showBattleEnd('player-win');
+            if (!this.hasRemainingEncounterEnemies()) {
+                this.showBattleEnd('player-win');
+                return;
+            }
+        }
+
+        if (onComplete) {
+            onComplete();
             return;
         }
 
-        this.prepareTurnStartState('player');
-        this.revealNextEnemyIntent();
-
-        // 다음 플레이어 턴
-        this.startPlayerTurn();
+        this.finishEncounterEnemyTurnCycle(this.sceneData?.enemy.id);
     }
 
     private applyPlayerHandEndTurnEffects(effects: readonly HandEndTurnEffect[]): void {
@@ -2366,14 +2967,17 @@ export class BattleScene extends Phaser.Scene {
             ...this.playerState,
             health: Math.max(0, this.playerState.health - damage),
         };
-        this.resolveHealthLossStrengthTriggers('player', damage);
         this.handlePlayerHealthLost(damage);
-        this.trackPlayerSelfDamage(damage);
-        this.applyDreadRuleSelfDamageReaction(damage);
         this.showPopupBatch('player-hp', [{ type: 'damage', value: damage }]);
         this.appendBattleLog(`${effect.cardName} deals ${damage} self-damage in hand`);
-        this.syncPlayerBreakpointState();
-        this.appendBreakpointCardReactions();
+        this.emitBattleActionResolved({
+            actionType: HAND_END_TURN_EFFECT_TYPE.HELD_CURSE_SELF_DAMAGE,
+            sourceId: this.getPlayerActorId(),
+            targetIds: [this.getPlayerActorId()],
+            damage,
+            block: 0,
+            statusDelta: [],
+        });
     }
 
     private applyCardKillReward(card: Card): void {
@@ -2660,6 +3264,43 @@ export class BattleScene extends Phaser.Scene {
     // Effect Text
     // -----------------------------------------------------------------------
 
+    private ensureBattlePresentationFacade(): BattlePresentationFacade {
+        if (!this.battlePresentationFacade) {
+            this.battlePresentationFacade = this.createBattlePresentationFacade();
+        }
+
+        return this.battlePresentationFacade;
+    }
+
+    private buildQueuedPopupActions(
+        anchorId: DamagePopupAnchorId,
+        requests: readonly DamagePopupRequest[],
+        startDelayMs: number,
+        splitAcrossSteps = false,
+    ): QueuedPresentationSequence {
+        const nextRequests = requests.filter((request) => request.value > 0);
+        if (nextRequests.length === 0) {
+            return { actions: [], nextDelayMs: startDelayMs };
+        }
+
+        if (!splitAcrossSteps || nextRequests.length === 1) {
+            return {
+                actions: [{ kind: 'popups', anchorId, requests: nextRequests, delayMs: startDelayMs }],
+                nextDelayMs: splitAcrossSteps ? startDelayMs + ACTION_QUEUE_STEP_MS : startDelayMs,
+            };
+        }
+
+        return {
+            actions: nextRequests.map((request, index) => ({
+                kind: 'popups',
+                anchorId,
+                requests: [request],
+                delayMs: startDelayMs + (index * ACTION_QUEUE_STEP_MS),
+            })),
+            nextDelayMs: startDelayMs + (nextRequests.length * ACTION_QUEUE_STEP_MS),
+        };
+    }
+
     private showEffectText(card: Card, effect: {
         damageDealt: number;
         damageBlocked?: number;
@@ -2673,83 +3314,106 @@ export class BattleScene extends Phaser.Scene {
         hitDamages?: readonly number[];
         buffApplied?: CardEffectResult['buffApplied'];
         statusApplied?: CardStatusEffect;
-    }): void {
-        this.clearEffectText();
+    }): number {
         const actionLog = this.formatPlayerActionLog(card, effect);
         const selfDamageTaken = effect.selfDamageTaken ?? 0;
         const hitsResolved = effect.hitsResolved ?? (effect.damageDealt > 0 ? 1 : 0);
-        this.appendBattleLog(actionLog);
+        const actions: BattlePresentationAction[] = [
+            { kind: 'clear-effect-text' },
+            { kind: 'log', message: actionLog },
+        ];
+        let queueDelayMs = 0;
 
-        this.showPopupBatch('enemy-hp', [
+        const selfDamageSequence = this.buildQueuedPopupActions(
+            'player-hp',
+            selfDamageTaken > 0
+                ? [{ type: 'damage', value: selfDamageTaken } satisfies DamagePopupRequest]
+                : [],
+            queueDelayMs,
+            true,
+        );
+        actions.push(...selfDamageSequence.actions);
+        if (selfDamageSequence.actions.length > 0) {
+            queueDelayMs = selfDamageSequence.nextDelayMs;
+        }
+
+        const enemyPopupSequence = this.buildQueuedPopupActions('enemy-hp', [
             ...(effect.damageBlocked && effect.damageBlocked > 0
                 ? [{ type: 'blocked', value: effect.damageBlocked } satisfies DamagePopupRequest]
                 : []),
             ...this.buildHitPopupRequests(effect.damageDealt, hitsResolved, effect.hitDamages),
-        ]);
-        this.showPopupBatch('player-hp', [
-            ...(selfDamageTaken > 0
-                ? [{ type: 'damage', value: selfDamageTaken } satisfies DamagePopupRequest]
-                : []),
+        ], queueDelayMs, hitsResolved > 1);
+        actions.push(...enemyPopupSequence.actions);
+        if (enemyPopupSequence.actions.length > 0) {
+            queueDelayMs = enemyPopupSequence.nextDelayMs;
+        }
+
+        const playerRecoverySequence = this.buildQueuedPopupActions('player-hp', [
             ...(effect.blockGained > 0
                 ? [{ type: 'block_gain', value: effect.blockGained } satisfies DamagePopupRequest]
                 : []),
             ...(effect.healthRestored > 0
                 ? [{ type: 'heal', value: effect.healthRestored } satisfies DamagePopupRequest]
                 : []),
-        ]);
+        ], queueDelayMs);
+        actions.push(...playerRecoverySequence.actions);
 
         if (effect.fled) {
-            this.createFallbackEffectText(actionLog, '#66ffaa');
-            return;
+            actions.push({ kind: 'effect-text', text: actionLog, color: '#66ffaa' });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (effect.damageDealt > 0 || (effect.damageBlocked ?? 0) > 0) {
-            this.createFallbackEffectText(actionLog, '#ff8f8f');
-            return;
+            actions.push({ kind: 'effect-text', text: actionLog, color: '#ff8f8f' });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (effect.blockGained > 0) {
-            this.createFallbackEffectText(`${card.name}: +${effect.blockGained} Block`, '#6eb6ff');
-            return;
+            actions.push({ kind: 'effect-text', text: `${card.name}: +${effect.blockGained} Block`, color: '#6eb6ff' });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (effect.healthRestored > 0) {
-            this.createFallbackEffectText(`${card.name}: +${effect.healthRestored} HP`, '#7ee0a4');
-            return;
+            actions.push({ kind: 'effect-text', text: `${card.name}: +${effect.healthRestored} HP`, color: '#7ee0a4' });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (effect.statusApplied) {
-            this.createFallbackEffectText(
-                `${card.name}: ${this.getStatusLabel(effect.statusApplied.type)}`,
-                effect.statusApplied.type === STATUS_EFFECT_TYPE.POISON ? '#c483ff' : '#d3b0ff',
-            );
-            return;
+            actions.push({
+                kind: 'effect-text',
+                text: `${card.name}: ${this.getStatusLabel(effect.statusApplied.type)}`,
+                color: effect.statusApplied.type === STATUS_EFFECT_TYPE.POISON ? '#c483ff' : '#d3b0ff',
+            });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (effect.buffApplied) {
-            this.createFallbackEffectText(
-                `${card.name}: ${effect.buffApplied.type} +${effect.buffApplied.value}`,
-                '#ffb05e',
-            );
-            return;
+            actions.push({
+                kind: 'effect-text',
+                text: `${card.name}: ${effect.buffApplied.type} +${effect.buffApplied.value}`,
+                color: '#ffb05e',
+            });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (effect.cardsDrawn > 0) {
-            this.createFallbackEffectText(
-                effect.energyGained > 0
+            actions.push({
+                kind: 'effect-text',
+                text: effect.energyGained > 0
                     ? `${card.name}: draw ${effect.cardsDrawn}, +${effect.energyGained} energy`
                     : `${card.name}: draw ${effect.cardsDrawn}`,
-                '#8cd5ff',
-            );
-            return;
+                color: '#8cd5ff',
+            });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (effect.energyGained > 0) {
-            this.createFallbackEffectText(`${card.name}: +${effect.energyGained} energy`, '#8cd5ff');
-            return;
+            actions.push({ kind: 'effect-text', text: `${card.name}: +${effect.energyGained} energy`, color: '#8cd5ff' });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
-        this.createFallbackEffectText(`${card.name} used`, '#9aafc5');
+        actions.push({ kind: 'effect-text', text: `${card.name} used`, color: '#9aafc5' });
+        return this.ensureBattlePresentationFacade().present(actions);
     }
 
     private playCardSelectionMotion(handIndex: number, card: Card): void {
@@ -2819,65 +3483,85 @@ export class BattleScene extends Phaser.Scene {
             buffApplied?: CardEffectResult['buffApplied'];
             statusApplied?: CardStatusEffect;
         },
-    ): void {
+    ): number {
+        const actions: BattlePresentationAction[] = [];
+        let queueDelayMs = 0;
+
         if (actor === 'player' && (effect.selfDamageTaken ?? 0) > 0) {
-            this.playPanelImpactMotion('player', COLOR_ACTION_ATTACK);
+            actions.push({
+                kind: 'impact',
+                actor: 'player',
+                color: COLOR_ACTION_ATTACK,
+                delayMs: queueDelayMs,
+            });
+            queueDelayMs += ACTION_QUEUE_STEP_MS;
         }
 
         switch (card.effectType) {
             case CARD_EFFECT_TYPE.DAMAGE:
                 if (effect.damageDealt > 0 || (effect.damageBlocked ?? 0) > 0 || card.power > 0) {
-                    this.playPanelImpactMotion(actor === 'player' ? 'enemy' : 'player', COLOR_ACTION_ATTACK);
+                    actions.push({
+                        kind: 'impact',
+                        actor: actor === 'player' ? 'enemy' : 'player',
+                        color: COLOR_ACTION_ATTACK,
+                        delayMs: queueDelayMs,
+                    });
                 }
-                return;
+                return this.ensureBattlePresentationFacade().present(actions);
             case CARD_EFFECT_TYPE.MULTI_HIT:
-                this.playRepeatedImpactMotion(
-                    actor === 'player' ? 'enemy' : 'player',
-                    Math.max(1, effect.hitsResolved ?? 1),
-                    COLOR_ACTION_ATTACK,
-                );
-                return;
+                Array.from({ length: Math.max(1, effect.hitsResolved ?? 1) }, (_, index) => index)
+                    .forEach((hitIndex) => {
+                        actions.push({
+                            kind: 'impact',
+                            actor: actor === 'player' ? 'enemy' : 'player',
+                            color: COLOR_ACTION_ATTACK,
+                            delayMs: queueDelayMs + (hitIndex * ACTION_QUEUE_STEP_MS),
+                        });
+                    });
+                return this.ensureBattlePresentationFacade().present(actions);
             case CARD_EFFECT_TYPE.BLOCK:
                 if (effect.blockGained > 0) {
-                    this.playPanelPulseMotion(actor, COLOR_ACTION_DEFEND);
+                    actions.push({
+                        kind: 'pulse',
+                        actor,
+                        color: COLOR_ACTION_DEFEND,
+                        delayMs: queueDelayMs,
+                    });
                 }
-                return;
+                return this.ensureBattlePresentationFacade().present(actions);
             case CARD_EFFECT_TYPE.STATUS_EFFECT:
                 if (effect.statusApplied) {
-                    this.playPanelPulseMotion(actor === 'player' ? 'enemy' : 'player', COLOR_ACTION_STATUS);
+                    actions.push({
+                        kind: 'pulse',
+                        actor: actor === 'player' ? 'enemy' : 'player',
+                        color: COLOR_ACTION_STATUS,
+                        delayMs: queueDelayMs,
+                    });
                 }
-                return;
+                return this.ensureBattlePresentationFacade().present(actions);
             case CARD_EFFECT_TYPE.BUFF:
                 if (effect.buffApplied) {
-                    this.playPanelPulseMotion(actor, COLOR_ACTION_BUFF);
+                    actions.push({
+                        kind: 'pulse',
+                        actor,
+                        color: COLOR_ACTION_BUFF,
+                        delayMs: queueDelayMs,
+                    });
                 }
-                return;
+                return this.ensureBattlePresentationFacade().present(actions);
             case CARD_EFFECT_TYPE.FLEE:
                 if (effect.fled) {
-                    this.playPanelPulseMotion(actor, COLOR_ACTION_FLEE);
+                    actions.push({
+                        kind: 'pulse',
+                        actor,
+                        color: COLOR_ACTION_FLEE,
+                        delayMs: queueDelayMs,
+                    });
                 }
+                return this.ensureBattlePresentationFacade().present(actions);
         }
-    }
 
-    private playRepeatedImpactMotion(
-        actor: 'player' | 'enemy',
-        hitsResolved: number,
-        color: number,
-    ): void {
-        const sceneTime = (this as Phaser.Scene & {
-            time?: { delayedCall?: (delay: number, callback: () => void) => void };
-        }).time;
-
-        for (let hitIndex = 0; hitIndex < hitsResolved; hitIndex += 1) {
-            if (!sceneTime?.delayedCall) {
-                this.playPanelImpactMotion(actor, color);
-                continue;
-            }
-
-            sceneTime.delayedCall(hitIndex * 90, () => {
-                this.playPanelImpactMotion(actor, color);
-            });
-        }
+        return this.ensureBattlePresentationFacade().present(actions);
     }
 
     private playPanelImpactMotion(actor: 'player' | 'enemy', color: number): void {
@@ -2984,11 +3668,17 @@ export class BattleScene extends Phaser.Scene {
         blockGained: number,
         damageBlocked = 0,
         hitDamages?: readonly number[],
-    ): void {
-        this.clearEffectText();
-        this.appendBattleLog(this.formatEnemyActionLog(card, damage, blockGained, damageBlocked));
+    ): number {
+        const actions: BattlePresentationAction[] = [
+            { kind: 'clear-effect-text' },
+            {
+                kind: 'log',
+                message: this.formatEnemyActionLog(card, damage, blockGained, damageBlocked),
+            },
+        ];
+        let queueDelayMs = 0;
 
-        this.showPopupBatch('player-hp', [
+        const playerPopupSequence = this.buildQueuedPopupActions('player-hp', [
             ...(damageBlocked > 0
                 ? [{ type: 'blocked', value: damageBlocked } satisfies DamagePopupRequest]
                 : []),
@@ -2997,36 +3687,66 @@ export class BattleScene extends Phaser.Scene {
                 hitDamages?.length ?? (card.hitCount ?? card.effectPayload?.hitCount ?? (damage > 0 ? 1 : 0)),
                 hitDamages,
             ),
-        ]);
-        this.showPopupBatch('enemy-hp', blockGained > 0
+        ], queueDelayMs, (hitDamages?.length ?? card.hitCount ?? card.effectPayload?.hitCount ?? 0) > 1);
+        actions.push(...playerPopupSequence.actions);
+        if (playerPopupSequence.actions.length > 0) {
+            queueDelayMs = playerPopupSequence.nextDelayMs;
+        }
+
+        const enemyPopupSequence = this.buildQueuedPopupActions('enemy-hp', blockGained > 0
             ? [{ type: 'block_gain', value: blockGained }]
-            : []);
+            : [], queueDelayMs);
+        actions.push(...enemyPopupSequence.actions);
 
         if (damage > 0 || damageBlocked > 0) {
             const hitCount = hitDamages?.length ?? card.hitCount ?? card.effectPayload?.hitCount ?? 1;
-            this.createFallbackEffectText(
-                hitCount > 1
+            actions.push({
+                kind: 'effect-text',
+                text: hitCount > 1
                     ? `Enemy ${card.name}: flurry`
                     : `Enemy ${card.name}: attack`,
-                '#ff8f8f',
-            );
-            return;
+                color: '#ff8f8f',
+            });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
         if (blockGained > 0) {
-            this.createFallbackEffectText(`Enemy ${card.name}: +${blockGained} Block`, '#6eb6ff');
-            return;
+            actions.push({
+                kind: 'effect-text',
+                text: `Enemy ${card.name}: +${blockGained} Block`,
+                color: '#6eb6ff',
+            });
+            return this.ensureBattlePresentationFacade().present(actions);
         }
 
-        this.createFallbackEffectText(`Enemy ${card.name}`, '#ffb0b0');
+        actions.push({ kind: 'effect-text', text: `Enemy ${card.name}`, color: '#ffb0b0' });
+        return this.ensureBattlePresentationFacade().present(actions);
     }
 
-    private showEnemyBuffText(intent: BuffIntent): void {
-        this.clearEffectText();
-        this.appendBattleLog(`Enemy buffs +${intent.amount} ATK`);
+    private showEnemyBuffText(intent: BuffIntent): number {
+        const enemyLabel = this.getEnemyLabel();
+        if (intent.pattern === ENEMY_INTENT_PATTERN.CURSE) {
+            return this.ensureBattlePresentationFacade().present([
+                { kind: 'clear-effect-text' },
+                { kind: 'log', message: `${enemyLabel} prepares ${intent.curseCardName} x${intent.curseCount}` },
+                {
+                    kind: 'effect-text',
+                    text: `${enemyLabel} prepares ${intent.curseCardName} x${intent.curseCount}`,
+                    color: '#d788ff',
+                },
+            ]);
+        }
 
-        this.showPopupBatch('enemy-panel', [{ type: 'buff', value: intent.amount }]);
-        this.createFallbackEffectText(`Enemy buffs +${intent.amount} ATK`, '#ffb05e');
+        return this.ensureBattlePresentationFacade().present([
+            { kind: 'clear-effect-text' },
+            { kind: 'log', message: `${enemyLabel} buffs +${intent.amount} ATK` },
+            { kind: 'popups', anchorId: 'enemy-panel', requests: [{ type: 'buff', value: intent.amount }] },
+            {
+                kind: 'effect-text',
+                text: `${enemyLabel} buffs +${intent.amount} ATK`,
+                color: '#ffb05e',
+            },
+        ]);
     }
 
     private clearEffectText(): void {
@@ -3049,7 +3769,7 @@ export class BattleScene extends Phaser.Scene {
             this.playerState = statusResult.combatant;
             this.playerStatusEffects = statusResult.statusEffects;
         } else {
-            this.enemyState = statusResult.combatant;
+            this.setCurrentEncounterEnemyState(statusResult.combatant);
             this.enemyStatusEffects = statusResult.statusEffects;
         }
 
@@ -3168,6 +3888,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private appendStatusEventLogs(events: readonly StatusEffectEvent[]): void {
+        this.emitLegacyStatusApplied(events);
         events.forEach((event) => {
             this.appendBattleLog(this.formatStatusEventLog(event));
         });
@@ -3330,20 +4051,42 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private prepareTurnStartState(actor: 'player' | 'enemy'): void {
+        const retainedBlockRatio = this.getDreadRuleRetainedBlockRatio();
         if (!this.shouldPersistBlock(actor)) {
             if (actor === 'player' && this.equipmentConfig.blockPersistRatio > 0) {
                 this.playerState = {
                     ...this.playerState,
-                    block: Math.floor(this.playerState.block * this.equipmentConfig.blockPersistRatio),
+                    block: Math.floor(this.playerState.block * this.equipmentConfig.blockPersistRatio * retainedBlockRatio),
                 };
             } else if (actor === 'player') {
                 this.playerState = this.cardEffectService.resetBlock(this.playerState);
             } else {
-                this.enemyState = this.cardEffectService.resetBlock(this.enemyState);
+                this.setCurrentEncounterEnemyState(this.cardEffectService.resetBlock(this.enemyState));
+            }
+        } else if (retainedBlockRatio < 1) {
+            if (actor === 'player') {
+                this.playerState = {
+                    ...this.playerState,
+                    block: Math.floor(this.playerState.block * retainedBlockRatio),
+                };
+            } else {
+                this.setCurrentEncounterEnemyState({
+                    ...this.enemyState,
+                    block: Math.floor(this.enemyState.block * retainedBlockRatio),
+                });
             }
         }
 
         this.consumeBlockPersistCharge(actor);
+    }
+
+    private getDreadRuleRetainedBlockRatio(): number {
+        const retainedBlockRatio = this.dreadRule?.effects.blockRetainRatio;
+        if (typeof retainedBlockRatio !== 'number') {
+            return 1;
+        }
+
+        return Math.max(0, Math.min(1, retainedBlockRatio));
     }
 
     private consumeBlockPersistCharge(actor: 'player' | 'enemy'): void {
@@ -3378,11 +4121,16 @@ export class BattleScene extends Phaser.Scene {
             };
             this.playerDamageTakenWindow += this.equipmentConfig.turnStartSelfDamage;
             this.handlePlayerHealthLost(this.equipmentConfig.turnStartSelfDamage);
-            this.trackPlayerSelfDamage(this.equipmentConfig.turnStartSelfDamage);
-            this.applyDreadRuleSelfDamageReaction(this.equipmentConfig.turnStartSelfDamage);
             this.showPopupBatch('player-hp', [{ type: 'damage', value: this.equipmentConfig.turnStartSelfDamage }]);
             this.appendBattleLog(`Player pays ${this.equipmentConfig.turnStartSelfDamage} HP`);
-            this.syncPlayerBreakpointState();
+            this.emitBattleActionResolved({
+                actionType: 'TURN_START_SELF_DAMAGE',
+                sourceId: this.getPlayerActorId(),
+                targetIds: [this.getPlayerActorId()],
+                damage: this.equipmentConfig.turnStartSelfDamage,
+                block: 0,
+                statusDelta: [],
+            });
             if (this.playerState.health <= 0) {
                 this.showBattleEnd('player-lose');
                 return true;
@@ -3436,6 +4184,11 @@ export class BattleScene extends Phaser.Scene {
     private refreshCurrentEnemyAttackIntent(): void {
         const intent = this.currentEnemyIntent;
         if (intent?.type !== ENEMY_INTENT_TYPE.ATTACK) {
+            this.updateEncounterEnemyEntry(this.getEnemyActorId(), (entry) => ({
+                ...entry,
+                currentIntent: this.currentEnemyIntent,
+                intentQueue: [...this.enemyIntentQueue],
+            }));
             this.updateEnemyIntentDisplay(false);
             return;
         }
@@ -3454,43 +4207,109 @@ export class BattleScene extends Phaser.Scene {
                 hitCount: hitCount > 1 ? hitCount : undefined,
                 damagePerHit: hitCount > 1 ? sourceCard.power : undefined,
             };
-            if (this.enemyIntentQueue.length > 0) {
+            if (this.currentEnemyIntent && this.enemyIntentQueue.length > 0) {
                 this.enemyIntentQueue[0] = this.currentEnemyIntent;
             }
         }
+        this.updateEncounterEnemyEntry(this.getEnemyActorId(), (entry) => ({
+            ...entry,
+            currentIntent: this.currentEnemyIntent,
+            intentQueue: [...this.enemyIntentQueue],
+        }));
         this.updateEnemyIntentDisplay(false);
     }
 
-    private revealNextEnemyIntent(): EnemyIntent | undefined {
-        if (this.enemyCardPool.length === 0) {
-            this.enemyIntentQueue = [];
-            this.currentEnemyIntent = undefined;
-            this.updateEnemyIntentDisplay(false);
+    private revealNextEnemyIntent(enemyId: string = this.getEnemyActorId()): EnemyIntent | undefined {
+        const encounterEnemy = this.getEncounterEnemyEntryById(enemyId);
+        if (!encounterEnemy || this.getEffectiveEnemyCardPool(encounterEnemy).length === 0) {
+            this.updateEncounterEnemyEntry(enemyId, (entry) => ({
+                ...entry,
+                intentQueue: [],
+                currentIntent: undefined,
+            }));
+            if (this.getEnemyActorId() === enemyId) {
+                this.enemyIntentQueue = [];
+                this.currentEnemyIntent = undefined;
+                this.updateEnemyIntentDisplay(false);
+            }
             return undefined;
         }
 
-        this.ensureEnemyIntentQueue();
-        this.currentEnemyIntent = this.enemyIntentQueue[0];
-        this.updateEnemyIntentDisplay(true);
-        return this.currentEnemyIntent;
+        this.ensureEnemyIntentQueue(enemyId);
+        const nextEncounterEnemy = this.getEncounterEnemyEntryById(enemyId);
+        if (this.getEnemyActorId() === enemyId) {
+            this.currentEnemyIntent = nextEncounterEnemy?.currentIntent;
+            this.enemyIntentQueue = [...(nextEncounterEnemy?.intentQueue ?? [])];
+            this.updateEnemyIntentDisplay(true);
+        }
+
+        return nextEncounterEnemy?.currentIntent;
     }
 
-    private ensureEnemyIntentQueue(): void {
-        const previewCount = Math.max(1, this.equipmentConfig.previewEnemyIntentCount);
-        while (this.enemyIntentQueue.length < previewCount) {
-            this.enemyIntentQueue.push(this.enemyIntentService.decideNextIntent({
-                enemy: this.buildIntentEnemy(),
-                enemyCardPool: this.getEffectiveEnemyCardPool(),
+    private ensureEnemyIntentQueue(enemyId: string = this.getEnemyActorId()): void {
+        const encounterEnemy = this.getEncounterEnemyEntryById(enemyId);
+        if (!encounterEnemy) {
+            return;
+        }
+
+        const previewCount = this.getLivingEncounterEnemyStates().length > 1
+            ? 1
+            : Math.max(1, this.equipmentConfig.previewEnemyIntentCount);
+        const nextQueue = [...(encounterEnemy.intentQueue ?? [])];
+        while (nextQueue.length < previewCount) {
+            nextQueue.push(this.enemyIntentService.decideNextIntent({
+                enemy: this.buildIntentEnemy(encounterEnemy),
+                enemyCardPool: this.getEffectiveEnemyCardPool(encounterEnemy),
                 floorNumber: this.sceneData?.floorNumber,
             }));
         }
+
+        this.updateEncounterEnemyEntry(enemyId, (entry) => ({
+            ...entry,
+            intentQueue: nextQueue,
+            currentIntent: nextQueue[0],
+        }));
+
+        if (this.getEnemyActorId() === enemyId) {
+            this.enemyIntentQueue = [...nextQueue];
+            this.currentEnemyIntent = nextQueue[0];
+        }
     }
 
-    private consumeCurrentEnemyIntent(): void {
-        if (this.enemyIntentQueue.length > 0) {
-            this.enemyIntentQueue.shift();
+    private getEncounterEnemyIntentPreview(enemyId: string): EnemyIntent | undefined {
+        const encounterEnemy = this.getEncounterEnemyEntryById(enemyId);
+        if (!encounterEnemy) {
+            return undefined;
         }
-        this.currentEnemyIntent = this.enemyIntentQueue[0];
+
+        if ((encounterEnemy.intentQueue?.length ?? 0) === 0) {
+            this.ensureEnemyIntentQueue(enemyId);
+        }
+
+        return this.getEncounterEnemyEntryById(enemyId)?.currentIntent;
+    }
+
+    private consumeCurrentEnemyIntent(enemyId: string = this.getEnemyActorId()): void {
+        const encounterEnemy = this.getEncounterEnemyEntryById(enemyId);
+        if (!encounterEnemy) {
+            return;
+        }
+
+        const nextQueue = [...(encounterEnemy.intentQueue ?? [])];
+        if (nextQueue.length > 0) {
+            nextQueue.shift();
+        }
+
+        this.updateEncounterEnemyEntry(enemyId, (entry) => ({
+            ...entry,
+            intentQueue: nextQueue,
+            currentIntent: nextQueue[0],
+        }));
+
+        if (this.getEnemyActorId() === enemyId) {
+            this.enemyIntentQueue = [...nextQueue];
+            this.currentEnemyIntent = nextQueue[0];
+        }
     }
 
     private updateEnemyIntentDisplay(animated: boolean): void {
@@ -3522,11 +4341,27 @@ export class BattleScene extends Phaser.Scene {
             return '';
         }
 
+        const livingEnemies = this.getLivingEncounterEnemyStates();
+        if (livingEnemies.length > 1) {
+            if (this.shouldHideEnemyIntent()) {
+                return livingEnemies
+                    .map((entry) => `${entry.enemy.label}: ???`)
+                    .join('\n');
+            }
+
+            return livingEnemies
+                .map((entry) => this.formatEncounterEnemyIntentText(
+                    entry.enemy.label,
+                    this.getEncounterEnemyIntentPreview(entry.enemy.id),
+                ))
+                .join('\n');
+        }
+
         if (this.shouldHideEnemyIntent()) {
             return 'Next ???';
         }
 
-        const intent = this.currentEnemyIntent;
+        const intent = this.currentEnemyIntent ?? this.getEncounterEnemyIntentPreview(this.getEnemyActorId());
         if (!intent) {
             return '';
         }
@@ -3539,13 +4374,44 @@ export class BattleScene extends Phaser.Scene {
         return lines.join('\n');
     }
 
+    private formatEncounterEnemyIntentText(enemyLabel: string, intent?: EnemyIntent): string {
+        if (!intent) {
+            return `${enemyLabel}: ---`;
+        }
+
+        return `${enemyLabel}: ${this.formatEncounterEnemyIntentBody(intent)}`;
+    }
+
+    private formatEncounterEnemyIntentBody(intent: EnemyIntent): string {
+        switch (intent.type) {
+            case ENEMY_INTENT_TYPE.ATTACK:
+                return this.formatEncounterAttackIntentText(intent);
+            case ENEMY_INTENT_TYPE.DEFEND:
+                if (intent.pattern === ENEMY_INTENT_PATTERN.CLEANSE) {
+                    return `CLEANSE ✨ +${intent.block}${this.formatEnemyIntentCleanseHint(intent)}`;
+                }
+                return `GUARD 🛡️ +${intent.block}`;
+            case ENEMY_INTENT_TYPE.BUFF:
+                if (intent.pattern === ENEMY_INTENT_PATTERN.CURSE) {
+                    return `CURSE ☠️ ${intent.curseCardName} x${intent.curseCount}`;
+                }
+                return `RITUAL ⬆️ ${this.formatEnemyIntentBuffStat(intent.stat)} +${intent.amount}`;
+        }
+    }
+
     private formatSingleEnemyIntentText(intent: EnemyIntent): string {
         switch (intent.type) {
             case ENEMY_INTENT_TYPE.ATTACK:
                 return this.formatAttackIntentText('Next', intent);
             case ENEMY_INTENT_TYPE.DEFEND:
+                if (intent.pattern === ENEMY_INTENT_PATTERN.CLEANSE) {
+                    return `Next CLEANSE ✨ +${intent.block}${this.formatEnemyIntentCleanseHint(intent)}`;
+                }
                 return `Next GUARD 🛡️ +${intent.block}`;
             case ENEMY_INTENT_TYPE.BUFF:
+                if (intent.pattern === ENEMY_INTENT_PATTERN.CURSE) {
+                    return `Next CURSE ☠️ ${intent.curseCardName} x${intent.curseCount}`;
+                }
                 return `Next RITUAL ⬆️ ${this.formatEnemyIntentBuffStat(intent.stat)} +${intent.amount}`;
         }
     }
@@ -3555,19 +4421,48 @@ export class BattleScene extends Phaser.Scene {
             case ENEMY_INTENT_TYPE.ATTACK:
                 return this.formatAttackIntentText('Then', intent);
             case ENEMY_INTENT_TYPE.DEFEND:
+                if (intent.pattern === ENEMY_INTENT_PATTERN.CLEANSE) {
+                    return `Then CLEANSE ✨ +${intent.block}${this.formatEnemyIntentCleanseHint(intent)}`;
+                }
                 return `Then GUARD 🛡️ +${intent.block}`;
             case ENEMY_INTENT_TYPE.BUFF:
+                if (intent.pattern === ENEMY_INTENT_PATTERN.CURSE) {
+                    return `Then CURSE ☠️ ${intent.curseCardName} x${intent.curseCount}`;
+                }
                 return `Then RITUAL ⬆️ ${this.formatEnemyIntentBuffStat(intent.stat)} +${intent.amount}`;
         }
     }
 
     private formatAttackIntentText(prefix: 'Next' | 'Then', intent: AttackIntent): string {
+        if (intent.pattern === ENEMY_INTENT_PATTERN.CHARGE) {
+            return `${prefix} CHARGE ⏳ ${intent.damage} · ${intent.warning}`;
+        }
+        if (intent.pattern === ENEMY_INTENT_PATTERN.AMBUSH) {
+            return `${prefix} AMBUSH 🕶️ ${intent.damage} · ${intent.warning}`;
+        }
+
         const dangerHint = this.formatEnemyIntentDangerHint(intent);
-        if ((intent.hitCount ?? 1) > 1 && (intent.damagePerHit ?? 0) > 0) {
+        if (intent.pattern === ENEMY_INTENT_PATTERN.FLURRY && (intent.hitCount ?? 1) > 1 && (intent.damagePerHit ?? 0) > 0) {
             return `${prefix} FLURRY ⚔️ ${intent.damagePerHit}x${intent.hitCount}${dangerHint}`;
         }
 
         return `${prefix} STRIKE ⚔️ ${intent.damage}${dangerHint}`;
+    }
+
+    private formatEncounterAttackIntentText(intent: AttackIntent): string {
+        if (intent.pattern === ENEMY_INTENT_PATTERN.CHARGE) {
+            return `CHARGE ⏳ ${intent.damage} · ${intent.warning}`;
+        }
+        if (intent.pattern === ENEMY_INTENT_PATTERN.AMBUSH) {
+            return `AMBUSH 🕶️ ${intent.damage} · ${intent.warning}`;
+        }
+
+        const dangerHint = this.formatEnemyIntentDangerHint(intent);
+        if (intent.pattern === ENEMY_INTENT_PATTERN.FLURRY && (intent.hitCount ?? 1) > 1 && (intent.damagePerHit ?? 0) > 0) {
+            return `FLURRY ⚔️ ${intent.damagePerHit}x${intent.hitCount}${dangerHint}`;
+        }
+
+        return `STRIKE ⚔️ ${intent.damage}${dangerHint}`;
     }
 
     private formatEnemyIntentBuffStat(stat: EnemyIntentBuffStat): string {
@@ -3575,6 +4470,14 @@ export class BattleScene extends Phaser.Scene {
             case 'attack':
                 return 'ATK';
         }
+    }
+
+    private formatEnemyIntentCleanseHint(intent: { readonly cleansedStatuses: readonly string[] }): string {
+        if (intent.cleansedStatuses.length === 0) {
+            return '';
+        }
+
+        return ` · clear ${intent.cleansedStatuses.join('/')}`;
     }
 
     private formatEnemyIntentDangerHint(intent: EnemyIntent): string {
@@ -3606,13 +4509,15 @@ export class BattleScene extends Phaser.Scene {
         return '';
     }
 
-    private getEffectiveEnemyCardPool(): readonly Card[] {
-        const attackModifier = this.enemyAttackBuff - this.enemyAttackDebuff;
+    private getEffectiveEnemyCardPool(encounterEnemy?: EncounterEnemyState): readonly Card[] {
+        const cardPool = encounterEnemy?.cardPool ?? this.enemyCardPool;
+        const attackModifier = (encounterEnemy?.attackBuff ?? this.enemyAttackBuff)
+            - (encounterEnemy?.attackDebuff ?? this.enemyAttackDebuff);
         if (attackModifier === 0) {
-            return this.enemyCardPool;
+            return cardPool;
         }
 
-        return this.enemyCardPool.map((card) => {
+        return cardPool.map((card) => {
             if (card.effectType !== CARD_EFFECT_TYPE.DAMAGE) {
                 return card;
             }
@@ -3624,15 +4529,19 @@ export class BattleScene extends Phaser.Scene {
         });
     }
 
-    private resolveEnemyCardFromIntent(intent: EnemyIntent): Card {
+    private resolveEnemyCardFromIntent(intent: EnemyIntent, encounterEnemy?: EncounterEnemyState): Card {
         if (intent.type === ENEMY_INTENT_TYPE.ATTACK || intent.type === ENEMY_INTENT_TYPE.DEFEND) {
-            const sourceCard = this.getEffectiveEnemyCardPool().find((card) => card.id === intent.sourceCardId);
+            const sourceCard = this.getEffectiveEnemyCardPool(encounterEnemy).find((card) => card.id === intent.sourceCardId);
             if (sourceCard) {
                 return sourceCard;
             }
         }
 
-        if (intent.type === ENEMY_INTENT_TYPE.ATTACK && (intent.hitCount ?? 1) > 1) {
+        if (
+            intent.type === ENEMY_INTENT_TYPE.ATTACK
+            && intent.pattern === ENEMY_INTENT_PATTERN.FLURRY
+            && (intent.hitCount ?? 1) > 1
+        ) {
             return createCard({
                 name: intent.label,
                 type: CARD_TYPE.ATTACK,
@@ -3643,11 +4552,11 @@ export class BattleScene extends Phaser.Scene {
             });
         }
 
-        return this.buildFallbackEnemyCard(intent.type);
+        return this.buildFallbackEnemyCard(intent.type, encounterEnemy);
     }
 
-    private buildFallbackEnemyCard(intentType: EnemyIntentType): Card {
-        const enemy = this.buildIntentEnemy();
+    private buildFallbackEnemyCard(intentType: EnemyIntentType, encounterEnemy?: EncounterEnemyState): Card {
+        const enemy = this.buildIntentEnemy(encounterEnemy);
 
         if (intentType === ENEMY_INTENT_TYPE.DEFEND) {
             return createCard({
@@ -3658,24 +4567,39 @@ export class BattleScene extends Phaser.Scene {
             });
         }
 
+        if (intentType === ENEMY_INTENT_TYPE.BUFF) {
+            return createCard({
+                name: 'Enemy Ritual',
+                type: CARD_TYPE.POWER,
+                power: 0,
+                effectType: CARD_EFFECT_TYPE.BUFF,
+            });
+        }
+
         return createCard({
             name: 'Enemy Strike',
             type: CARD_TYPE.ATTACK,
-            power: Math.max(0, enemy.stats.attack + this.enemyAttackBuff - this.enemyAttackDebuff),
+            power: Math.max(
+                0,
+                enemy.stats.attack
+                    + (encounterEnemy?.attackBuff ?? this.enemyAttackBuff)
+                    - (encounterEnemy?.attackDebuff ?? this.enemyAttackDebuff),
+            ),
             effectType: CARD_EFFECT_TYPE.DAMAGE,
         });
     }
 
-    private buildIntentEnemy(): EnemyEntity {
-        const baseEnemy = this.sceneData?.enemy;
+    private buildIntentEnemy(encounterEnemy?: EncounterEnemyState): EnemyEntity {
+        const baseEnemy = encounterEnemy?.enemy ?? this.sceneData?.enemy;
+        const combatState = encounterEnemy?.state ?? this.enemyState;
 
         return new Enemy(
             baseEnemy?.id ?? 'enemy-intent',
             baseEnemy?.label ?? this.getEnemyLabel(),
             baseEnemy?.position ? { ...baseEnemy.position } : { x: 0, y: 0 },
             {
-                health: this.enemyState?.health ?? baseEnemy?.stats.health ?? 0,
-                maxHealth: this.enemyState?.maxHealth ?? baseEnemy?.stats.maxHealth ?? 1,
+                health: combatState?.health ?? baseEnemy?.stats.health ?? 0,
+                maxHealth: combatState?.maxHealth ?? baseEnemy?.stats.maxHealth ?? 1,
                 attack: baseEnemy?.stats.attack ?? 10,
                 defense: baseEnemy?.stats.defense ?? 5,
                 movementSpeed: baseEnemy?.stats.movementSpeed ?? DEFAULT_MOVEMENT_SPEED,
@@ -3746,6 +4670,13 @@ export class BattleScene extends Phaser.Scene {
     }
 
     private endBattle(outcome: BattleOutcomeType): void {
+        const leadEnemyState = this.getEncounterEnemyStateById(this.sceneData.enemy.id)
+            ?? this.encounterEnemyStates[0];
+        const leadEnemyHealth = leadEnemyState
+            ? 'state' in leadEnemyState
+                ? leadEnemyState.state.health
+                : leadEnemyState.health
+            : this.enemyState.health;
         const result: BattleSceneResult = {
             outcome,
             resolution: this.battleResolution,
@@ -3753,9 +4684,23 @@ export class BattleScene extends Phaser.Scene {
             totalPlayerDamage: this.totalPlayerDamage,
             totalEnemyDamage: this.totalEnemyDamage,
             playerRemainingHealth: this.playerState.health,
-            enemyRemainingHealth: this.enemyState.health,
+            enemyRemainingHealth: leadEnemyHealth,
             nextBattleStartEnergyBonus: this.nextBattleStartEnergyBonus,
             enemy: this.sceneData.enemy,
+            enemies: this.encounterEnemyStates.map((entry) => new Enemy(
+                entry.enemy.id,
+                entry.enemy.label,
+                { ...entry.enemy.position },
+                {
+                    ...entry.enemy.stats,
+                    health: entry.state.health,
+                    maxHealth: entry.state.maxHealth,
+                },
+                entry.enemy.experienceReward,
+                entry.enemy.kind,
+                entry.enemy.archetypeId,
+                entry.enemy.elite,
+            )),
         };
 
         if (this.onBattleEndCallback) {

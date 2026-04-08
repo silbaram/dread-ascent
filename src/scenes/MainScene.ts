@@ -299,9 +299,11 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     }
 
     private launchBattleScene(player: Player, enemy: Enemy): void {
+        const encounterEnemies = this.floorDirector.buildBattleEncounter(enemy);
         const battleData: BattleSceneData = {
             player,
             enemy,
+            encounterEnemies,
             deckService: this.deckService,
             cardBattleService: this.cardBattleService,
             itemService: this.itemService,
@@ -324,17 +326,23 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.hud.setViewportMode('field');
         if (!this.playerEntity) return;
 
-        const { enemy } = result;
+        const encounterEnemies = result.enemies && result.enemies.length > 0
+            ? result.enemies
+            : [result.enemy];
+        const leadEnemy = encounterEnemies.find((enemy) => enemy.id === result.enemy.id) ?? encounterEnemies[0] ?? result.enemy;
         this.pendingBattleStartEnergy = Math.max(0, result.nextBattleStartEnergyBonus);
 
         this.playerEntity.stats.health = this.clampHealth(
             result.playerRemainingHealth,
             this.playerEntity.stats.maxHealth,
         );
-        enemy.stats.health = this.clampHealth(
-            result.enemyRemainingHealth,
-            enemy.stats.maxHealth,
-        );
+        encounterEnemies.forEach((enemy) => {
+            enemy.stats.health = this.clampHealth(enemy.stats.health, enemy.stats.maxHealth);
+        });
+        leadEnemy.stats.health = this.clampHealth(result.enemyRemainingHealth, leadEnemy.stats.maxHealth);
+        if (result.enemy.id === leadEnemy.id) {
+            result.enemy.stats.health = leadEnemy.stats.health;
+        }
 
         // 로그 기록
         const battleSummary = result.resolution === 'escape'
@@ -375,15 +383,16 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             this.persistRun('active');
             this.completePlayerTurn('');
         } else if (result.outcome === 'player-win') {
-            if (enemy.isDead()) {
-                if (enemy.isBoss()) {
-                    this.handleBossDefeat(enemy);
-                } else {
-                    this.floorDirector.removeEnemy(enemy.id);
-                    this.renderSynchronizer.removeEnemySprite(enemy.id);
-                    this.battleDirector.refreshTurnQueueRoster();
-                    this.handleEnemyDeath(enemy);
-                }
+            if (leadEnemy.isDead() && leadEnemy.isBoss()) {
+                this.handleBossDefeat(leadEnemy);
+                return;
+            }
+
+            if (leadEnemy.isDead()) {
+                this.floorDirector.removeEnemy(leadEnemy.id);
+                this.renderSynchronizer.removeEnemySprite(leadEnemy.id);
+                this.battleDirector.refreshTurnQueueRoster();
+                this.handleEnemyDeath(leadEnemy);
             } else {
                 this.completePlayerTurn('');
             }

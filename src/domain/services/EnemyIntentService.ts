@@ -37,6 +37,10 @@ export const ENEMY_INTENT_PATTERN = {
     FLURRY: 'flurry',
     GUARD: 'guard',
     RITUAL: 'ritual',
+    CHARGE: 'charge',
+    CURSE: 'curse',
+    CLEANSE: 'cleanse',
+    AMBUSH: 'ambush',
 } as const;
 
 export type EnemyIntentPattern = (typeof ENEMY_INTENT_PATTERN)[keyof typeof ENEMY_INTENT_PATTERN];
@@ -52,9 +56,17 @@ export interface EnemyIntentRandomSource {
     next(): number;
 }
 
-export interface AttackIntent {
+export interface StrikeIntent {
     readonly type: typeof ENEMY_INTENT_TYPE.ATTACK;
-    readonly pattern: typeof ENEMY_INTENT_PATTERN.STRIKE | typeof ENEMY_INTENT_PATTERN.FLURRY;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.STRIKE;
+    readonly damage: number;
+    readonly label: string;
+    readonly sourceCardId?: string;
+}
+
+export interface FlurryIntent {
+    readonly type: typeof ENEMY_INTENT_TYPE.ATTACK;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.FLURRY;
     readonly damage: number;
     readonly label: string;
     readonly hitCount?: number;
@@ -62,7 +74,27 @@ export interface AttackIntent {
     readonly sourceCardId?: string;
 }
 
-export interface DefendIntent {
+export interface ChargeIntent {
+    readonly type: typeof ENEMY_INTENT_TYPE.ATTACK;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.CHARGE;
+    readonly damage: number;
+    readonly label: string;
+    readonly warning: string;
+    readonly sourceCardId?: string;
+}
+
+export interface AmbushIntent {
+    readonly type: typeof ENEMY_INTENT_TYPE.ATTACK;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.AMBUSH;
+    readonly damage: number;
+    readonly label: string;
+    readonly warning: string;
+    readonly sourceCardId?: string;
+}
+
+export type AttackIntent = StrikeIntent | FlurryIntent | ChargeIntent | AmbushIntent;
+
+export interface GuardIntent {
     readonly type: typeof ENEMY_INTENT_TYPE.DEFEND;
     readonly pattern: typeof ENEMY_INTENT_PATTERN.GUARD;
     readonly block: number;
@@ -70,13 +102,35 @@ export interface DefendIntent {
     readonly sourceCardId?: string;
 }
 
-export interface BuffIntent {
+export interface CleanseIntent {
+    readonly type: typeof ENEMY_INTENT_TYPE.DEFEND;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.CLEANSE;
+    readonly block: number;
+    readonly label: string;
+    readonly cleansedStatuses: readonly string[];
+    readonly sourceCardId?: string;
+}
+
+export type DefendIntent = GuardIntent | CleanseIntent;
+
+export interface RitualIntent {
     readonly type: typeof ENEMY_INTENT_TYPE.BUFF;
     readonly pattern: typeof ENEMY_INTENT_PATTERN.RITUAL;
     readonly stat: EnemyIntentBuffStat;
     readonly amount: number;
     readonly label: string;
 }
+
+export interface CurseIntent {
+    readonly type: typeof ENEMY_INTENT_TYPE.BUFF;
+    readonly pattern: typeof ENEMY_INTENT_PATTERN.CURSE;
+    readonly label: string;
+    readonly curseCardName: string;
+    readonly curseCount: number;
+    readonly sourceCardId?: string;
+}
+
+export type BuffIntent = RitualIntent | CurseIntent;
 
 export type EnemyIntent = AttackIntent | DefendIntent | BuffIntent;
 
@@ -213,7 +267,7 @@ export class EnemyIntentService {
             case ENEMY_INTENT_TYPE.DEFEND:
                 return this.buildDefendIntent(request);
             case ENEMY_INTENT_TYPE.BUFF:
-                return this.buildBuffIntent(request.enemy);
+                return this.buildBuffIntent(request);
         }
     }
 
@@ -226,6 +280,26 @@ export class EnemyIntentService {
         if (strongestAttackCard) {
             const hitCount = strongestAttackCard.hitCount ?? strongestAttackCard.effectPayload?.hitCount ?? 1;
             const damagePerHit = strongestAttackCard.power;
+            if (this.isAmbushIntentCard(strongestAttackCard)) {
+                return {
+                    type: ENEMY_INTENT_TYPE.ATTACK,
+                    pattern: ENEMY_INTENT_PATTERN.AMBUSH,
+                    damage: damagePerHit * hitCount,
+                    label: strongestAttackCard.name,
+                    warning: 'Hidden prep',
+                    sourceCardId: strongestAttackCard.id,
+                };
+            }
+            if (this.isChargeIntentCard(strongestAttackCard)) {
+                return {
+                    type: ENEMY_INTENT_TYPE.ATTACK,
+                    pattern: ENEMY_INTENT_PATTERN.CHARGE,
+                    damage: damagePerHit * hitCount,
+                    label: strongestAttackCard.name,
+                    warning: 'Next turn burst',
+                    sourceCardId: strongestAttackCard.id,
+                };
+            }
             return {
                 type: ENEMY_INTENT_TYPE.ATTACK,
                 pattern: hitCount > 1
@@ -254,6 +328,17 @@ export class EnemyIntentService {
         );
 
         if (strongestDefendCard) {
+            if (this.isCleanseIntentCard(strongestDefendCard)) {
+                return {
+                    type: ENEMY_INTENT_TYPE.DEFEND,
+                    pattern: ENEMY_INTENT_PATTERN.CLEANSE,
+                    block: strongestDefendCard.power,
+                    label: strongestDefendCard.name,
+                    cleansedStatuses: this.inferCleansedStatuses(strongestDefendCard),
+                    sourceCardId: strongestDefendCard.id,
+                };
+            }
+
             return {
                 type: ENEMY_INTENT_TYPE.DEFEND,
                 pattern: ENEMY_INTENT_PATTERN.GUARD,
@@ -271,8 +356,23 @@ export class EnemyIntentService {
         };
     }
 
-    private buildBuffIntent(enemy: Enemy): BuffIntent {
-        const profile = this.resolveProfile(enemy);
+    private buildBuffIntent(request: DecideEnemyIntentRequest): BuffIntent {
+        const curseCard = this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isCurseIntentCard(card),
+        );
+        if (curseCard) {
+            return {
+                type: ENEMY_INTENT_TYPE.BUFF,
+                pattern: ENEMY_INTENT_PATTERN.CURSE,
+                label: curseCard.name,
+                curseCardName: this.inferCurseCardName(curseCard),
+                curseCount: 1,
+                sourceCardId: curseCard.id,
+            };
+        }
+
+        const profile = this.resolveProfile(request.enemy);
 
         return {
             type: ENEMY_INTENT_TYPE.BUFF,
@@ -300,5 +400,46 @@ export class EnemyIntentService {
     private getIntentThreatScore(card: Card): number {
         const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
         return card.power * Math.max(1, hitCount);
+    }
+
+    private isChargeIntentCard(card: Card): boolean {
+        return /charge|wind[- ]?up|primed/i.test(card.name);
+    }
+
+    private isAmbushIntentCard(card: Card): boolean {
+        return /ambush|lurk|stalk/i.test(card.name);
+    }
+
+    private isCleanseIntentCard(card: Card): boolean {
+        return /cleanse|purge|purify/i.test(card.name);
+    }
+
+    private isCurseIntentCard(card: Card): boolean {
+        return /curse|hex|dread/i.test(card.name);
+    }
+
+    private inferCleansedStatuses(card: Card): readonly string[] {
+        if (/poison/i.test(card.name)) {
+            return ['Poison'];
+        }
+        if (/frail/i.test(card.name)) {
+            return ['Frail'];
+        }
+        if (/weak/i.test(card.name)) {
+            return ['Weak'];
+        }
+        if (/vulnerable/i.test(card.name)) {
+            return ['Vulnerable'];
+        }
+
+        return ['Poison'];
+    }
+
+    private inferCurseCardName(card: Card): string {
+        if (/hex/i.test(card.name)) {
+            return 'Hex';
+        }
+
+        return 'Dread';
     }
 }

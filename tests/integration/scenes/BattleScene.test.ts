@@ -7,6 +7,7 @@ import {
     createCard,
     resetCardSequence,
 } from '../../../src/domain/entities/Card';
+import type { EnemyArchetypeId } from '../../../src/domain/entities/Enemy';
 import { CardEffectService } from '../../../src/domain/services/CardEffectService';
 import { CardBattleService } from '../../../src/domain/services/CardBattleService';
 import { DrawCycleService } from '../../../src/domain/services/DrawCycleService';
@@ -16,12 +17,19 @@ import {
     ENEMY_INTENT_PATTERN,
     ENEMY_INTENT_TYPE,
     EnemyIntentService,
+    type EnemyIntent,
 } from '../../../src/domain/services/EnemyIntentService';
 import {
     StatusEffectService,
     type StatusEffectState,
 } from '../../../src/domain/services/StatusEffectService';
 import { getBattleEquipmentConfig } from '../../../src/domain/services/EquipmentEffectService';
+import {
+    BATTLE_EVENT_NAME,
+    LEGACY_BATTLE_EVENT_NAME,
+    type BattleEventBus,
+    type BattleEventRecord,
+} from '../../../src/scenes/events/BattleEventBus.ts';
 
 vi.mock('phaser', () => ({}));
 
@@ -101,10 +109,61 @@ interface TestScene {
             };
             experienceReward: number;
             kind: 'normal' | 'boss';
-            archetypeId: 'ash-crawler' | 'blade-raider' | 'dread-sentinel' | 'final-boss';
+            archetypeId: EnemyArchetypeId;
             elite: boolean;
         };
+        enemyName?: string;
+        encounterEnemies?: readonly {
+            id: string;
+            label: string;
+            position: { x: number; y: number };
+            stats: {
+                health: number;
+                maxHealth: number;
+                attack: number;
+                defense: number;
+            };
+            experienceReward: number;
+            kind: 'normal' | 'boss';
+            archetypeId: EnemyArchetypeId;
+            elite: boolean;
+        }[];
     };
+    encounterEnemyStates?: Array<{
+        enemy: {
+            id: string;
+            label: string;
+            position: { x: number; y: number };
+            stats: {
+                health: number;
+                maxHealth: number;
+                attack: number;
+                defense: number;
+            };
+            experienceReward: number;
+            kind: 'normal' | 'boss';
+            archetypeId: EnemyArchetypeId;
+            elite: boolean;
+        };
+        state: {
+            health: number;
+            maxHealth: number;
+            block: number;
+        };
+        statusEffects?: StatusEffectState;
+        cardPool?: ReturnType<typeof createCard>[];
+        intentQueue?: EnemyIntent[];
+        currentIntent?: EnemyIntent;
+        ongoingBuffs?: {
+            blockPersist: boolean;
+            blockPersistCharges: number;
+            strengthOnSelfDamage: number;
+            poisonPerTurn: number;
+        };
+        attackBuff?: number;
+        attackDebuff?: number;
+        attackDebuffDuration?: number;
+    }>;
     scene: {
         stop: ReturnType<typeof vi.fn>;
         wake: ReturnType<typeof vi.fn>;
@@ -140,6 +199,8 @@ interface TestScene {
     damagePopupController: {
         showBatch: ReturnType<typeof vi.fn>;
     };
+    battlePresentationFacade?: object;
+    battleEventBus?: BattleEventBus;
     enemyIntentText?: {
         setText: ReturnType<typeof vi.fn>;
         setAlpha: ReturnType<typeof vi.fn>;
@@ -269,23 +330,32 @@ describe('BattleScene block lifecycle', () => {
         scene.turnNumber = 0;
         scene.battleResolution = 'victory';
         scene.onBattleEndCallback = vi.fn();
-        scene.sceneData = {
-            enemy: {
-                id: 'enemy-1',
-                label: 'Enemy',
-                position: { x: 0, y: 0 },
-                stats: {
-                    health: 40,
-                    maxHealth: 40,
-                    attack: 4,
-                    defense: 2,
-                },
-                experienceReward: 10,
-                kind: 'normal',
-                archetypeId: 'ash-crawler',
-                elite: false,
+        const encounterEnemy = {
+            id: 'enemy-1',
+            label: 'Enemy',
+            position: { x: 0, y: 0 },
+            stats: {
+                health: 40,
+                maxHealth: 40,
+                attack: 4,
+                defense: 2,
             },
+            experienceReward: 10,
+            kind: 'normal' as const,
+            archetypeId: 'ash-crawler' as const,
+            elite: false,
         };
+        scene.sceneData = {
+            enemy: encounterEnemy,
+            enemyName: encounterEnemy.label,
+            encounterEnemies: [encounterEnemy],
+        };
+        scene.encounterEnemyStates = [
+            {
+                enemy: encounterEnemy,
+                state: { health: 40, maxHealth: 40, block: 0 },
+            },
+        ];
         scene.scene = {
             stop: vi.fn(),
             wake: vi.fn(),
@@ -360,9 +430,222 @@ describe('BattleScene block lifecycle', () => {
         scene.nextBattleStartEnergyBonus = 0;
         scene.playerSelfDamageTotal = 0;
         scene.updateTurnDisplay = vi.fn();
+        scene.battlePresentationFacade = (
+            BattleScene.prototype as unknown as {
+                createBattlePresentationFacade: () => object;
+            }
+        ).createBattlePresentationFacade.call(scene);
 
         return scene;
     }
+
+    function getBattleEvents(scene: TestScene): readonly BattleEventRecord[] {
+        return scene.battleEventBus?.snapshot() ?? [];
+    }
+
+    it('emits battle and legacy turn-start events with draw payload', () => {
+        const scene = createScene();
+        scene.drawCycleState = scene.drawCycleService.initialize([
+            createCard({
+                name: 'Strike',
+                type: CARD_TYPE.ATTACK,
+                power: 6,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            }),
+            createCard({
+                name: 'Fortify',
+                type: CARD_TYPE.GUARD,
+                power: 5,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            }),
+            createCard({
+                name: 'Quick Draw',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 0,
+                effectType: CARD_EFFECT_TYPE.DRAW,
+            }),
+        ]);
+
+        (BattleScene.prototype as unknown as {
+            startPlayerTurn: () => void;
+        }).startPlayerTurn.call(scene);
+
+        expect(getBattleEvents(scene)).toEqual([
+            {
+                name: BATTLE_EVENT_NAME.TURN_STARTED,
+                payload: expect.objectContaining({
+                    battleId: 'battle:local',
+                    turnNumber: 1,
+                    energy: 3,
+                    drawCount: 3,
+                    handCount: 3,
+                }),
+            },
+            {
+                name: LEGACY_BATTLE_EVENT_NAME.TURN_STARTED,
+                payload: expect.objectContaining({
+                    turnNumber: 1,
+                    energy: 3,
+                    drawCount: 3,
+                    handCount: 3,
+                }),
+            },
+        ]);
+    });
+
+    it('emits battle and legacy card events before the action-resolved event', () => {
+        const scene = createScene();
+        const strike = createCard({
+            id: 'strike-test',
+            name: 'Strike',
+            type: CARD_TYPE.ATTACK,
+            power: 7,
+            cost: 1,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+        });
+        scene.energyState = { current: 3, max: 3 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [strike],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(getBattleEvents(scene).map((event) => event.name)).toEqual([
+            BATTLE_EVENT_NAME.CARD_PLAYED,
+            LEGACY_BATTLE_EVENT_NAME.CARD_PLAYED,
+            BATTLE_EVENT_NAME.ACTION_RESOLVED,
+        ]);
+        expect(getBattleEvents(scene)[0]).toEqual({
+            name: BATTLE_EVENT_NAME.CARD_PLAYED,
+            payload: expect.objectContaining({
+                battleId: 'battle:local',
+                turnNumber: 0,
+                cardId: 'strike-test',
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+                cost: 1,
+                remainingEnergy: 2,
+                targetIds: ['enemy-1'],
+            }),
+        });
+        expect(getBattleEvents(scene)[2]).toEqual({
+            name: BATTLE_EVENT_NAME.ACTION_RESOLVED,
+            payload: expect.objectContaining({
+                battleId: 'battle:local',
+                turnNumber: 0,
+                actionType: CARD_EFFECT_TYPE.DAMAGE,
+                sourceId: 'player',
+                targetIds: ['enemy-1'],
+                damage: 7,
+                block: 0,
+                queueIndex: 0,
+            }),
+        });
+    });
+
+    it('keeps emitting legacy STATUS_APPLIED while action-resolved status deltas are added', () => {
+        const scene = createScene();
+        scene.energyState = { current: 3, max: 3 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Weaken',
+                    type: CARD_TYPE.ATTACK,
+                    power: 0,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+                    statusEffect: { type: 'VULNERABLE', duration: 2 },
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(getBattleEvents(scene)).toContainEqual({
+            name: LEGACY_BATTLE_EVENT_NAME.STATUS_APPLIED,
+            payload: {
+                targetId: 'enemy-1',
+                statusType: 'VULNERABLE',
+                value: 2,
+                expiresAtTurn: 2,
+            },
+        });
+        expect(getBattleEvents(scene)).toContainEqual({
+            name: BATTLE_EVENT_NAME.ACTION_RESOLVED,
+            payload: expect.objectContaining({
+                actionType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+                statusDelta: [{ targetId: 'enemy-1', statusType: 'VULNERABLE', value: 2 }],
+            }),
+        });
+    });
+
+    it('emits battle and legacy turn-end events with retained and exhausted counts', () => {
+        const scene = createScene();
+        scene.energyState = { current: 2, max: 3 };
+        scene.time = {
+            delayedCall: vi.fn(),
+        };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Planning',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DRAW,
+                    keywords: [CARD_KEYWORD.RETAIN],
+                }),
+                createCard({
+                    name: 'Dread',
+                    type: CARD_TYPE.CURSE,
+                    power: 0,
+                    cost: 0,
+                    effectType: CARD_EFFECT_TYPE.DRAW,
+                    keywords: [CARD_KEYWORD.ETHEREAL],
+                }),
+                createCard({
+                    name: 'Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onEndTurn();
+
+        expect(getBattleEvents(scene)).toContainEqual({
+            name: BATTLE_EVENT_NAME.TURN_ENDED,
+            payload: expect.objectContaining({
+                battleId: 'battle:local',
+                turnNumber: 0,
+                remainingEnergy: 2,
+                handCount: 1,
+                retainedCount: 1,
+                exhaustedCount: 1,
+            }),
+        });
+        expect(getBattleEvents(scene)).toContainEqual({
+            name: LEGACY_BATTLE_EVENT_NAME.TURN_ENDED,
+            payload: {
+                turnNumber: 0,
+                remainingEnergy: 2,
+                handCount: 1,
+            },
+        });
+    });
 
     it('applies player block to the incoming enemy attack before the next turn starts', () => {
         const scene = createScene();
@@ -754,18 +1037,28 @@ describe('BattleScene block lifecycle', () => {
 
         expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
             1,
-            { id: 'enemy-hp', x: 292, y: 68 },
-            [
-                { type: 'damage', value: 3 },
-                { type: 'damage', value: 3 },
-                { type: 'damage', value: 3 },
-                { type: 'damage', value: 3 },
-            ],
+            { id: 'player-hp', x: 292, y: 248 },
+            [{ type: 'damage', value: 2 }],
         );
         expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
             2,
-            { id: 'player-hp', x: 292, y: 248 },
-            [{ type: 'damage', value: 2 }],
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [{ type: 'damage', value: 3 }],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            3,
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [{ type: 'damage', value: 3 }],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            4,
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [{ type: 'damage', value: 3 }],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            5,
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [{ type: 'damage', value: 3 }],
         );
     });
 
@@ -795,11 +1088,17 @@ describe('BattleScene block lifecycle', () => {
         expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
             1,
             { id: 'enemy-hp', x: 292, y: 68 },
-            [
-                { type: 'blocked', value: 10 },
-                { type: 'damage', value: 1 },
-                { type: 'damage', value: 1 },
-            ],
+            [{ type: 'blocked', value: 10 }],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            2,
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [{ type: 'damage', value: 1 }],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            3,
+            { id: 'enemy-hp', x: 292, y: 68 },
+            [{ type: 'damage', value: 1 }],
         );
     });
 
@@ -1128,6 +1427,343 @@ describe('BattleScene block lifecycle', () => {
         scene.onPlayCard(0);
 
         expect(scene.showBattleEnd).toHaveBeenCalledWith('player-win', 'escape');
+    });
+
+    it('switches to the next living enemy in a multi-enemy encounter instead of ending the battle', () => {
+        const scene = createScene() as TestScene & {
+            getEnemyActorId: () => string;
+            getEncounterEnemyStateById: (enemyId: string) => { health: number; maxHealth: number; block: number } | undefined;
+        };
+        const leadEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-1',
+            label: 'Ash Crawler',
+            stats: {
+                ...scene.sceneData.enemy.stats,
+                health: 6,
+                maxHealth: 6,
+            },
+        };
+        const supportEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-2',
+            label: 'Blade Raider',
+            archetypeId: 'blade-raider' as const,
+            stats: {
+                ...scene.sceneData.enemy.stats,
+                health: 12,
+                maxHealth: 12,
+            },
+        };
+        scene.sceneData = {
+            ...scene.sceneData,
+            enemy: leadEnemy,
+            enemyName: leadEnemy.label,
+            encounterEnemies: [leadEnemy, supportEnemy],
+        };
+        scene.encounterEnemyStates = [
+            { enemy: leadEnemy, state: { health: 6, maxHealth: 6, block: 0 } },
+            { enemy: supportEnemy, state: { health: 12, maxHealth: 12, block: 0 } },
+        ];
+        scene.enemyState = { health: 6, maxHealth: 6, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+
+        expect(scene.showBattleEnd).not.toHaveBeenCalled();
+        expect(scene.sceneData.enemy.id).toBe('enemy-2');
+        expect(scene.getEnemyActorId()).toBe('enemy-2');
+        expect(scene.enemyState.health).toBe(12);
+        expect(scene.getEncounterEnemyStateById('enemy-1')?.health).toBe(0);
+        expect(scene.getEncounterEnemyStateById('enemy-2')?.health).toBe(12);
+        expect(getBattleEvents(scene)).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                name: BATTLE_EVENT_NAME.ACTION_RESOLVED,
+                payload: expect.objectContaining({
+                    targetIds: ['enemy-1'],
+                }),
+            }),
+        ]));
+    });
+
+    it('retargets subsequent card actions to the new active enemy in a multi-enemy encounter', () => {
+        const scene = createScene() as TestScene & {
+            getEnemyActorId: () => string;
+        };
+        const leadEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-1',
+            label: 'Ash Crawler',
+            stats: {
+                ...scene.sceneData.enemy.stats,
+                health: 6,
+                maxHealth: 6,
+            },
+        };
+        const supportEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-2',
+            label: 'Blade Raider',
+            archetypeId: 'blade-raider' as const,
+            stats: {
+                ...scene.sceneData.enemy.stats,
+                health: 12,
+                maxHealth: 12,
+            },
+        };
+        scene.sceneData = {
+            ...scene.sceneData,
+            enemy: leadEnemy,
+            enemyName: leadEnemy.label,
+            encounterEnemies: [leadEnemy, supportEnemy],
+        };
+        scene.encounterEnemyStates = [
+            { enemy: leadEnemy, state: { health: 6, maxHealth: 6, block: 0 } },
+            { enemy: supportEnemy, state: { health: 12, maxHealth: 12, block: 0 } },
+        ];
+        scene.enemyState = { health: 6, maxHealth: 6, block: 0 };
+        scene.drawCycleState = {
+            drawPile: [],
+            hand: [
+                createCard({
+                    name: 'Heavy Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    name: 'Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 3,
+                    cost: 1,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ],
+            discardPile: [],
+            exhaustPile: [],
+        };
+
+        scene.onPlayCard(0);
+        scene.onPlayCard(0);
+
+        expect(scene.getEnemyActorId()).toBe('enemy-2');
+        expect(scene.enemyState.health).toBe(9);
+        expect(getBattleEvents(scene).filter((event) =>
+            event.name === BATTLE_EVENT_NAME.ACTION_RESOLVED,
+        )).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                payload: expect.objectContaining({ targetIds: ['enemy-1'] }),
+            }),
+            expect.objectContaining({
+                payload: expect.objectContaining({ targetIds: ['enemy-2'] }),
+            }),
+        ]));
+    });
+
+    it('executes each living enemy once during the enemy phase and keeps source ids per enemy', () => {
+        const scene = createScene();
+        const leadEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-1',
+            label: 'Ash Crawler',
+            stats: {
+                ...scene.sceneData.enemy.stats,
+                health: 10,
+                maxHealth: 10,
+                attack: 4,
+            },
+        };
+        const supportEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-2',
+            label: 'Blade Raider',
+            archetypeId: 'blade-raider' as const,
+            stats: {
+                ...scene.sceneData.enemy.stats,
+                health: 12,
+                maxHealth: 12,
+                attack: 7,
+            },
+        };
+        const leadIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK as const,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE as const,
+            damage: 4,
+            label: 'Lead Strike',
+            sourceCardId: 'enemy-1-strike',
+        };
+        const supportIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK as const,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE as const,
+            damage: 7,
+            label: 'Support Strike',
+            sourceCardId: 'enemy-2-strike',
+        };
+        scene.playerState = { health: 100, maxHealth: 100, block: 0 };
+        scene.sceneData = {
+            ...scene.sceneData,
+            enemy: leadEnemy,
+            enemyName: leadEnemy.label,
+            encounterEnemies: [leadEnemy, supportEnemy],
+        };
+        scene.encounterEnemyStates = [
+            {
+                enemy: leadEnemy,
+                state: { health: 10, maxHealth: 10, block: 0 },
+                statusEffects: scene.statusEffectService.createState(),
+                cardPool: [
+                    createCard({
+                        id: 'enemy-1-strike',
+                        name: 'Lead Strike',
+                        type: CARD_TYPE.ATTACK,
+                        power: 4,
+                        effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    }),
+                ],
+                intentQueue: [leadIntent],
+                currentIntent: leadIntent,
+                ongoingBuffs: {
+                    blockPersist: false,
+                    blockPersistCharges: 0,
+                    strengthOnSelfDamage: 0,
+                    poisonPerTurn: 0,
+                },
+                attackBuff: 0,
+                attackDebuff: 0,
+                attackDebuffDuration: 0,
+            },
+            {
+                enemy: supportEnemy,
+                state: { health: 12, maxHealth: 12, block: 0 },
+                statusEffects: scene.statusEffectService.createState(),
+                cardPool: [
+                    createCard({
+                        id: 'enemy-2-strike',
+                        name: 'Support Strike',
+                        type: CARD_TYPE.ATTACK,
+                        power: 7,
+                        effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    }),
+                ],
+                intentQueue: [supportIntent],
+                currentIntent: supportIntent,
+                ongoingBuffs: {
+                    blockPersist: false,
+                    blockPersistCharges: 0,
+                    strengthOnSelfDamage: 0,
+                    poisonPerTurn: 0,
+                },
+                attackBuff: 0,
+                attackDebuff: 0,
+                attackDebuffDuration: 0,
+            },
+        ];
+        scene.enemyState = { health: 10, maxHealth: 10, block: 0 };
+        scene.enemyCardPool = [
+            createCard({
+                id: 'enemy-1-strike',
+                name: 'Lead Strike',
+                type: CARD_TYPE.ATTACK,
+                power: 4,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            }),
+        ];
+        scene.currentEnemyIntent = leadIntent;
+
+        scene.onEndTurn();
+
+        const actionEvents = getBattleEvents(scene)
+            .filter((event) => event.name === BATTLE_EVENT_NAME.ACTION_RESOLVED);
+
+        expect(scene.playerState.health).toBe(89);
+        expect(scene.startPlayerTurn).toHaveBeenCalledOnce();
+        expect(scene.sceneData.enemy.id).toBe('enemy-1');
+        expect(actionEvents).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                payload: expect.objectContaining({
+                    sourceId: 'enemy-1',
+                    targetIds: ['player'],
+                    damage: 4,
+                }),
+            }),
+            expect.objectContaining({
+                payload: expect.objectContaining({
+                    sourceId: 'enemy-2',
+                    targetIds: ['player'],
+                    damage: 7,
+                }),
+            }),
+        ]));
+    });
+
+    it('renders labeled intent previews for each living enemy in a multi-enemy encounter', () => {
+        const scene = createScene();
+        const leadEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-1',
+            label: 'Ash Crawler',
+        };
+        const supportEnemy = {
+            ...scene.sceneData.enemy,
+            id: 'enemy-2',
+            label: 'Blade Raider',
+            archetypeId: 'blade-raider' as const,
+        };
+        const leadIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK as const,
+            pattern: ENEMY_INTENT_PATTERN.STRIKE as const,
+            damage: 4,
+            label: 'Lead Strike',
+        };
+        const supportIntent = {
+            type: ENEMY_INTENT_TYPE.DEFEND as const,
+            pattern: ENEMY_INTENT_PATTERN.GUARD as const,
+            block: 3,
+            label: 'Support Guard',
+        };
+        scene.playerState = { health: 100, maxHealth: 100, block: 0 };
+        scene.sceneData = {
+            ...scene.sceneData,
+            enemy: leadEnemy,
+            enemyName: leadEnemy.label,
+            encounterEnemies: [leadEnemy, supportEnemy],
+        };
+        scene.encounterEnemyStates = [
+            {
+                enemy: leadEnemy,
+                state: { health: 40, maxHealth: 40, block: 0 },
+                currentIntent: leadIntent,
+                intentQueue: [leadIntent],
+            },
+            {
+                enemy: supportEnemy,
+                state: { health: 40, maxHealth: 40, block: 0 },
+                currentIntent: supportIntent,
+                intentQueue: [supportIntent],
+            },
+        ];
+
+        (BattleScene.prototype as unknown as {
+            updateEnemyIntentDisplay: (animated: boolean) => void;
+        }).updateEnemyIntentDisplay.call(scene, false);
+
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith(
+            'Ash Crawler: STRIKE ⚔️ 4\nBlade Raider: GUARD 🛡️ +3',
+        );
     });
 
     it('applies Vulnerable from Weaken and increases the next attack damage', () => {
@@ -2195,6 +2831,7 @@ describe('BattleScene block lifecycle', () => {
             0,
             5,
             0,
+            undefined,
         );
     });
 
@@ -2295,7 +2932,7 @@ describe('BattleScene block lifecycle', () => {
         );
     });
 
-    it('grants strength only on the first self-damage each turn under Blood Moon', () => {
+    it('grants strength only on the first self-damage each turn through the battle action subscriber', () => {
         const scene = createScene() as TestScene & {
             playPanelPulseMotion: ReturnType<typeof vi.fn>;
         };
@@ -2310,18 +2947,90 @@ describe('BattleScene block lifecycle', () => {
         scene.battleLogLines = [];
         scene.playPanelPulseMotion = vi.fn();
 
-        const applyDreadRuleSelfDamageReaction = (
-            BattleScene.prototype as unknown as {
-                applyDreadRuleSelfDamageReaction: (selfDamageTaken: number) => void;
-            }
-        ).applyDreadRuleSelfDamageReaction;
-
-        applyDreadRuleSelfDamageReaction.call(scene, 2);
-        applyDreadRuleSelfDamageReaction.call(scene, 3);
+        scene.battleEventBus?.emit(BATTLE_EVENT_NAME.ACTION_RESOLVED, {
+            battleId: 'battle:local',
+            turnNumber: 1,
+            actionType: 'SELF_DAMAGE',
+            sourceId: 'player',
+            targetIds: ['player'],
+            damage: 2,
+            block: 0,
+            statusDelta: [],
+            queueIndex: 0,
+        });
+        scene.battleEventBus?.emit(BATTLE_EVENT_NAME.ACTION_RESOLVED, {
+            battleId: 'battle:local',
+            turnNumber: 1,
+            actionType: 'SELF_DAMAGE',
+            sourceId: 'player',
+            targetIds: ['player'],
+            damage: 3,
+            block: 0,
+            statusDelta: [],
+            queueIndex: 1,
+        });
 
         expect(scene.playerStatusEffects.strength).toBe(1);
         expect(scene.battleLogLines).toContain('Blood Moon: +1 STR');
         expect(scene.playPanelPulseMotion).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores duplicate battle action events for the same queue index', () => {
+        const scene = createScene();
+        scene.turnNumber = 1;
+        scene.playerState = { health: 48, maxHealth: 100, block: 0 };
+        scene.playerOngoingBuffs = {
+            blockPersist: false,
+            blockPersistCharges: 0,
+            strengthOnSelfDamage: 1,
+            poisonPerTurn: 0,
+        };
+
+        const duplicateEvent = {
+            battleId: 'battle:local',
+            turnNumber: 1,
+            actionType: 'SELF_DAMAGE',
+            sourceId: 'player',
+            targetIds: ['player'],
+            damage: 4,
+            block: 0,
+            statusDelta: [],
+            queueIndex: 2,
+        } as const;
+
+        scene.battleEventBus?.emit(BATTLE_EVENT_NAME.ACTION_RESOLVED, duplicateEvent);
+        scene.battleEventBus?.emit(BATTLE_EVENT_NAME.ACTION_RESOLVED, duplicateEvent);
+
+        expect(scene.playerSelfDamageTotal).toBe(4);
+        expect(scene.playerStatusEffects.strength).toBe(1);
+        expect(scene.battleLogLines.filter((line) => line === 'Bloodied')).toHaveLength(1);
+    });
+
+    it('grants Berserker Rage strength from enemy damage through the battle action subscriber', () => {
+        const scene = createScene();
+        scene.turnNumber = 1;
+        scene.playerState = { health: 40, maxHealth: 100, block: 0 };
+        scene.playerOngoingBuffs = {
+            blockPersist: false,
+            blockPersistCharges: 0,
+            strengthOnSelfDamage: 2,
+            poisonPerTurn: 0,
+        };
+
+        scene.battleEventBus?.emit(BATTLE_EVENT_NAME.ACTION_RESOLVED, {
+            battleId: 'battle:local',
+            turnNumber: 1,
+            actionType: CARD_EFFECT_TYPE.DAMAGE,
+            sourceId: 'enemy-1',
+            targetIds: ['player'],
+            damage: 5,
+            block: 0,
+            statusDelta: [],
+            queueIndex: 3,
+        });
+
+        expect(scene.playerStatusEffects.strength).toBe(2);
+        expect(scene.battleLogLines).toContain('Bloodied');
     });
 
     it('hides even-turn intent previews under Blackout', () => {
@@ -2347,6 +3056,131 @@ describe('BattleScene block lifecycle', () => {
         }).updateEnemyIntentDisplay(false);
 
         expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith('Next ???');
+    });
+
+    it('halves retained block under Thin Wall at turn start', () => {
+        const scene = createScene();
+        scene.playerState = { health: 40, maxHealth: 40, block: 11 };
+        scene.dreadRule = {
+            id: DREAD_RULE_ID.THIN_WALL,
+            name: 'Thin Wall',
+            summary: 'Retained Block is cut in half.',
+            description: '턴 경계에 남는 Block은 절반만 유지된다.',
+            effects: { blockRetainRatio: 0.5 },
+        };
+        scene.playerOngoingBuffs = {
+            blockPersist: true,
+            blockPersistCharges: 0,
+            strengthOnSelfDamage: 0,
+            poisonPerTurn: 0,
+        };
+
+        (BattleScene.prototype as unknown as {
+            prepareTurnStartState: (actor: 'player' | 'enemy') => void;
+        }).prepareTurnStartState.call(scene, 'player');
+
+        expect(scene.playerState.block).toBe(5);
+    });
+
+    it('renders charge, curse, cleanse, and ambush previews in a multi-enemy encounter', () => {
+        const scene = createScene();
+        const chargeIntent: EnemyIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.CHARGE,
+            damage: 12,
+            label: 'Charge Slam',
+            warning: 'Next turn burst',
+        };
+        const curseIntent: EnemyIntent = {
+            type: ENEMY_INTENT_TYPE.BUFF,
+            pattern: ENEMY_INTENT_PATTERN.CURSE,
+            label: 'Dread Hex',
+            curseCardName: 'Dread',
+            curseCount: 1,
+        };
+        const cleanseIntent: EnemyIntent = {
+            type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.CLEANSE,
+            block: 6,
+            label: 'Purge Shell',
+            cleansedStatuses: ['Poison'],
+        };
+        const ambushIntent: EnemyIntent = {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.AMBUSH,
+            damage: 8,
+            label: 'Shadow Lunge',
+            warning: 'Hidden prep',
+        };
+        const enemies = [
+            {
+                ...scene.sceneData.enemy,
+                id: 'enemy-1',
+                label: 'Ash Crawler',
+                archetypeId: 'ash-crawler' as const,
+            },
+            {
+                ...scene.sceneData.enemy,
+                id: 'enemy-2',
+                label: 'Mire Broodling',
+                archetypeId: 'mire-broodling' as const,
+            },
+            {
+                ...scene.sceneData.enemy,
+                id: 'enemy-3',
+                label: 'Dread Sentinel',
+                archetypeId: 'dread-sentinel' as const,
+            },
+            {
+                ...scene.sceneData.enemy,
+                id: 'enemy-4',
+                label: 'Blade Raider',
+                archetypeId: 'blade-raider' as const,
+            },
+        ];
+        scene.sceneData = {
+            ...scene.sceneData,
+            enemy: enemies[0],
+            enemyName: enemies[0].label,
+            encounterEnemies: enemies,
+        };
+        scene.encounterEnemyStates = [
+            {
+                enemy: enemies[0],
+                state: { health: 40, maxHealth: 40, block: 0 },
+                currentIntent: chargeIntent,
+                intentQueue: [chargeIntent],
+            },
+            {
+                enemy: enemies[1],
+                state: { health: 40, maxHealth: 40, block: 0 },
+                currentIntent: curseIntent,
+                intentQueue: [curseIntent],
+            },
+            {
+                enemy: enemies[2],
+                state: { health: 40, maxHealth: 40, block: 0 },
+                currentIntent: cleanseIntent,
+                intentQueue: [cleanseIntent],
+            },
+            {
+                enemy: enemies[3],
+                state: { health: 40, maxHealth: 40, block: 0 },
+                currentIntent: ambushIntent,
+                intentQueue: [ambushIntent],
+            },
+        ];
+
+        (scene as TestScene & {
+            updateEnemyIntentDisplay: (animated: boolean) => void;
+        }).updateEnemyIntentDisplay(false);
+
+        expect(scene.enemyIntentText?.setText).toHaveBeenCalledWith(
+            'Ash Crawler: CHARGE ⏳ 12 · Next turn burst\n'
+            + 'Mire Broodling: CURSE ☠️ Dread x1\n'
+            + 'Dread Sentinel: CLEANSE ✨ +6 · clear Poison\n'
+            + 'Blade Raider: AMBUSH 🕶️ 8 · Hidden prep',
+        );
     });
 
     it('applies Panic Room self-damage from unspent energy at turn end', () => {
@@ -2566,6 +3400,15 @@ describe('BattleScene block lifecycle', () => {
             enemyRemainingHealth: 40,
             nextBattleStartEnergyBonus: 1,
             enemy: scene.sceneData.enemy,
+            enemies: [
+                expect.objectContaining({
+                    id: scene.sceneData.enemy.id,
+                    stats: expect.objectContaining({
+                        health: 40,
+                        maxHealth: 40,
+                    }),
+                }),
+            ],
         });
         expect(scene.scene.stop).toHaveBeenCalledWith('BattleScene');
         expect(scene.scene.wake).toHaveBeenCalledWith('MainScene');
@@ -2929,7 +3772,7 @@ describe('BattleScene popup feedback', () => {
             'enemy',
         ]);
         expect(addEvent).toHaveBeenCalledTimes(4);
-        expect(addEvent.mock.calls.map(([config]) => config.delay)).toEqual([0, 90, 180, 270]);
+        expect(addEvent.mock.calls.map(([config]) => config.delay)).toEqual([90, 180, 270, 360]);
     });
 
     it('writes enemy action summaries into the battle history', () => {
@@ -3041,11 +3884,17 @@ describe('BattleScene popup feedback', () => {
         expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
             1,
             { id: 'player-hp', x: 292, y: 248 },
-            [
-                { type: 'damage', value: 3 },
-                { type: 'damage', value: 3 },
-                { type: 'damage', value: 3 },
-            ],
+            [{ type: 'damage', value: 3 }],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            2,
+            { id: 'player-hp', x: 292, y: 248 },
+            [{ type: 'damage', value: 3 }],
+        );
+        expect(scene.damagePopupController.showBatch).toHaveBeenNthCalledWith(
+            3,
+            { id: 'player-hp', x: 292, y: 248 },
+            [{ type: 'damage', value: 3 }],
         );
         expect(scene.appendBattleLog).toHaveBeenCalledWith('Enemy Enemy Flurry: flurry');
     });

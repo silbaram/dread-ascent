@@ -6,7 +6,7 @@ import {
 } from '../../../../src/domain/services/DreadRuleService';
 
 function createEnemy(options?: {
-    archetypeId?: 'ash-crawler' | 'blade-raider' | 'dread-sentinel' | 'final-boss';
+    archetypeId?: 'ash-crawler' | 'mire-broodling' | 'blade-raider' | 'dread-sentinel' | 'final-boss';
     kind?: 'normal' | 'boss';
     elite?: boolean;
 }) {
@@ -33,6 +33,7 @@ describe('DreadRuleService', () => {
 
     it('maps normal enemy archetypes onto their default dread rules', () => {
         expect(service.decideRule(createEnemy({ archetypeId: 'ash-crawler' })).id).toBe(DREAD_RULE_ID.BLOOD_MOON);
+        expect(service.decideRule(createEnemy({ archetypeId: 'mire-broodling' })).id).toBe(DREAD_RULE_ID.THIN_WALL);
         expect(service.decideRule(createEnemy({ archetypeId: 'blade-raider' })).id).toBe(DREAD_RULE_ID.PANIC_ROOM);
         expect(service.decideRule(createEnemy({ archetypeId: 'dread-sentinel' })).id).toBe(DREAD_RULE_ID.SUFFOCATING_FOG);
     });

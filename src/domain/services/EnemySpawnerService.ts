@@ -4,6 +4,12 @@ import {
     type CombatStats,
 } from '../entities/CombatStats';
 import type { Position } from '../entities/Player';
+import {
+    listEncounterCompositions,
+    selectEncounterComposition,
+    type EnemyEncounterCompositionDefinition,
+    type EncounterCompositionSlot,
+} from './EnemyEncounterCatalog';
 import type { FloorType } from './FloorProgressionService';
 import { positionToKey } from '../../shared/utils/positionKey';
 import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
@@ -26,6 +32,12 @@ export interface EnemySpawnRequest {
     blockedPositions: Position[];
     bossSpawn?: Position;
     maxEnemies?: number;
+}
+
+export interface BattleEncounterRequest {
+    readonly leadEnemy: Enemy;
+    readonly floorNumber: number;
+    readonly floorType: Exclude<FloorType, 'safe'>;
 }
 
 export interface EnemyArchetype {
@@ -77,6 +89,18 @@ export const ENEMY_ARCHETYPES: readonly EnemyArchetype[] = [
             defense: 0,
         },
         experienceBonus: 0,
+    },
+    {
+        id: 'mire-broodling',
+        label: 'Mire Broodling',
+        minFloor: 40,
+        maxFloor: 70,
+        statModifier: {
+            maxHealth: 12,
+            attack: 1,
+            defense: 1,
+        },
+        experienceBonus: 10,
     },
     {
         id: 'blade-raider',
@@ -145,7 +169,7 @@ export class EnemySpawnerService {
             .map((room, index) => {
                 const position = selectUnoccupiedPosition(room, request.tiles, occupied, this.random, 'enemy');
                 occupied.add(positionToKey(position));
-                const archetype = this.selectArchetype(request.floorNumber);
+                const archetype = this.resolveEncounterArchetype(request.floorNumber, 'normal');
                 const isElite = this.random.next() < this.eliteChance;
 
                 return new Enemy(
@@ -159,6 +183,33 @@ export class EnemySpawnerService {
                     isElite,
                 );
             });
+    }
+
+    public buildBattleEncounter(request: BattleEncounterRequest): Enemy[] {
+        if (request.floorType === 'boss' || request.leadEnemy.kind === 'boss') {
+            return [request.leadEnemy];
+        }
+
+        const composition = this.resolveBattleEncounterComposition(request);
+        if (!composition) {
+            return [request.leadEnemy];
+        }
+
+        const remainingSlots = this.consumeLeadSlot(
+            composition.futureBattleModel.slots,
+            request.leadEnemy.archetypeId,
+        );
+        if (remainingSlots.length === 0) {
+            return [request.leadEnemy];
+        }
+
+        const companions = remainingSlots.flatMap((slot) =>
+            Array.from({ length: slot.minCount }, (_, index) =>
+                this.createEncounterCompanion(request, slot, index),
+            ),
+        );
+
+        return [request.leadEnemy, ...companions];
     }
 
     private spawnBoss(request: EnemySpawnRequest) {
@@ -244,6 +295,58 @@ export class EnemySpawnerService {
         return this.buildExperienceReward(floorNumber) * BOSS_EXP_REWARD_MULTIPLIER;
     }
 
+    private resolveBattleEncounterComposition(
+        request: BattleEncounterRequest,
+    ): EnemyEncounterCompositionDefinition | undefined {
+        const candidates = listEncounterCompositions({
+            floorNumber: request.floorNumber,
+            floorType: request.floorType,
+        }).filter((composition) =>
+            composition.singleEnemyFallback.archetypeId === request.leadEnemy.archetypeId,
+        );
+
+        return candidates[0];
+    }
+
+    private consumeLeadSlot(
+        slots: readonly EncounterCompositionSlot[],
+        archetypeId: EnemyArchetypeId,
+    ): EncounterCompositionSlot[] {
+        let leadSlotConsumed = false;
+
+        return slots.flatMap((slot) => {
+            if (!leadSlotConsumed && slot.archetypeId === archetypeId) {
+                leadSlotConsumed = true;
+                return [];
+            }
+
+            return [slot];
+        });
+    }
+
+    private createEncounterCompanion(
+        request: BattleEncounterRequest,
+        slot: EncounterCompositionSlot,
+        slotIndex: number,
+    ) {
+        const archetype = ENEMY_ARCHETYPES.find((candidate) => candidate.id === slot.archetypeId);
+        if (!archetype) {
+            throw new Error(`Encounter archetype "${slot.archetypeId}" is not configured.`);
+        }
+
+        const isElite = request.leadEnemy.isElite();
+        return new Enemy(
+            `${request.leadEnemy.id}:encounter:${slot.slotId}:${slotIndex + 1}`,
+            isElite ? `Elite ${archetype.label}` : archetype.label,
+            { ...request.leadEnemy.position },
+            this.buildStats(request.floorNumber, archetype, isElite),
+            0,
+            request.leadEnemy.kind,
+            archetype.id,
+            isElite,
+        );
+    }
+
     private resolveBossSpawn(rooms: SpawnRoom[]) {
         const room = rooms[rooms.length - 1];
         if (!room) {
@@ -254,6 +357,29 @@ export class EnemySpawnerService {
             x: Math.floor((room.left + room.right) / 2),
             y: Math.floor((room.top + room.bottom) / 2),
         };
+    }
+
+    private resolveEncounterArchetype(
+        floorNumber: number,
+        floorType: Exclude<FloorType, 'safe'>,
+    ) {
+        const composition = selectEncounterComposition(
+            {
+                floorNumber,
+                floorType,
+            },
+            this.random,
+        );
+
+        if (!composition) {
+            return this.selectArchetype(floorNumber);
+        }
+
+        const encounterArchetype = ENEMY_ARCHETYPES.find((archetype) =>
+            archetype.id === composition.singleEnemyFallback.archetypeId,
+        );
+
+        return encounterArchetype ?? this.selectArchetype(floorNumber);
     }
 
     private selectArchetype(floorNumber: number) {
@@ -270,5 +396,4 @@ export class EnemySpawnerService {
 
         return pool[Math.min(index, pool.length - 1)];
     }
-
 }

@@ -2,7 +2,12 @@ import type { CombatStats } from './CombatStats';
 import type { Position } from './Player';
 
 export type EnemyKind = 'normal' | 'boss';
-export type EnemyArchetypeId = 'ash-crawler' | 'blade-raider' | 'dread-sentinel' | 'final-boss';
+export type EnemyArchetypeId =
+    | 'ash-crawler'
+    | 'mire-broodling'
+    | 'blade-raider'
+    | 'dread-sentinel'
+    | 'final-boss';
 
 export class Enemy {
     public lastKnownPlayerPosition?: Position;
