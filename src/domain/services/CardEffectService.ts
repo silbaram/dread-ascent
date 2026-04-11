@@ -2,8 +2,99 @@
 // Card Effect Service — 데이터 기반 카드 효과 적용
 // ---------------------------------------------------------------------------
 
-import { CARD_EFFECT_TYPE, type Card, type CardStatusEffect } from '../entities/Card';
+import {
+    CARD_EFFECT_TYPE,
+    CARD_KEYWORD,
+    type Card,
+    type CardBuffEffect,
+    type CardStatusEffect,
+} from '../entities/Card';
 import { StatusEffectService, type StatusEffectState } from './StatusEffectService';
+
+export const BATTLE_ACTION_SCRIPT_TYPE = {
+    DAMAGE: 'Damage',
+    HEAL: 'Heal',
+    GAIN_BLOCK: 'GainBlock',
+    APPLY_STATUS: 'ApplyStatus',
+    REMOVE_STATUS: 'RemoveStatus',
+    DRAW: 'Draw',
+    DISCARD: 'Discard',
+    GAIN_ENERGY: 'GainEnergy',
+    CREATE_CARD: 'CreateCard',
+    EXHAUST: 'Exhaust',
+    FLEE: 'Flee',
+    SELF_DAMAGE: 'SelfDamage',
+    APPLY_BUFF: 'ApplyBuff',
+    DELAY: 'Delay',
+    VFX_CUE: 'VFXCue',
+    SFX_CUE: 'SFXCue',
+} as const;
+
+export type BattleActionScriptType =
+    (typeof BATTLE_ACTION_SCRIPT_TYPE)[keyof typeof BATTLE_ACTION_SCRIPT_TYPE];
+
+export type BattleActionScriptStep =
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.DAMAGE;
+        readonly amount: number;
+        readonly hitIndex?: number;
+        readonly hitCount?: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.HEAL;
+        readonly amount: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.GAIN_BLOCK;
+        readonly amount: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.APPLY_STATUS;
+        readonly status: CardStatusEffect;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.REMOVE_STATUS;
+        readonly statusType: string;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.DRAW;
+        readonly count: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.DISCARD;
+        readonly count: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.GAIN_ENERGY;
+        readonly amount: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.CREATE_CARD;
+        readonly cardName: string;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.EXHAUST;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.FLEE;
+        readonly perfectVanish: boolean;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.SELF_DAMAGE;
+        readonly amount: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.APPLY_BUFF;
+        readonly buff: CardBuffEffect;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.DELAY;
+        readonly durationMs: number;
+    }
+    | {
+        readonly type: typeof BATTLE_ACTION_SCRIPT_TYPE.VFX_CUE | typeof BATTLE_ACTION_SCRIPT_TYPE.SFX_CUE;
+        readonly cue: string;
+    };
 
 export interface CombatantState {
     readonly health: number;
@@ -26,6 +117,7 @@ export interface CardEffectResult {
     readonly selfDamageTaken: number;
     readonly hitsResolved: number;
     readonly hitDamages?: readonly number[];
+    readonly perfectVanish?: boolean;
     readonly statusApplied?: CardStatusEffect;
     readonly statusEffectsApplied?: readonly CardStatusEffect[];
     readonly buffApplied?: {
@@ -40,10 +132,126 @@ export interface CardEffectContext {
     readonly userStatusEffects?: StatusEffectState;
     readonly targetStatusEffects?: StatusEffectState;
     readonly turnDamageTaken?: number;
+    readonly enemyIntentType?: string;
+    readonly enemyIntentDamage?: number;
+    readonly cardsDiscardedThisTurn?: number;
 }
 
 export class CardEffectService {
     private readonly statusEffectService = new StatusEffectService();
+
+    buildActionScript(card: Card): readonly BattleActionScriptStep[] {
+        const steps: BattleActionScriptStep[] = [];
+        const selfDamage = card.selfDamage ?? card.effectPayload?.selfDamage ?? 0;
+        if (selfDamage > 0) {
+            steps.push({
+                type: BATTLE_ACTION_SCRIPT_TYPE.SELF_DAMAGE,
+                amount: selfDamage,
+            });
+        }
+
+        switch (card.effectType) {
+            case CARD_EFFECT_TYPE.DAMAGE:
+            case CARD_EFFECT_TYPE.CONDITIONAL:
+                if (card.power > 0 || card.effectPayload?.scaling) {
+                    steps.push({
+                        type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE,
+                        amount: card.power,
+                    });
+                }
+                break;
+            case CARD_EFFECT_TYPE.MULTI_HIT: {
+                const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
+                for (let hitIndex = 0; hitIndex < hitCount; hitIndex += 1) {
+                    steps.push({
+                        type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE,
+                        amount: card.power,
+                        hitIndex,
+                        hitCount,
+                    });
+                }
+                break;
+            }
+            case CARD_EFFECT_TYPE.BLOCK:
+                steps.push({
+                    type: BATTLE_ACTION_SCRIPT_TYPE.GAIN_BLOCK,
+                    amount: card.secondaryPower ?? card.effectPayload?.blockAmount ?? card.power,
+                });
+                break;
+            case CARD_EFFECT_TYPE.DAMAGE_BLOCK:
+                steps.push({
+                    type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE,
+                    amount: card.power,
+                });
+                steps.push({
+                    type: BATTLE_ACTION_SCRIPT_TYPE.GAIN_BLOCK,
+                    amount: card.secondaryPower ?? card.effectPayload?.blockAmount ?? 0,
+                });
+                break;
+            case CARD_EFFECT_TYPE.DRAW:
+                break;
+            case CARD_EFFECT_TYPE.HEAL:
+                steps.push({
+                    type: BATTLE_ACTION_SCRIPT_TYPE.HEAL,
+                    amount: card.healAmount ?? card.effectPayload?.healAmount ?? 0,
+                });
+                break;
+            case CARD_EFFECT_TYPE.FLEE:
+                steps.push({
+                    type: BATTLE_ACTION_SCRIPT_TYPE.FLEE,
+                    perfectVanish: card.effectPayload?.perfectVanish === true,
+                });
+                break;
+            case CARD_EFFECT_TYPE.DISCARD_EFFECT:
+                steps.push({
+                    type: BATTLE_ACTION_SCRIPT_TYPE.DISCARD,
+                    count: card.discardCount ?? card.effectPayload?.discardCount ?? 1,
+                });
+                break;
+            case CARD_EFFECT_TYPE.BUFF:
+                break;
+        }
+
+        const statuses = this.cloneStatusEffects(card);
+        statuses?.forEach((status) => {
+            steps.push({
+                type: BATTLE_ACTION_SCRIPT_TYPE.APPLY_STATUS,
+                status,
+            });
+        });
+
+        const buff = card.buff ?? card.effectPayload?.buff;
+        if (buff) {
+            steps.push({
+                type: BATTLE_ACTION_SCRIPT_TYPE.APPLY_BUFF,
+                buff: { ...buff },
+            });
+        }
+
+        const drawCount = card.drawCount ?? card.effectPayload?.drawCount ?? 0;
+        if (drawCount > 0) {
+            steps.push({
+                type: BATTLE_ACTION_SCRIPT_TYPE.DRAW,
+                count: drawCount,
+            });
+        }
+
+        const energyChange = card.effectPayload?.energyChange ?? 0;
+        if (energyChange > 0) {
+            steps.push({
+                type: BATTLE_ACTION_SCRIPT_TYPE.GAIN_ENERGY,
+                amount: energyChange,
+            });
+        }
+
+        if (card.keywords.includes(CARD_KEYWORD.EXHAUST)) {
+            steps.push({
+                type: BATTLE_ACTION_SCRIPT_TYPE.EXHAUST,
+            });
+        }
+
+        return steps;
+    }
 
     applyEffect(
         card: Card,
@@ -59,7 +267,7 @@ export class CardEffectService {
             case CARD_EFFECT_TYPE.STATUS_EFFECT:
                 return this.applyStatusEffect(card, user, target);
             case CARD_EFFECT_TYPE.FLEE:
-                return this.applyFlee(user, target);
+                return this.applyFlee(card, user, target, context);
             case CARD_EFFECT_TYPE.DRAW:
                 return this.applyDraw(card, user, target);
             case CARD_EFFECT_TYPE.HEAL:
@@ -75,6 +283,116 @@ export class CardEffectService {
             case CARD_EFFECT_TYPE.CONDITIONAL:
                 return this.applyConditional(card, user, target, context);
             default:
+                return this.noEffect(user, target);
+        }
+    }
+
+    applyActionScriptStep(
+        step: BattleActionScriptStep,
+        card: Card,
+        user: CombatantState,
+        target: CombatantState,
+        context?: CardEffectContext,
+    ): CardEffectResult {
+        switch (step.type) {
+            case BATTLE_ACTION_SCRIPT_TYPE.SELF_DAMAGE:
+                return {
+                    ...this.noEffect(user, target),
+                    userState: this.applySelfDamage(user, step.amount),
+                    selfDamageTaken: step.amount,
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.DAMAGE: {
+                if (card.effectType === CARD_EFFECT_TYPE.CONDITIONAL && !this.isConditionMet(card, user, context)) {
+                    return this.noEffect(user, target);
+                }
+
+                const damageCard = card.effectType === CARD_EFFECT_TYPE.CONDITIONAL
+                    ? { ...card, power: card.secondaryPower ?? card.power }
+                    : card;
+                const resolvedPower = this.resolveDamagePower(damageCard, user, context);
+                const damageResult = this.calculateDamageAfterBlock(resolvedPower, target.block);
+                const actualDamage = step.hitCount
+                    ? Math.min(target.health, damageResult.actualDamage)
+                    : damageResult.actualDamage;
+
+                return {
+                    ...this.noEffect(user, target),
+                    targetState: {
+                        ...target,
+                        health: Math.max(0, target.health - actualDamage),
+                        block: damageResult.remainingBlock,
+                    },
+                    damageDealt: actualDamage,
+                    damageBlocked: damageResult.damageBlocked,
+                    hitsResolved: actualDamage > 0 || damageResult.damageBlocked > 0 ? 1 : 0,
+                    hitDamages: step.hitCount ? [actualDamage] : undefined,
+                };
+            }
+            case BATTLE_ACTION_SCRIPT_TYPE.GAIN_BLOCK:
+                return {
+                    ...this.noEffect(user, target),
+                    userState: {
+                        ...user,
+                        block: user.block + step.amount,
+                    },
+                    blockGained: step.amount,
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.APPLY_STATUS:
+                return {
+                    ...this.noEffect(user, target),
+                    statusApplied: { ...step.status },
+                    statusEffectsApplied: [{ ...step.status }],
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.DRAW:
+                return {
+                    ...this.noEffect(user, target),
+                    cardsDrawn: step.count,
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.DISCARD:
+                return {
+                    ...this.noEffect(user, target),
+                    discardCount: step.count,
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.GAIN_ENERGY:
+                return {
+                    ...this.noEffect(user, target),
+                    energyGained: step.amount,
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.HEAL: {
+                const nextHealth = Math.min(user.maxHealth, user.health + step.amount);
+                const actualHealing = nextHealth - user.health;
+
+                return {
+                    ...this.noEffect(user, target),
+                    userState: {
+                        ...user,
+                        health: nextHealth,
+                    },
+                    healthRestored: actualHealing,
+                    healingGained: actualHealing,
+                };
+            }
+            case BATTLE_ACTION_SCRIPT_TYPE.FLEE:
+                return {
+                    ...this.noEffect(user, target),
+                    fled: true,
+                    perfectVanish: step.perfectVanish
+                        || (
+                            card.effectPayload?.perfectVanishAfterDiscard === true
+                            && (context?.cardsDiscardedThisTurn ?? 0) > 0
+                        ),
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.APPLY_BUFF:
+                return {
+                    ...this.noEffect(user, target),
+                    buffApplied: { ...step.buff },
+                };
+            case BATTLE_ACTION_SCRIPT_TYPE.EXHAUST:
+            case BATTLE_ACTION_SCRIPT_TYPE.REMOVE_STATUS:
+            case BATTLE_ACTION_SCRIPT_TYPE.CREATE_CARD:
+            case BATTLE_ACTION_SCRIPT_TYPE.DELAY:
+            case BATTLE_ACTION_SCRIPT_TYPE.VFX_CUE:
+            case BATTLE_ACTION_SCRIPT_TYPE.SFX_CUE:
                 return this.noEffect(user, target);
         }
     }
@@ -176,7 +494,18 @@ export class CardEffectService {
         };
     }
 
-    applyFlee(user: CombatantState, target: CombatantState): CardEffectResult {
+    applyFlee(
+        card: Card,
+        user: CombatantState,
+        target: CombatantState,
+        context?: CardEffectContext,
+    ): CardEffectResult {
+        const perfectVanish = card.effectPayload?.perfectVanish === true
+            || (
+                card.effectPayload?.perfectVanishAfterDiscard === true
+                && (context?.cardsDiscardedThisTurn ?? 0) > 0
+            );
+
         return {
             targetState: target,
             userState: user,
@@ -191,6 +520,7 @@ export class CardEffectService {
             discardCount: 0,
             selfDamageTaken: 0,
             hitsResolved: 0,
+            perfectVanish,
         };
     }
 
@@ -427,8 +757,29 @@ export class CardEffectService {
             return user.health <= card.condition.value;
         }
 
+        if (card.condition.type === 'HP_PERCENT_THRESHOLD') {
+            if (user.maxHealth <= 0) {
+                return false;
+            }
+
+            return (user.health / user.maxHealth) * 100 <= card.condition.value;
+        }
+
         if (card.condition.type === 'TURN_DAMAGE_TAKEN_AT_LEAST') {
             return (context?.turnDamageTaken ?? 0) >= card.condition.value;
+        }
+
+        if (card.condition.type === 'COUNTER_WINDOW_READY') {
+            return (context?.turnDamageTaken ?? 0) >= card.condition.value
+                || (
+                    context?.enemyIntentType === 'attack'
+                    && (context.enemyIntentDamage ?? 0) > 0
+                    && user.block >= card.condition.value
+                );
+        }
+
+        if (card.condition.type === 'TARGET_DEBUFF_COUNT_AT_LEAST') {
+            return this.countTargetDebuffs(context?.targetStatusEffects) >= card.condition.value;
         }
 
         return true;
@@ -461,18 +812,38 @@ export class CardEffectService {
             return card.power;
         }
 
+        const baseValue = scaling.baseValue ?? 0;
         switch (scaling.source) {
             case 'MISSING_HEALTH':
-                return Math.max(0, Math.floor((user.maxHealth - user.health) * scaling.multiplier));
+                return Math.max(0, Math.floor(baseValue + ((user.maxHealth - user.health) * scaling.multiplier)));
             case 'USER_BLOCK':
-                return Math.max(0, Math.floor(user.block * scaling.multiplier));
+                return Math.max(0, Math.floor(baseValue + (user.block * scaling.multiplier)));
             case 'TARGET_DEBUFF_COUNT':
-                return Math.max(0, Math.floor(this.countTargetDebuffs(context?.targetStatusEffects) * scaling.multiplier));
+                return Math.max(
+                    0,
+                    Math.floor(baseValue + (this.countTargetDebuffs(context?.targetStatusEffects) * scaling.multiplier)),
+                );
             case 'TURN_DAMAGE_TAKEN':
-                return Math.max(0, Math.floor((context?.turnDamageTaken ?? 0) * scaling.multiplier));
+                return Math.max(0, Math.floor(baseValue + ((context?.turnDamageTaken ?? 0) * scaling.multiplier)));
+            case 'COUNTER_WINDOW':
+                return Math.max(0, Math.floor(baseValue + (this.resolveCounterWindowValue(user, context) * scaling.multiplier)));
+            case 'CARDS_DISCARDED_THIS_TURN':
+                return Math.max(0, Math.floor(baseValue + ((context?.cardsDiscardedThisTurn ?? 0) * scaling.multiplier)));
             default:
                 return card.power;
         }
+    }
+
+    private resolveCounterWindowValue(
+        user: CombatantState,
+        context?: CardEffectContext,
+    ): number {
+        const turnDamageTaken = context?.turnDamageTaken ?? 0;
+        const guardedIntentDamage = context?.enemyIntentType === 'attack'
+            ? Math.min(user.block, context.enemyIntentDamage ?? 0)
+            : 0;
+
+        return Math.max(turnDamageTaken, guardedIntentDamage);
     }
 
     private countTargetDebuffs(statusEffects?: StatusEffectState): number {

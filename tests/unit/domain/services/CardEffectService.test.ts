@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+    BATTLE_ACTION_SCRIPT_TYPE,
     CardEffectService,
     type CombatantState,
 } from '../../../../src/domain/services/CardEffectService';
@@ -371,6 +372,65 @@ describe('CardEffectService', () => {
             expect(resolved.damageDealt).toBe(6);
             expect(resolved.targetState.health).toBe(44);
         });
+
+        it('uses guarded incoming attack damage for planned Counter Strike windows', () => {
+            const card = createCard({
+                name: 'Counter Strike',
+                type: CARD_TYPE.ATTACK,
+                power: 0,
+                effectType: CARD_EFFECT_TYPE.CONDITIONAL,
+                condition: { type: 'COUNTER_WINDOW_READY', value: 1 },
+                effectPayload: {
+                    scaling: { source: 'COUNTER_WINDOW', multiplier: 1 },
+                },
+            });
+
+            const blocked = service.applyEffect(
+                card,
+                makePlayer({ block: 0 }),
+                makeEnemy(),
+                { enemyIntentType: 'attack', enemyIntentDamage: 8 },
+            );
+            const planned = service.applyEffect(
+                card,
+                makePlayer({ block: 5 }),
+                makeEnemy(),
+                { enemyIntentType: 'attack', enemyIntentDamage: 8 },
+            );
+            const reactive = service.applyEffect(
+                card,
+                makePlayer({ block: 2 }),
+                makeEnemy(),
+                { turnDamageTaken: 6, enemyIntentType: 'attack', enemyIntentDamage: 8 },
+            );
+
+            expect(blocked.damageDealt).toBe(0);
+            expect(planned.damageDealt).toBe(5);
+            expect(planned.targetState.health).toBe(45);
+            expect(reactive.damageDealt).toBe(6);
+        });
+
+        it('scales Smuggler attacks from cards discarded this turn', () => {
+            const card = createCard({
+                name: 'Cheap Shot',
+                type: CARD_TYPE.ATTACK,
+                power: 7,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+                effectPayload: {
+                    scaling: { source: 'CARDS_DISCARDED_THIS_TURN', multiplier: 3, baseValue: 7 },
+                },
+            });
+
+            const base = service.applyEffect(card, makePlayer(), makeEnemy(), {
+                cardsDiscardedThisTurn: 0,
+            });
+            const primed = service.applyEffect(card, makePlayer(), makeEnemy(), {
+                cardsDiscardedThisTurn: 2,
+            });
+
+            expect(base.damageDealt).toBe(7);
+            expect(primed.damageDealt).toBe(13);
+        });
     });
 
     describe('resetBlock', () => {
@@ -398,6 +458,162 @@ describe('CardEffectService', () => {
             expect(result.fled).toBe(true);
             expect(result.damageDealt).toBe(0);
             expect(result.targetState.health).toBe(50);
+        });
+
+        it('marks perfect vanish flee cards in the result', () => {
+            const card = createCard({
+                name: 'Backdoor Exit',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 0,
+                effectType: CARD_EFFECT_TYPE.FLEE,
+                keywords: [CARD_KEYWORD.EXHAUST],
+                effectPayload: { perfectVanish: true },
+            });
+
+            const result = service.applyEffect(card, makePlayer(), makeEnemy());
+
+            expect(result.fled).toBe(true);
+            expect(result.perfectVanish).toBe(true);
+        });
+
+        it('marks discard-primed flee cards as perfect vanish only after a discard setup', () => {
+            const card = createCard({
+                name: 'Shadow Step',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 0,
+                effectType: CARD_EFFECT_TYPE.FLEE,
+                keywords: [CARD_KEYWORD.EXHAUST],
+                effectPayload: { perfectVanishAfterDiscard: true },
+            });
+
+            const unprimed = service.applyEffect(card, makePlayer(), makeEnemy(), {
+                cardsDiscardedThisTurn: 0,
+            });
+            const primed = service.applyEffect(card, makePlayer(), makeEnemy(), {
+                cardsDiscardedThisTurn: 1,
+            });
+
+            expect(unprimed.perfectVanish).toBe(false);
+            expect(primed.perfectVanish).toBe(true);
+        });
+    });
+
+    describe('action scripts', () => {
+        it('builds an ordered script for Blood Price instead of collapsing its steps', () => {
+            const card = createCard({
+                name: 'Blood Price',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 0,
+                effectType: CARD_EFFECT_TYPE.DRAW,
+                effectPayload: {
+                    selfDamage: 4,
+                    drawCount: 2,
+                },
+            });
+
+            expect(service.buildActionScript(card)).toEqual([
+                { type: BATTLE_ACTION_SCRIPT_TYPE.SELF_DAMAGE, amount: 4 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.DRAW, count: 2 },
+            ]);
+        });
+
+        it('expands multi-hit cards into individual damage script steps', () => {
+            const card = createCard({
+                name: 'Reckless Fury',
+                type: CARD_TYPE.ATTACK,
+                power: 3,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                effectPayload: {
+                    selfDamage: 2,
+                    hitCount: 4,
+                },
+            });
+
+            expect(service.buildActionScript(card)).toEqual([
+                { type: BATTLE_ACTION_SCRIPT_TYPE.SELF_DAMAGE, amount: 2 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE, amount: 3, hitIndex: 0, hitCount: 4 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE, amount: 3, hitIndex: 1, hitCount: 4 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE, amount: 3, hitIndex: 2, hitCount: 4 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE, amount: 3, hitIndex: 3, hitCount: 4 },
+            ]);
+        });
+
+        it('keeps status cards to status application instead of adding an implicit discard step', () => {
+            const card = createCard({
+                name: 'Miasma',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
+                statusEffect: { type: 'POISON', duration: 5 },
+            });
+
+            expect(service.buildActionScript(card)).toEqual([
+                {
+                    type: BATTLE_ACTION_SCRIPT_TYPE.APPLY_STATUS,
+                    status: { type: 'POISON', duration: 5 },
+                },
+            ]);
+        });
+
+        it('builds ordered resource and exhaust steps for Adrenaline Rush', () => {
+            const card = createCard({
+                name: 'Adrenaline Rush',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 1,
+                keywords: [CARD_KEYWORD.EXHAUST],
+                effectType: CARD_EFFECT_TYPE.DRAW,
+                effectPayload: {
+                    selfDamage: 5,
+                    drawCount: 3,
+                    energyChange: 3,
+                },
+            });
+
+            expect(service.buildActionScript(card)).toEqual([
+                { type: BATTLE_ACTION_SCRIPT_TYPE.SELF_DAMAGE, amount: 5 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.DRAW, count: 3 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.GAIN_ENERGY, amount: 3 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.EXHAUST },
+            ]);
+        });
+
+        it('builds damage and exhaust steps for Last Stand', () => {
+            const card = createCard({
+                name: 'Last Stand',
+                type: CARD_TYPE.ATTACK,
+                power: 40,
+                cost: 3,
+                keywords: [CARD_KEYWORD.EXHAUST],
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            });
+
+            expect(service.buildActionScript(card)).toEqual([
+                { type: BATTLE_ACTION_SCRIPT_TYPE.DAMAGE, amount: 40 },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.EXHAUST },
+            ]);
+        });
+
+        it('builds flee and exhaust steps for Backdoor Exit', () => {
+            const card = createCard({
+                name: 'Backdoor Exit',
+                type: CARD_TYPE.SKILL,
+                power: 0,
+                cost: 0,
+                keywords: [CARD_KEYWORD.EXHAUST],
+                effectType: CARD_EFFECT_TYPE.FLEE,
+                effectPayload: { perfectVanish: true },
+            });
+
+            expect(service.buildActionScript(card)).toEqual([
+                { type: BATTLE_ACTION_SCRIPT_TYPE.FLEE, perfectVanish: true },
+                { type: BATTLE_ACTION_SCRIPT_TYPE.EXHAUST },
+            ]);
         });
     });
 });

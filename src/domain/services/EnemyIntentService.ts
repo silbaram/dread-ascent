@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Enemy Intent Service — 적의 다음 행동 의도 결정/조회 로직 (TASK-038)
+// Enemy Intent Service — 적의 다음 행동 의도 결정/조회 로직 (TASK-030)
 // ---------------------------------------------------------------------------
 
 import {
@@ -7,11 +7,10 @@ import {
     CARD_TYPE,
     type Card,
 } from '../entities/Card';
-import type { Enemy } from '../entities/Enemy';
+import type { Enemy, EnemyArchetypeId } from '../entities/Enemy';
 import {
     ENEMY_INTENT_BALANCE,
     type EnemyIntentProfile,
-    type EnemyIntentWeights,
 } from './CombatBalance';
 
 // ---------------------------------------------------------------------------
@@ -45,8 +44,22 @@ export const ENEMY_INTENT_PATTERN = {
 
 export type EnemyIntentPattern = (typeof ENEMY_INTENT_PATTERN)[keyof typeof ENEMY_INTENT_PATTERN];
 
-const LOW_HEALTH_THRESHOLD = ENEMY_INTENT_BALANCE.lowHealthThreshold;
-const HIGH_HEALTH_THRESHOLD = ENEMY_INTENT_BALANCE.highHealthThreshold;
+export const ENEMY_INTENT_CHARGE_PHASE = {
+    WARNING: 'warning',
+    BURST: 'burst',
+} as const;
+
+export type EnemyIntentChargePhase =
+    (typeof ENEMY_INTENT_CHARGE_PHASE)[keyof typeof ENEMY_INTENT_CHARGE_PHASE];
+
+export const ENEMY_INTENT_AMBUSH_REVEAL_RULE = {
+    FULL: 'full',
+    PARTIAL: 'partial',
+    HIDDEN: 'hidden',
+} as const;
+
+export type EnemyIntentAmbushRevealRule =
+    (typeof ENEMY_INTENT_AMBUSH_REVEAL_RULE)[keyof typeof ENEMY_INTENT_AMBUSH_REVEAL_RULE];
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,6 +93,8 @@ export interface ChargeIntent {
     readonly damage: number;
     readonly label: string;
     readonly warning: string;
+    readonly chargePhase?: EnemyIntentChargePhase;
+    readonly burstDamage?: number;
     readonly sourceCardId?: string;
 }
 
@@ -89,6 +104,8 @@ export interface AmbushIntent {
     readonly damage: number;
     readonly label: string;
     readonly warning: string;
+    readonly revealRule?: EnemyIntentAmbushRevealRule;
+    readonly previewDamage?: number;
     readonly sourceCardId?: string;
 }
 
@@ -140,22 +157,140 @@ export interface DecideEnemyIntentRequest {
     readonly floorNumber?: number;
 }
 
+export interface EnemyIntentTimelineStep {
+    readonly pattern: EnemyIntentPattern;
+    readonly chargePhase?: EnemyIntentChargePhase;
+    readonly ambushRevealRule?: EnemyIntentAmbushRevealRule;
+}
+
+interface EnemyIntentTimelineDefinition {
+    readonly id: string;
+    readonly steps: readonly EnemyIntentTimelineStep[];
+}
+
+interface EnemyIntentTimelineCursor {
+    readonly timelineId: string;
+    nextIndex: number;
+}
+
+const NORMAL_TIMELINES_BY_ARCHETYPE: Partial<Record<EnemyArchetypeId, readonly EnemyIntentTimelineStep[]>> = {
+    'ash-crawler': [
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+        { pattern: ENEMY_INTENT_PATTERN.RITUAL },
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+    ],
+    'mire-broodling': [
+        { pattern: ENEMY_INTENT_PATTERN.CURSE },
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+        { pattern: ENEMY_INTENT_PATTERN.CLEANSE },
+    ],
+    'blade-raider': [
+        {
+            pattern: ENEMY_INTENT_PATTERN.AMBUSH,
+            ambushRevealRule: ENEMY_INTENT_AMBUSH_REVEAL_RULE.PARTIAL,
+        },
+        {
+            pattern: ENEMY_INTENT_PATTERN.CHARGE,
+            chargePhase: ENEMY_INTENT_CHARGE_PHASE.WARNING,
+        },
+        {
+            pattern: ENEMY_INTENT_PATTERN.CHARGE,
+            chargePhase: ENEMY_INTENT_CHARGE_PHASE.BURST,
+        },
+    ],
+    'dread-sentinel': [
+        { pattern: ENEMY_INTENT_PATTERN.GUARD },
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+        { pattern: ENEMY_INTENT_PATTERN.GUARD },
+    ],
+};
+
+const ELITE_TIMELINES_BY_ARCHETYPE: Partial<Record<EnemyArchetypeId, readonly EnemyIntentTimelineStep[]>> = {
+    'ash-crawler': [
+        { pattern: ENEMY_INTENT_PATTERN.RITUAL },
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+        { pattern: ENEMY_INTENT_PATTERN.CURSE },
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+    ],
+    'mire-broodling': [
+        { pattern: ENEMY_INTENT_PATTERN.CURSE },
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+        { pattern: ENEMY_INTENT_PATTERN.CLEANSE },
+        { pattern: ENEMY_INTENT_PATTERN.CURSE },
+    ],
+    'blade-raider': [
+        {
+            pattern: ENEMY_INTENT_PATTERN.AMBUSH,
+            ambushRevealRule: ENEMY_INTENT_AMBUSH_REVEAL_RULE.HIDDEN,
+        },
+        {
+            pattern: ENEMY_INTENT_PATTERN.CHARGE,
+            chargePhase: ENEMY_INTENT_CHARGE_PHASE.WARNING,
+        },
+        {
+            pattern: ENEMY_INTENT_PATTERN.CHARGE,
+            chargePhase: ENEMY_INTENT_CHARGE_PHASE.BURST,
+        },
+        { pattern: ENEMY_INTENT_PATTERN.FLURRY },
+    ],
+    'dread-sentinel': [
+        { pattern: ENEMY_INTENT_PATTERN.GUARD },
+        { pattern: ENEMY_INTENT_PATTERN.RITUAL },
+        { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+        { pattern: ENEMY_INTENT_PATTERN.GUARD },
+    ],
+};
+
+const BOSS_TIMELINE = [
+    {
+        pattern: ENEMY_INTENT_PATTERN.CHARGE,
+        chargePhase: ENEMY_INTENT_CHARGE_PHASE.WARNING,
+    },
+    {
+        pattern: ENEMY_INTENT_PATTERN.CHARGE,
+        chargePhase: ENEMY_INTENT_CHARGE_PHASE.BURST,
+    },
+    { pattern: ENEMY_INTENT_PATTERN.FLURRY },
+    { pattern: ENEMY_INTENT_PATTERN.CLEANSE },
+    { pattern: ENEMY_INTENT_PATTERN.CURSE },
+] as const satisfies readonly EnemyIntentTimelineStep[];
+
+const SHOWDOWN_TIMELINE = [
+    { pattern: ENEMY_INTENT_PATTERN.CURSE },
+    {
+        pattern: ENEMY_INTENT_PATTERN.CHARGE,
+        chargePhase: ENEMY_INTENT_CHARGE_PHASE.WARNING,
+    },
+    {
+        pattern: ENEMY_INTENT_PATTERN.CHARGE,
+        chargePhase: ENEMY_INTENT_CHARGE_PHASE.BURST,
+    },
+    { pattern: ENEMY_INTENT_PATTERN.FLURRY },
+    { pattern: ENEMY_INTENT_PATTERN.GUARD },
+] as const satisfies readonly EnemyIntentTimelineStep[];
+
+const DEFAULT_NORMAL_TIMELINE: readonly EnemyIntentTimelineStep[] = [
+    { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+    { pattern: ENEMY_INTENT_PATTERN.RITUAL },
+    { pattern: ENEMY_INTENT_PATTERN.STRIKE },
+];
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
 
 export class EnemyIntentService {
     private readonly intentByEnemyId = new Map<string, EnemyIntent>();
+    private readonly cursorByEnemyId = new Map<string, EnemyIntentTimelineCursor>();
 
-    constructor(
-        private readonly random: EnemyIntentRandomSource = { next: () => Math.random() },
-    ) {}
+    constructor(_random: EnemyIntentRandomSource = { next: () => 0 }) {}
 
     decideNextIntent(request: DecideEnemyIntentRequest): EnemyIntent {
-        const intentType = this.selectIntentType(
-            this.resolveWeights(request.enemy, request.floorNumber),
-        );
-        const intent = this.buildIntent(intentType, request);
+        const timeline = this.resolveTimeline(request.enemy);
+        const cursor = this.getTimelineCursor(request.enemy.id, timeline);
+        const step = timeline.steps[cursor.nextIndex % timeline.steps.length];
+        cursor.nextIndex += 1;
+        const intent = this.buildIntentForTimelineStep(step, request);
         this.intentByEnemyId.set(request.enemy.id, intent);
         return intent;
     }
@@ -166,150 +301,104 @@ export class EnemyIntentService {
 
     clearIntent(enemyId: string): void {
         this.intentByEnemyId.delete(enemyId);
+        this.cursorByEnemyId.delete(enemyId);
     }
 
-    private resolveWeights(
-        enemy: Enemy,
-        floorNumber: number = 1,
-    ): EnemyIntentWeights {
-        const profile = this.resolveProfile(enemy);
-        let weights = this.applyFloorScaling(
-            ENEMY_INTENT_BALANCE.baseWeights[profile],
-            ENEMY_INTENT_BALANCE.floorScaling.perBand[profile],
-            floorNumber,
-        );
-
-        const healthRatio = enemy.stats.maxHealth <= 0
-            ? 0
-            : enemy.stats.health / enemy.stats.maxHealth;
-
-        if (healthRatio <= LOW_HEALTH_THRESHOLD) {
-            weights = this.applyWeightAdjustment(
-                weights,
-                ENEMY_INTENT_BALANCE.lowHealthAdjustment,
-            );
+    private getTimelineCursor(
+        enemyId: string,
+        timeline: EnemyIntentTimelineDefinition,
+    ): EnemyIntentTimelineCursor {
+        const cursor = this.cursorByEnemyId.get(enemyId);
+        if (cursor?.timelineId === timeline.id) {
+            return cursor;
         }
 
-        if (healthRatio >= HIGH_HEALTH_THRESHOLD) {
-            weights = {
-                ...weights,
-                buff: weights.buff + ENEMY_INTENT_BALANCE.highHealthBuffBonus[profile],
+        const nextCursor = {
+            timelineId: timeline.id,
+            nextIndex: 0,
+        };
+        this.cursorByEnemyId.set(enemyId, nextCursor);
+        return nextCursor;
+    }
+
+    private resolveTimeline(enemy: Enemy): EnemyIntentTimelineDefinition {
+        if (this.isShowdownEnemy(enemy)) {
+            return {
+                id: `${enemy.archetypeId}:showdown`,
+                steps: SHOWDOWN_TIMELINE,
             };
         }
 
-        return weights;
-    }
-
-    private resolveProfile(enemy: Enemy): EnemyIntentProfile {
         if (enemy.isBoss()) {
-            return 'boss';
+            return {
+                id: `${enemy.archetypeId}:boss`,
+                steps: BOSS_TIMELINE,
+            };
         }
 
-        return enemy.isElite() ? 'elite' : 'normal';
-    }
-
-    private applyFloorScaling(
-        baseWeights: EnemyIntentWeights,
-        floorScaling: EnemyIntentWeights,
-        floorNumber: number,
-    ): EnemyIntentWeights {
-        const floorBandSize = ENEMY_INTENT_BALANCE.floorScaling.floorBandSize;
-        const floorBand = Math.max(0, Math.floor((Math.max(1, floorNumber) - 1) / floorBandSize));
-
-        if (floorBand === 0) {
-            return baseWeights;
+        if (enemy.isElite()) {
+            return {
+                id: `${enemy.archetypeId}:elite`,
+                steps: ELITE_TIMELINES_BY_ARCHETYPE[enemy.archetypeId] ?? DEFAULT_NORMAL_TIMELINE,
+            };
         }
 
         return {
-            attack: baseWeights.attack + (floorScaling.attack * floorBand),
-            defend: baseWeights.defend + (floorScaling.defend * floorBand),
-            buff: baseWeights.buff + (floorScaling.buff * floorBand),
+            id: `${enemy.archetypeId}:normal`,
+            steps: NORMAL_TIMELINES_BY_ARCHETYPE[enemy.archetypeId] ?? DEFAULT_NORMAL_TIMELINE,
         };
     }
 
-    private applyWeightAdjustment(
-        baseWeights: EnemyIntentWeights,
-        adjustment: EnemyIntentWeights,
-    ): EnemyIntentWeights {
-        return {
-            attack: Math.max(0, baseWeights.attack + adjustment.attack),
-            defend: Math.max(0, baseWeights.defend + adjustment.defend),
-            buff: Math.max(0, baseWeights.buff + adjustment.buff),
-        };
+    private isShowdownEnemy(enemy: Enemy): boolean {
+        return enemy.archetypeId === 'final-boss' && /showdown/i.test(enemy.id);
     }
 
-    private selectIntentType(weights: EnemyIntentWeights): EnemyIntentType {
-        const totalWeight = weights.attack + weights.defend + weights.buff;
-        if (totalWeight <= 0) {
-            return ENEMY_INTENT_TYPE.ATTACK;
-        }
-
-        const roll = this.random.next() * totalWeight;
-
-        if (roll < weights.attack) {
-            return ENEMY_INTENT_TYPE.ATTACK;
-        }
-
-        if (roll < weights.attack + weights.defend) {
-            return ENEMY_INTENT_TYPE.DEFEND;
-        }
-
-        return ENEMY_INTENT_TYPE.BUFF;
-    }
-
-    private buildIntent(
-        intentType: EnemyIntentType,
+    private buildIntentForTimelineStep(
+        step: EnemyIntentTimelineStep,
         request: DecideEnemyIntentRequest,
     ): EnemyIntent {
-        switch (intentType) {
-            case ENEMY_INTENT_TYPE.ATTACK:
-                return this.buildAttackIntent(request);
-            case ENEMY_INTENT_TYPE.DEFEND:
-                return this.buildDefendIntent(request);
-            case ENEMY_INTENT_TYPE.BUFF:
-                return this.buildBuffIntent(request);
+        switch (step.pattern) {
+            case ENEMY_INTENT_PATTERN.STRIKE:
+                return this.buildStrikeIntent(request);
+            case ENEMY_INTENT_PATTERN.FLURRY:
+                return this.buildFlurryIntent(request);
+            case ENEMY_INTENT_PATTERN.GUARD:
+                return this.buildGuardIntent(request);
+            case ENEMY_INTENT_PATTERN.RITUAL:
+                return this.buildRitualIntent(request);
+            case ENEMY_INTENT_PATTERN.CHARGE:
+                return this.buildChargeIntent(
+                    request,
+                    step.chargePhase ?? ENEMY_INTENT_CHARGE_PHASE.BURST,
+                );
+            case ENEMY_INTENT_PATTERN.CURSE:
+                return this.buildCurseIntent(request);
+            case ENEMY_INTENT_PATTERN.CLEANSE:
+                return this.buildCleanseIntent(request);
+            case ENEMY_INTENT_PATTERN.AMBUSH:
+                return this.buildAmbushIntent(
+                    request,
+                    step.ambushRevealRule ?? ENEMY_INTENT_AMBUSH_REVEAL_RULE.PARTIAL,
+                );
         }
     }
 
-    private buildAttackIntent(request: DecideEnemyIntentRequest): AttackIntent {
-        const strongestAttackCard = this.pickStrongestCard(
+    private buildStrikeIntent(request: DecideEnemyIntentRequest): StrikeIntent {
+        const strikeCard = this.pickStrongestCard(
             request.enemyCardPool,
-            (card) => card.effectType === CARD_EFFECT_TYPE.DAMAGE || card.type === CARD_TYPE.ATTACK,
+            (card) => this.isAttackCard(card)
+                && !this.isChargeIntentCard(card)
+                && !this.isAmbushIntentCard(card)
+                && this.getHitCount(card) <= 1,
         );
 
-        if (strongestAttackCard) {
-            const hitCount = strongestAttackCard.hitCount ?? strongestAttackCard.effectPayload?.hitCount ?? 1;
-            const damagePerHit = strongestAttackCard.power;
-            if (this.isAmbushIntentCard(strongestAttackCard)) {
-                return {
-                    type: ENEMY_INTENT_TYPE.ATTACK,
-                    pattern: ENEMY_INTENT_PATTERN.AMBUSH,
-                    damage: damagePerHit * hitCount,
-                    label: strongestAttackCard.name,
-                    warning: 'Hidden prep',
-                    sourceCardId: strongestAttackCard.id,
-                };
-            }
-            if (this.isChargeIntentCard(strongestAttackCard)) {
-                return {
-                    type: ENEMY_INTENT_TYPE.ATTACK,
-                    pattern: ENEMY_INTENT_PATTERN.CHARGE,
-                    damage: damagePerHit * hitCount,
-                    label: strongestAttackCard.name,
-                    warning: 'Next turn burst',
-                    sourceCardId: strongestAttackCard.id,
-                };
-            }
+        if (strikeCard) {
             return {
                 type: ENEMY_INTENT_TYPE.ATTACK,
-                pattern: hitCount > 1
-                    ? ENEMY_INTENT_PATTERN.FLURRY
-                    : ENEMY_INTENT_PATTERN.STRIKE,
-                damage: damagePerHit * hitCount,
-                label: strongestAttackCard.name,
-                hitCount: hitCount > 1 ? hitCount : undefined,
-                damagePerHit: hitCount > 1 ? damagePerHit : undefined,
-                sourceCardId: strongestAttackCard.id,
+                pattern: ENEMY_INTENT_PATTERN.STRIKE,
+                damage: Math.max(0, strikeCard.power),
+                label: strikeCard.name,
+                sourceCardId: strikeCard.id,
             };
         }
 
@@ -321,30 +410,115 @@ export class EnemyIntentService {
         };
     }
 
-    private buildDefendIntent(request: DecideEnemyIntentRequest): DefendIntent {
-        const strongestDefendCard = this.pickStrongestCard(
+    private buildFlurryIntent(request: DecideEnemyIntentRequest): FlurryIntent {
+        const flurryCard = this.pickStrongestCard(
             request.enemyCardPool,
-            (card) => card.effectType === CARD_EFFECT_TYPE.BLOCK || card.type === CARD_TYPE.GUARD,
+            (card) => this.isAttackCard(card) && this.getHitCount(card) > 1,
         );
 
-        if (strongestDefendCard) {
-            if (this.isCleanseIntentCard(strongestDefendCard)) {
-                return {
-                    type: ENEMY_INTENT_TYPE.DEFEND,
-                    pattern: ENEMY_INTENT_PATTERN.CLEANSE,
-                    block: strongestDefendCard.power,
-                    label: strongestDefendCard.name,
-                    cleansedStatuses: this.inferCleansedStatuses(strongestDefendCard),
-                    sourceCardId: strongestDefendCard.id,
-                };
-            }
+        if (flurryCard) {
+            const hitCount = this.getHitCount(flurryCard);
+            const damagePerHit = Math.max(0, flurryCard.power);
+            return {
+                type: ENEMY_INTENT_TYPE.ATTACK,
+                pattern: ENEMY_INTENT_PATTERN.FLURRY,
+                damage: damagePerHit * hitCount,
+                hitCount,
+                damagePerHit,
+                label: flurryCard.name,
+                sourceCardId: flurryCard.id,
+            };
+        }
 
+        const hitCount = 2;
+        const damagePerHit = Math.max(1, Math.ceil(request.enemy.stats.attack / hitCount));
+        return {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.FLURRY,
+            damage: damagePerHit * hitCount,
+            hitCount,
+            damagePerHit,
+            label: 'Flurry',
+        };
+    }
+
+    private buildChargeIntent(
+        request: DecideEnemyIntentRequest,
+        phase: EnemyIntentChargePhase,
+    ): ChargeIntent {
+        const chargeCard = this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isAttackCard(card) && this.isChargeIntentCard(card),
+        ) ?? this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isAttackCard(card),
+        );
+        const burstDamage = this.resolveCardDamage(chargeCard, request.enemy.stats.attack);
+        const isWarning = phase === ENEMY_INTENT_CHARGE_PHASE.WARNING;
+
+        return {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.CHARGE,
+            damage: isWarning ? 0 : burstDamage,
+            burstDamage,
+            label: chargeCard?.name ?? 'Charge',
+            warning: isWarning ? 'Burst next turn' : 'Burst released',
+            chargePhase: phase,
+            sourceCardId: isWarning ? undefined : chargeCard?.id,
+        };
+    }
+
+    private buildAmbushIntent(
+        request: DecideEnemyIntentRequest,
+        revealRule: EnemyIntentAmbushRevealRule,
+    ): AmbushIntent {
+        const ambushCard = this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isAttackCard(card) && this.isAmbushIntentCard(card),
+        ) ?? this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isAttackCard(card),
+        );
+        const damage = this.resolveCardDamage(ambushCard, request.enemy.stats.attack);
+        const previewDamage = revealRule === ENEMY_INTENT_AMBUSH_REVEAL_RULE.PARTIAL
+            ? Math.max(1, Math.ceil(damage / 2))
+            : undefined;
+
+        return {
+            type: ENEMY_INTENT_TYPE.ATTACK,
+            pattern: ENEMY_INTENT_PATTERN.AMBUSH,
+            damage,
+            label: ambushCard?.name ?? 'Ambush',
+            warning: revealRule === ENEMY_INTENT_AMBUSH_REVEAL_RULE.HIDDEN
+                ? 'Hidden prep'
+                : 'Partial read',
+            revealRule,
+            previewDamage,
+            sourceCardId: ambushCard?.id,
+        };
+    }
+
+    private buildGuardIntent(request: DecideEnemyIntentRequest): GuardIntent {
+        const guardCard = this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isDefendCard(card)
+                && !this.isCleanseIntentCard(card)
+                && this.isThornsIntentCard(card),
+        ) ?? this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isDefendCard(card) && !this.isCleanseIntentCard(card),
+        ) ?? this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isDefendCard(card),
+        );
+
+        if (guardCard) {
             return {
                 type: ENEMY_INTENT_TYPE.DEFEND,
                 pattern: ENEMY_INTENT_PATTERN.GUARD,
-                block: strongestDefendCard.power,
-                label: strongestDefendCard.name,
-                sourceCardId: strongestDefendCard.id,
+                block: Math.max(0, guardCard.power),
+                label: guardCard.name,
+                sourceCardId: guardCard.id,
             };
         }
 
@@ -356,22 +530,40 @@ export class EnemyIntentService {
         };
     }
 
-    private buildBuffIntent(request: DecideEnemyIntentRequest): BuffIntent {
-        const curseCard = this.pickStrongestCard(
+    private buildCleanseIntent(request: DecideEnemyIntentRequest): CleanseIntent {
+        const cleanseCard = this.pickStrongestCard(
             request.enemyCardPool,
-            (card) => this.isCurseIntentCard(card),
+            (card) => this.isDefendCard(card) && this.isCleanseIntentCard(card),
+        ) ?? this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isDefendCard(card),
         );
-        if (curseCard) {
+
+        if (cleanseCard) {
             return {
-                type: ENEMY_INTENT_TYPE.BUFF,
-                pattern: ENEMY_INTENT_PATTERN.CURSE,
-                label: curseCard.name,
-                curseCardName: this.inferCurseCardName(curseCard),
-                curseCount: 1,
-                sourceCardId: curseCard.id,
+                type: ENEMY_INTENT_TYPE.DEFEND,
+                pattern: ENEMY_INTENT_PATTERN.CLEANSE,
+                block: Math.max(0, cleanseCard.power),
+                label: cleanseCard.name,
+                cleansedStatuses: this.inferCleansedStatuses(cleanseCard),
+                sourceCardId: cleanseCard.id,
             };
         }
 
+        return {
+            type: ENEMY_INTENT_TYPE.DEFEND,
+            pattern: ENEMY_INTENT_PATTERN.CLEANSE,
+            block: Math.max(1, request.enemy.stats.defense + 2),
+            label: 'Cleanse',
+            cleansedStatuses: ['Poison'],
+        };
+    }
+
+    private buildRitualIntent(request: DecideEnemyIntentRequest): RitualIntent {
+        const ritualCard = this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isRitualIntentCard(card),
+        );
         const profile = this.resolveProfile(request.enemy);
 
         return {
@@ -379,8 +571,32 @@ export class EnemyIntentService {
             pattern: ENEMY_INTENT_PATTERN.RITUAL,
             stat: ENEMY_INTENT_BUFF_STAT.ATTACK,
             amount: ENEMY_INTENT_BALANCE.buffAmount[profile],
-            label: 'Battle Cry',
+            label: ritualCard?.name ?? 'Battle Cry',
         };
+    }
+
+    private buildCurseIntent(request: DecideEnemyIntentRequest): CurseIntent {
+        const curseCard = this.pickStrongestCard(
+            request.enemyCardPool,
+            (card) => this.isCurseIntentCard(card),
+        );
+
+        return {
+            type: ENEMY_INTENT_TYPE.BUFF,
+            pattern: ENEMY_INTENT_PATTERN.CURSE,
+            label: curseCard?.name ?? 'Dread Curse',
+            curseCardName: curseCard ? this.inferCurseCardName(curseCard) : 'Dread',
+            curseCount: 1,
+            sourceCardId: curseCard?.id,
+        };
+    }
+
+    private resolveProfile(enemy: Enemy): EnemyIntentProfile {
+        if (enemy.isBoss()) {
+            return 'boss';
+        }
+
+        return enemy.isElite() ? 'elite' : 'normal';
     }
 
     private pickStrongestCard(
@@ -397,9 +613,31 @@ export class EnemyIntentService {
             }, undefined);
     }
 
+    private resolveCardDamage(card: Card | undefined, fallbackDamage: number): number {
+        if (!card) {
+            return Math.max(1, fallbackDamage);
+        }
+
+        return Math.max(0, card.power) * this.getHitCount(card);
+    }
+
     private getIntentThreatScore(card: Card): number {
-        const hitCount = card.hitCount ?? card.effectPayload?.hitCount ?? 1;
-        return card.power * Math.max(1, hitCount);
+        return Math.max(0, card.power) * this.getHitCount(card);
+    }
+
+    private getHitCount(card: Card): number {
+        return Math.max(1, card.hitCount ?? card.effectPayload?.hitCount ?? 1);
+    }
+
+    private isAttackCard(card: Card): boolean {
+        return card.effectType === CARD_EFFECT_TYPE.DAMAGE
+            || card.effectType === CARD_EFFECT_TYPE.MULTI_HIT
+            || card.type === CARD_TYPE.ATTACK;
+    }
+
+    private isDefendCard(card: Card): boolean {
+        return card.effectType === CARD_EFFECT_TYPE.BLOCK
+            || card.type === CARD_TYPE.GUARD;
     }
 
     private isChargeIntentCard(card: Card): boolean {
@@ -416,6 +654,17 @@ export class EnemyIntentService {
 
     private isCurseIntentCard(card: Card): boolean {
         return /curse|hex|dread/i.test(card.name);
+    }
+
+    private isRitualIntentCard(card: Card): boolean {
+        return /ritual|battle cry/i.test(card.name)
+            && !this.isCurseIntentCard(card);
+    }
+
+    private isThornsIntentCard(card: Card): boolean {
+        return /thorn/i.test(card.name)
+            || card.buff?.type === 'THORNS'
+            || card.effectPayload?.buff?.type === 'THORNS';
     }
 
     private inferCleansedStatuses(card: Card): readonly string[] {

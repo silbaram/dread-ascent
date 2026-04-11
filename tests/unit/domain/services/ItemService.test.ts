@@ -705,6 +705,40 @@ describe('ItemService', () => {
         expect(service.getInventory()).toHaveLength(2);
     });
 
+    it('grants Pact Armor as a post-boss pact reward even when inventory is full', () => {
+        const service = new ItemService(new SequenceRandomSource([0]), 1, 1);
+        service.restoreInventory([
+            {
+                id: ITEM_ID.IRON_DAGGER,
+                instanceId: 'item-f1-1',
+                name: 'Iron Dagger',
+                type: 'EQUIPMENT',
+                rarity: ITEM_RARITY.COMMON,
+                icon: '/',
+                stackable: false,
+                maxStack: 1,
+                description: 'ATK +2.',
+                equipment: {
+                    slot: 'WEAPON',
+                    statModifier: { attack: 2 },
+                },
+                quantity: 1,
+                isEquipped: false,
+            },
+        ]);
+
+        const reward = service.grantPactReward();
+
+        expect(reward).toMatchObject({
+            status: 'granted',
+            rewardItem: {
+                id: ITEM_ID.PACT_ARMOR,
+                rarity: ITEM_RARITY.CURSED,
+            },
+        });
+        expect(service.getInventory()).toHaveLength(2);
+    });
+
     it('loses one unequipped inventory item on escape without touching equipped gear', () => {
         const service = new ItemService(new SequenceRandomSource([0]), 1);
         service.restoreInventory([

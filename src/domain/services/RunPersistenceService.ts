@@ -1,13 +1,20 @@
 import {
     CARD_ARCHETYPE,
     CARD_EFFECT_TYPE,
+    CARD_INSCRIPTION_ID,
+    CARD_INSCRIPTION_PAYOFF_TYPE,
+    CARD_INSCRIPTION_PAYOFF_WINDOW,
+    CARD_INSCRIPTION_TRIGGER,
     CARD_KEYWORD,
     CARD_RARITY,
+    CARD_TARGET_SCOPE,
     CARD_TYPE,
     createCard,
     type Card,
     type CardArchetype,
     type CardCondition,
+    type CardInscriptionId,
+    type CardTargetScope,
     type CardType,
 } from '../entities/Card';
 import {
@@ -34,6 +41,14 @@ import {
 } from '../entities/Item';
 import type { EnemyArchetypeId } from '../entities/Enemy';
 import type { FloorSnapshot, FloorType } from './FloorProgressionService';
+import {
+    ESCAPE_GOLD_POLICY_NOTE,
+    type EscapeGoldPolicy,
+    type EscapeItemLossPolicy,
+    type EscapeModifierSource,
+    type EscapeResultTier,
+    type EscapeRewardPolicy,
+} from './EscapeEconomyService';
 import type { StorageLike } from './SoulShardService';
 
 export type PersistedRunStatus = 'active' | 'game-over' | 'victory';
@@ -50,6 +65,32 @@ export interface PersistedSpecialRewardOffer {
     offeredItemIds: ItemId[];
 }
 
+export type PersistedPostBossDecisionState = 'offered' | 'showdown';
+
+export interface PersistedPostBossDecision {
+    state: PersistedPostBossDecisionState;
+    bossArchetypeId: EnemyArchetypeId;
+    pactItemId: ItemId;
+    showdownEnemyId: string;
+}
+
+export interface PersistedEscapeResult {
+    tier: EscapeResultTier;
+    floorNumber: number;
+    battleRounds: number;
+    battleHealthLoss: number;
+    healthLoss: number;
+    itemLossPolicy: EscapeItemLossPolicy;
+    itemLossPrevented: boolean;
+    itemLostId?: ItemId;
+    nextBattleStartEnergyBonus: number;
+    perfectVanishEnergyBonus: number;
+    rewardPolicy: EscapeRewardPolicy;
+    modifierSources: readonly EscapeModifierSource[];
+    goldPolicy: EscapeGoldPolicy;
+    goldPolicyNote: string;
+}
+
 export interface RunPersistenceSnapshot {
     status: PersistedRunStatus;
     floor: FloorSnapshot;
@@ -59,6 +100,8 @@ export interface RunPersistenceSnapshot {
     defeatedEnemyCount: number;
     pendingBattleStartEnergy?: number;
     pendingSpecialRewardOffer?: PersistedSpecialRewardOffer;
+    pendingPostBossDecision?: PersistedPostBossDecision;
+    lastEscapeResult?: PersistedEscapeResult;
 }
 
 export const RUN_PERSISTENCE_STORAGE_KEY = 'dread-ascent.run-state';
@@ -78,6 +121,8 @@ const CARD_CONDITION_TYPES = [
     'HP_PERCENT_THRESHOLD',
     'MISSING_HEALTH_DAMAGE',
     'TURN_DAMAGE_TAKEN_AT_LEAST',
+    'COUNTER_WINDOW_READY',
+    'TARGET_DEBUFF_COUNT_AT_LEAST',
 ] as const satisfies readonly CardCondition['type'][];
 
 const CARD_SCALING_SOURCES = [
@@ -85,7 +130,35 @@ const CARD_SCALING_SOURCES = [
     'USER_BLOCK',
     'TARGET_DEBUFF_COUNT',
     'TURN_DAMAGE_TAKEN',
+    'COUNTER_WINDOW',
+    'CARDS_DISCARDED_THIS_TURN',
 ] as const;
+
+const CARD_INSCRIPTION_IDS = [
+    CARD_INSCRIPTION_ID.SHADOW_EXPOSE,
+    CARD_INSCRIPTION_ID.IRON_ENTRENCH,
+] as const satisfies readonly CardInscriptionId[];
+
+const CARD_INSCRIPTION_TRIGGERS = [
+    CARD_INSCRIPTION_TRIGGER.TARGET_DEBUFF_THRESHOLD,
+    CARD_INSCRIPTION_TRIGGER.CARD_RETAINED,
+] as const satisfies readonly NonNullable<Card['inscription']>['trigger'][];
+
+const CARD_INSCRIPTION_PAYOFF_TYPES = [
+    CARD_INSCRIPTION_PAYOFF_TYPE.DAMAGE_BONUS,
+    CARD_INSCRIPTION_PAYOFF_TYPE.BLOCK_BONUS,
+] as const satisfies readonly NonNullable<Card['inscription']>['payoff']['type'][];
+
+const CARD_INSCRIPTION_PAYOFF_WINDOWS = [
+    CARD_INSCRIPTION_PAYOFF_WINDOW.CURRENT_TURN,
+    CARD_INSCRIPTION_PAYOFF_WINDOW.NEXT_TURN,
+] as const satisfies readonly NonNullable<Card['inscription']>['payoff']['window'][];
+
+const CARD_TARGET_SCOPES = [
+    CARD_TARGET_SCOPE.CURRENT_ENEMY,
+    CARD_TARGET_SCOPE.ALL_ENEMIES,
+    CARD_TARGET_SCOPE.SELF,
+] as const satisfies readonly CardTargetScope[];
 
 const CARD_BUFF_TYPES = [
     STATUS_EFFECT_TYPE.VULNERABLE,
@@ -174,6 +247,12 @@ export class RunPersistenceService {
                     offeredItemIds: [...snapshot.pendingSpecialRewardOffer.offeredItemIds],
                 }
                 : undefined,
+            pendingPostBossDecision: snapshot.pendingPostBossDecision
+                ? { ...snapshot.pendingPostBossDecision }
+                : undefined,
+            lastEscapeResult: snapshot.lastEscapeResult
+                ? { ...snapshot.lastEscapeResult }
+                : undefined,
         };
     }
 
@@ -214,6 +293,12 @@ export class RunPersistenceService {
             ),
             pendingSpecialRewardOffer: this.normalizePendingSpecialRewardOffer(
                 (snapshot as { pendingSpecialRewardOffer?: unknown }).pendingSpecialRewardOffer,
+            ),
+            pendingPostBossDecision: this.normalizePendingPostBossDecision(
+                (snapshot as { pendingPostBossDecision?: unknown }).pendingPostBossDecision,
+            ),
+            lastEscapeResult: this.normalizeLastEscapeResult(
+                (snapshot as { lastEscapeResult?: unknown }).lastEscapeResult,
             ),
         };
     }
@@ -313,6 +398,143 @@ export class RunPersistenceService {
             bossArchetypeId,
             offeredItemIds,
         };
+    }
+
+    private normalizePendingPostBossDecision(
+        decision: unknown,
+    ): PersistedPostBossDecision | undefined {
+        if (!decision || typeof decision !== 'object') {
+            return undefined;
+        }
+
+        const candidate = decision as Partial<PersistedPostBossDecision>;
+        const state = candidate.state === 'offered' || candidate.state === 'showdown'
+            ? candidate.state
+            : undefined;
+        const bossArchetypeId = typeof candidate.bossArchetypeId === 'string'
+            ? candidate.bossArchetypeId as EnemyArchetypeId
+            : 'final-boss';
+        const pactItemId = typeof candidate.pactItemId === 'string'
+            && ITEM_CATALOG.some((item) => item.id === candidate.pactItemId)
+            ? candidate.pactItemId as ItemId
+            : undefined;
+        const showdownEnemyId = typeof candidate.showdownEnemyId === 'string'
+            && candidate.showdownEnemyId.length > 0
+            ? candidate.showdownEnemyId
+            : undefined;
+        if (!state || !pactItemId || !showdownEnemyId) {
+            return undefined;
+        }
+
+        return {
+            state,
+            bossArchetypeId,
+            pactItemId,
+            showdownEnemyId,
+        };
+    }
+
+    private normalizeLastEscapeResult(result: unknown): PersistedEscapeResult | undefined {
+        if (!result || typeof result !== 'object') {
+            return undefined;
+        }
+
+        const candidate = result as Partial<PersistedEscapeResult>;
+        const tier = this.normalizeEscapeResultTier(candidate.tier);
+        const floorNumber = this.normalizePositiveStat(candidate.floorNumber);
+        const battleRounds = this.normalizePositiveStat(candidate.battleRounds);
+        const battleHealthLoss = this.normalizeCount(candidate.battleHealthLoss);
+        const healthLoss = this.normalizeCount(candidate.healthLoss);
+        const itemLossPrevented = typeof candidate.itemLossPrevented === 'boolean'
+            ? candidate.itemLossPrevented
+            : false;
+        const itemLostId = typeof candidate.itemLostId === 'string'
+            ? candidate.itemLostId as ItemId
+            : undefined;
+        const itemLossPolicy = this.normalizeEscapeItemLossPolicy(candidate.itemLossPolicy)
+            ?? this.inferEscapeItemLossPolicy(tier, itemLossPrevented, itemLostId);
+        const nextBattleStartEnergyBonus = this.normalizeCount(candidate.nextBattleStartEnergyBonus);
+        const perfectVanishEnergyBonus = this.normalizeCount(candidate.perfectVanishEnergyBonus);
+        const rewardPolicy = this.normalizeEscapeRewardPolicy(candidate.rewardPolicy);
+        const modifierSources = this.normalizeEscapeModifierSources(candidate.modifierSources);
+        const goldPolicy = this.normalizeEscapeGoldPolicy(candidate.goldPolicy) ?? 'not-implemented';
+        const goldPolicyNote = typeof candidate.goldPolicyNote === 'string' && candidate.goldPolicyNote.length > 0
+            ? candidate.goldPolicyNote
+            : ESCAPE_GOLD_POLICY_NOTE;
+        if (!tier || floorNumber === undefined || battleRounds === undefined || !itemLossPolicy || !rewardPolicy) {
+            return undefined;
+        }
+
+        return {
+            tier,
+            floorNumber,
+            battleRounds,
+            battleHealthLoss,
+            healthLoss,
+            itemLossPolicy,
+            itemLossPrevented,
+            itemLostId,
+            nextBattleStartEnergyBonus,
+            perfectVanishEnergyBonus,
+            rewardPolicy,
+            modifierSources,
+            goldPolicy,
+            goldPolicyNote,
+        };
+    }
+
+    private normalizeEscapeItemLossPolicy(itemLossPolicy: unknown): EscapeItemLossPolicy | undefined {
+        return itemLossPolicy === 'lose-random-item'
+            || itemLossPolicy === 'protected-by-gear'
+            || itemLossPolicy === 'none'
+            ? itemLossPolicy
+            : undefined;
+    }
+
+    private inferEscapeItemLossPolicy(
+        tier: EscapeResultTier | undefined,
+        itemLossPrevented: boolean,
+        itemLostId: ItemId | undefined,
+    ): EscapeItemLossPolicy | undefined {
+        if (!tier) {
+            return undefined;
+        }
+        if (itemLossPrevented) {
+            return 'protected-by-gear';
+        }
+        if (itemLostId || tier === 'clean_escape') {
+            return 'lose-random-item';
+        }
+        return 'none';
+    }
+
+    private normalizeEscapeModifierSources(modifierSources: unknown): readonly EscapeModifierSource[] {
+        if (!Array.isArray(modifierSources)) {
+            return [];
+        }
+
+        return modifierSources.filter((source): source is EscapeModifierSource => (
+            source === 'card-perfect-vanish'
+            || source === 'escape-artists-boots'
+        ));
+    }
+
+    private normalizeEscapeGoldPolicy(goldPolicy: unknown): EscapeGoldPolicy | undefined {
+        return goldPolicy === 'not-implemented' ? goldPolicy : undefined;
+    }
+
+    private normalizeEscapeRewardPolicy(rewardPolicy: unknown): EscapeRewardPolicy | undefined {
+        return rewardPolicy === 'none' || rewardPolicy === 'next-battle-energy'
+            ? rewardPolicy
+            : undefined;
+    }
+
+    private normalizeEscapeResultTier(tier: unknown): EscapeResultTier | undefined {
+        return tier === 'clean_escape'
+            || tier === 'bloody_escape'
+            || tier === 'perfect_vanish'
+            ? tier
+            : undefined;
     }
 
     private normalizePlayer(player: unknown): PersistedPlayerSnapshot | undefined {
@@ -592,6 +814,14 @@ export class RunPersistenceService {
             return undefined;
         }
         const effectPayload = this.normalizeCardEffectPayload(candidate.effectPayload);
+        if (candidate.inscription !== undefined && this.normalizeCardInscription(candidate.inscription) === undefined) {
+            return undefined;
+        }
+        const inscription = this.normalizeCardInscription(candidate.inscription);
+        if (candidate.targetScope !== undefined && this.normalizeCardTargetScope(candidate.targetScope) === undefined) {
+            return undefined;
+        }
+        const targetScope = this.normalizeCardTargetScope(candidate.targetScope);
 
         return createCard({
             id,
@@ -613,6 +843,8 @@ export class RunPersistenceService {
             discardCount: this.normalizeStat(candidate.discardCount),
             selfDamage: this.normalizeStat(candidate.selfDamage),
             buff: this.normalizeCardBuff(candidate.buff),
+            inscription,
+            targetScope,
             effectPayload,
         });
     }
@@ -671,6 +903,7 @@ export class RunPersistenceService {
             || archetype === CARD_ARCHETYPE.BLOOD_OATH
             || archetype === CARD_ARCHETYPE.SHADOW_ARTS
             || archetype === CARD_ARCHETYPE.IRON_WILL
+            || archetype === CARD_ARCHETYPE.SMUGGLER
             || archetype === CARD_ARCHETYPE.CURSE
             ? archetype
             : undefined;
@@ -775,6 +1008,127 @@ export class RunPersistenceService {
         return condition !== undefined && this.normalizeCardCondition(condition) === undefined;
     }
 
+    private normalizeCardInscription(inscription: unknown): Card['inscription'] | undefined {
+        if (!inscription || typeof inscription !== 'object') {
+            return undefined;
+        }
+
+        const candidate = inscription as Partial<NonNullable<Card['inscription']>>;
+        const id = this.normalizeCardInscriptionId(candidate.id);
+        const label = typeof candidate.label === 'string' ? candidate.label : undefined;
+        const trigger = this.normalizeCardInscriptionTrigger(candidate.trigger);
+        const targetDebuffThreshold = this.normalizeStat(candidate.targetDebuffThreshold);
+        const triggerStatusTypes = this.normalizeStringArray(candidate.triggerStatusTypes);
+        const payoff = this.normalizeCardInscriptionPayoff(candidate.payoff, candidate);
+        const exposedDamageBonus = this.normalizeStat(candidate.exposedDamageBonus)
+            ?? (id === CARD_INSCRIPTION_ID.SHADOW_EXPOSE && payoff?.type === CARD_INSCRIPTION_PAYOFF_TYPE.DAMAGE_BONUS
+                ? payoff.amount
+                : undefined);
+
+        if (!id || !label || !trigger || !payoff) {
+            return undefined;
+        }
+
+        if (trigger === CARD_INSCRIPTION_TRIGGER.TARGET_DEBUFF_THRESHOLD && targetDebuffThreshold === undefined) {
+            return undefined;
+        }
+
+        return {
+            id,
+            label,
+            trigger,
+            payoff,
+            ...(targetDebuffThreshold === undefined ? {} : { targetDebuffThreshold }),
+            ...(triggerStatusTypes.length === 0 ? {} : { triggerStatusTypes }),
+            ...(exposedDamageBonus === undefined ? {} : { exposedDamageBonus }),
+        };
+    }
+
+    private normalizeCardInscriptionPayoff(
+        payoff: unknown,
+        legacyCandidate: Partial<NonNullable<Card['inscription']>>,
+    ): NonNullable<Card['inscription']>['payoff'] | undefined {
+        if (!payoff || typeof payoff !== 'object') {
+            const legacyDamageBonus = this.normalizeStat(legacyCandidate.exposedDamageBonus);
+            if (legacyDamageBonus === undefined) {
+                return undefined;
+            }
+
+            return {
+                type: CARD_INSCRIPTION_PAYOFF_TYPE.DAMAGE_BONUS,
+                label: 'Exposed',
+                amount: legacyDamageBonus,
+                window: CARD_INSCRIPTION_PAYOFF_WINDOW.CURRENT_TURN,
+            };
+        }
+
+        const candidate = payoff as Partial<NonNullable<Card['inscription']>['payoff']>;
+        const type = this.normalizeCardInscriptionPayoffType(candidate.type);
+        const label = typeof candidate.label === 'string' ? candidate.label : undefined;
+        const amount = this.normalizeStat(candidate.amount);
+        const window = this.normalizeCardInscriptionPayoffWindow(candidate.window);
+
+        if (!type || !label || amount === undefined || !window) {
+            return undefined;
+        }
+
+        return {
+            type,
+            label,
+            amount,
+            window,
+        };
+    }
+
+    private normalizeCardInscriptionId(id: unknown): CardInscriptionId | undefined {
+        return typeof id === 'string'
+            && (CARD_INSCRIPTION_IDS as readonly string[]).includes(id)
+            ? id as CardInscriptionId
+            : undefined;
+    }
+
+    private normalizeCardInscriptionTrigger(
+        trigger: unknown,
+    ): NonNullable<Card['inscription']>['trigger'] | undefined {
+        return typeof trigger === 'string'
+            && (CARD_INSCRIPTION_TRIGGERS as readonly string[]).includes(trigger)
+            ? trigger as NonNullable<Card['inscription']>['trigger']
+            : undefined;
+    }
+
+    private normalizeCardInscriptionPayoffType(
+        type: unknown,
+    ): NonNullable<Card['inscription']>['payoff']['type'] | undefined {
+        return typeof type === 'string'
+            && (CARD_INSCRIPTION_PAYOFF_TYPES as readonly string[]).includes(type)
+            ? type as NonNullable<Card['inscription']>['payoff']['type']
+            : undefined;
+    }
+
+    private normalizeCardInscriptionPayoffWindow(
+        window: unknown,
+    ): NonNullable<Card['inscription']>['payoff']['window'] | undefined {
+        return typeof window === 'string'
+            && (CARD_INSCRIPTION_PAYOFF_WINDOWS as readonly string[]).includes(window)
+            ? window as NonNullable<Card['inscription']>['payoff']['window']
+            : undefined;
+    }
+
+    private normalizeStringArray(values: unknown): readonly string[] {
+        if (!Array.isArray(values)) {
+            return [];
+        }
+
+        return values.filter((value): value is string => typeof value === 'string');
+    }
+
+    private normalizeCardTargetScope(targetScope: unknown): CardTargetScope | undefined {
+        return typeof targetScope === 'string'
+            && (CARD_TARGET_SCOPES as readonly string[]).includes(targetScope)
+            ? targetScope as CardTargetScope
+            : undefined;
+    }
+
     private normalizeCardEffectPayload(effectPayload: unknown): Card['effectPayload'] | undefined {
         if (!effectPayload || typeof effectPayload !== 'object') {
             return undefined;
@@ -786,14 +1140,22 @@ export class RunPersistenceService {
         const blockAmount = this.normalizeStat(candidate.blockAmount);
         const hitCount = this.normalizeStat(candidate.hitCount);
         const discardCount = this.normalizeStat(candidate.discardCount);
+        const discardStrategy = candidate.discardStrategy === 'FIRST'
+            || candidate.discardStrategy === 'HIGHEST_COST'
+            || candidate.discardStrategy === 'SELECTED'
+            ? candidate.discardStrategy
+            : undefined;
         const selfDamage = this.normalizeStat(candidate.selfDamage);
         const energyChange = this.normalizeOptionalStat(candidate.energyChange);
         const costWhenConditionMet = this.normalizeOptionalStat(candidate.costWhenConditionMet);
         const healOnKillPercent = this.normalizeOptionalStat(candidate.healOnKillPercent);
+        const perfectVanish = candidate.perfectVanish === true ? true : undefined;
+        const perfectVanishAfterDiscard = candidate.perfectVanishAfterDiscard === true ? true : undefined;
         const scaling = candidate.scaling && typeof candidate.scaling === 'object'
             ? {
                 source: this.normalizeCardScalingSource(candidate.scaling.source),
                 multiplier: this.normalizeOptionalStat(candidate.scaling.multiplier),
+                baseValue: this.normalizeOptionalStat(candidate.scaling.baseValue),
             }
             : undefined;
         const buff = this.normalizeCardBuff(candidate.buff);
@@ -804,10 +1166,13 @@ export class RunPersistenceService {
             || blockAmount !== undefined
             || hitCount !== undefined
             || discardCount !== undefined
+            || discardStrategy !== undefined
             || selfDamage !== undefined
             || energyChange !== undefined
             || costWhenConditionMet !== undefined
             || healOnKillPercent !== undefined
+            || perfectVanish !== undefined
+            || perfectVanishAfterDiscard !== undefined
             || (scaling?.source !== undefined)
             || (buff?.type !== undefined && buff.value !== undefined)
             || (statusEffects !== undefined && statusEffects.length > 0);
@@ -822,14 +1187,18 @@ export class RunPersistenceService {
             blockAmount,
             hitCount,
             discardCount,
+            discardStrategy,
             selfDamage,
             energyChange,
             costWhenConditionMet,
             healOnKillPercent,
+            perfectVanish,
+            perfectVanishAfterDiscard,
             scaling: scaling?.source
                 ? {
                     source: scaling.source,
                     multiplier: scaling.multiplier ?? 1,
+                    baseValue: scaling.baseValue,
                 }
                 : undefined,
             buff: buff?.type !== undefined && buff.value !== undefined
@@ -897,10 +1266,14 @@ export class RunPersistenceService {
             if (!candidate.scaling || typeof candidate.scaling !== 'object') {
                 return true;
             }
-            const scaling = candidate.scaling as { source?: unknown; multiplier?: unknown };
+            const scaling = candidate.scaling as { source?: unknown; multiplier?: unknown; baseValue?: unknown };
             if (
                 this.normalizeCardScalingSource(scaling.source) === undefined
                 || this.normalizeOptionalStat(scaling.multiplier) === undefined
+                || (
+                    scaling.baseValue !== undefined
+                    && this.normalizeOptionalStat(scaling.baseValue) === undefined
+                )
             ) {
                 return true;
             }

@@ -5,7 +5,15 @@ import {
     HAND_END_TURN_EFFECT_TYPE,
     type DrawCycleState,
 } from '../../../../src/domain/services/DrawCycleService';
-import { CARD_KEYWORD, CARD_TYPE, CARD_EFFECT_TYPE, createCard, resetCardSequence, type Card } from '../../../../src/domain/entities/Card';
+import {
+    CARD_DISCARD_STRATEGY,
+    CARD_KEYWORD,
+    CARD_TYPE,
+    CARD_EFFECT_TYPE,
+    createCard,
+    resetCardSequence,
+    type Card,
+} from '../../../../src/domain/entities/Card';
 import type { RandomSource } from '../../../../src/shared/utils/shuffle';
 
 // ---------------------------------------------------------------------------
@@ -322,6 +330,133 @@ describe('DrawCycleService', () => {
 
             expect(result.hand).toHaveLength(0);
             expect(result.discardPile).toHaveLength(3);
+        });
+
+        it('can discard the highest-cost card while preserving the rest of the hand order', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const cheap = createCard({
+                id: 'cheap',
+                name: 'Cheap',
+                type: CARD_TYPE.ATTACK,
+                power: 3,
+                cost: 0,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            });
+            const expensive = createCard({
+                id: 'expensive',
+                name: 'Expensive',
+                type: CARD_TYPE.ATTACK,
+                power: 9,
+                cost: 2,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            });
+            const middle = createCard({
+                id: 'middle',
+                name: 'Middle',
+                type: CARD_TYPE.GUARD,
+                power: 5,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            });
+            const state: DrawCycleState = {
+                drawPile: [],
+                hand: [cheap, expensive, middle],
+                discardPile: [],
+                exhaustPile: [],
+            };
+
+            const result = service.discardCards(state, 1, CARD_DISCARD_STRATEGY.HIGHEST_COST);
+
+            expect(result.hand.map((card) => card.id)).toEqual(['cheap', 'middle']);
+            expect(result.discardPile.map((card) => card.id)).toEqual(['expensive']);
+        });
+
+        it('can discard selected cards by id while preserving the rest of the hand order', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const cheap = createCard({
+                id: 'cheap',
+                name: 'Cheap',
+                type: CARD_TYPE.ATTACK,
+                power: 3,
+                cost: 0,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            });
+            const expensive = createCard({
+                id: 'expensive',
+                name: 'Expensive',
+                type: CARD_TYPE.ATTACK,
+                power: 9,
+                cost: 2,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            });
+            const middle = createCard({
+                id: 'middle',
+                name: 'Middle',
+                type: CARD_TYPE.GUARD,
+                power: 5,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            });
+            const state: DrawCycleState = {
+                drawPile: [],
+                hand: [cheap, expensive, middle],
+                discardPile: [],
+                exhaustPile: [],
+            };
+
+            const result = service.discardCards(
+                state,
+                1,
+                CARD_DISCARD_STRATEGY.SELECTED,
+                ['middle'],
+            );
+
+            expect(result.hand.map((card) => card.id)).toEqual(['cheap', 'expensive']);
+            expect(result.discardPile.map((card) => card.id)).toEqual(['middle']);
+        });
+
+        it('falls back to highest-cost discard when a selected discard has no valid choice', () => {
+            const service = new DrawCycleService(new IdentityRandom());
+            const cheap = createCard({
+                id: 'cheap',
+                name: 'Cheap',
+                type: CARD_TYPE.ATTACK,
+                power: 3,
+                cost: 0,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            });
+            const expensive = createCard({
+                id: 'expensive',
+                name: 'Expensive',
+                type: CARD_TYPE.ATTACK,
+                power: 9,
+                cost: 2,
+                effectType: CARD_EFFECT_TYPE.DAMAGE,
+            });
+            const middle = createCard({
+                id: 'middle',
+                name: 'Middle',
+                type: CARD_TYPE.GUARD,
+                power: 5,
+                cost: 1,
+                effectType: CARD_EFFECT_TYPE.BLOCK,
+            });
+            const state: DrawCycleState = {
+                drawPile: [],
+                hand: [cheap, expensive, middle],
+                discardPile: [],
+                exhaustPile: [],
+            };
+
+            const result = service.discardCards(
+                state,
+                1,
+                CARD_DISCARD_STRATEGY.SELECTED,
+                ['missing-card'],
+            );
+
+            expect(result.hand.map((card) => card.id)).toEqual(['cheap', 'middle']);
+            expect(result.discardPile.map((card) => card.id)).toEqual(['expensive']);
         });
     });
 

@@ -8,7 +8,7 @@ import {
     createCard,
     type Card,
 } from '../entities/Card';
-import type { EnemyKind } from '../entities/Enemy';
+import type { EnemyArchetypeId, EnemyKind } from '../entities/Enemy';
 
 // ---------------------------------------------------------------------------
 // Random Source (DI for testing)
@@ -108,7 +108,15 @@ export class CardBattleService {
      * 적 종류(normal/elite/boss)에 따른 카드 풀을 생성한다.
      * floorNumber로 파워를 스케일링할 수 있다 (기본값: 스케일링 없음).
      */
-    generateEnemyCardPool(kind: EnemyKind, isElite: boolean): readonly Card[] {
+    generateEnemyCardPool(
+        kind: EnemyKind,
+        isElite: boolean,
+        archetypeId?: EnemyArchetypeId,
+    ): readonly Card[] {
+        if (archetypeId) {
+            return this.generateEnemyFamilyCardPool(kind, isElite, archetypeId);
+        }
+
         const templateKey = isElite ? 'elite' : kind;
         const template = ENEMY_CARD_POOL_TEMPLATES[templateKey] ?? ENEMY_CARD_POOL_TEMPLATES['normal'];
 
@@ -144,5 +152,124 @@ export class CardBattleService {
         }
 
         return cards;
+    }
+
+    private generateEnemyFamilyCardPool(
+        kind: EnemyKind,
+        isElite: boolean,
+        archetypeId: EnemyArchetypeId,
+    ): readonly Card[] {
+        const multiplier = kind === 'boss' ? 2 : isElite ? 1.35 : 1;
+        const scale = (value: number) => Math.max(1, Math.round(value * multiplier));
+
+        switch (archetypeId) {
+            case 'ash-crawler':
+                return [
+                    this.createEnemyAttack('Ash Cult Strike', scale(6)),
+                    createCard({
+                        name: 'Ash Ritual',
+                        type: CARD_TYPE.POWER,
+                        power: 0,
+                        effectType: CARD_EFFECT_TYPE.BUFF,
+                    }),
+                    createCard({
+                        name: 'Ash Curse Dread',
+                        type: CARD_TYPE.POWER,
+                        power: 0,
+                        effectType: CARD_EFFECT_TYPE.BUFF,
+                    }),
+                ];
+            case 'mire-broodling':
+                return [
+                    createCard({
+                        name: 'Mire Venom',
+                        type: CARD_TYPE.ATTACK,
+                        power: scale(4),
+                        effectType: CARD_EFFECT_TYPE.DAMAGE,
+                        statusEffects: [
+                            { type: 'POISON', duration: 3 },
+                            { type: 'FRAIL', duration: 1 },
+                        ],
+                    }),
+                    createCard({
+                        name: 'Mire Frailty',
+                        type: CARD_TYPE.ATTACK,
+                        power: scale(3),
+                        effectType: CARD_EFFECT_TYPE.DAMAGE,
+                        statusEffect: { type: 'FRAIL', duration: 1 },
+                    }),
+                    createCard({
+                        name: 'Mire Cleanse Poison',
+                        type: CARD_TYPE.GUARD,
+                        power: scale(5),
+                        effectType: CARD_EFFECT_TYPE.BLOCK,
+                    }),
+                ];
+            case 'blade-raider':
+                return [
+                    createCard({
+                        name: 'Blade Flurry 3',
+                        type: CARD_TYPE.ATTACK,
+                        power: scale(3),
+                        effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                        hitCount: 3,
+                        effectPayload: { hitCount: 3 },
+                    }),
+                    this.createEnemyAttack('Blade Charge 12', scale(12)),
+                    this.createEnemyAttack('Blade Ambush 7', scale(7)),
+                ];
+            case 'dread-sentinel':
+                return [
+                    this.createEnemyAttack('Sentinel Strike', scale(7)),
+                    createCard({
+                        name: 'Sentinel Guard',
+                        type: CARD_TYPE.GUARD,
+                        power: scale(8),
+                        effectType: CARD_EFFECT_TYPE.BLOCK,
+                    }),
+                    createCard({
+                        name: 'Sentinel Thorn Guard',
+                        type: CARD_TYPE.GUARD,
+                        power: scale(5),
+                        effectType: CARD_EFFECT_TYPE.BLOCK,
+                        effectPayload: {
+                            buff: { type: 'THORNS', value: scale(2), duration: 2, target: 'SELF' },
+                        },
+                    }),
+                ];
+            case 'final-boss':
+                return [
+                    this.createEnemyAttack('Boss Charge 18', scale(9)),
+                    createCard({
+                        name: 'Boss Flurry 4',
+                        type: CARD_TYPE.ATTACK,
+                        power: scale(3),
+                        effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                        hitCount: 4,
+                        effectPayload: { hitCount: 4 },
+                    }),
+                    createCard({
+                        name: 'Boss Purge Poison',
+                        type: CARD_TYPE.GUARD,
+                        power: scale(7),
+                        effectType: CARD_EFFECT_TYPE.BLOCK,
+                    }),
+                    createCard({
+                        name: 'Boss Dread Curse',
+                        type: CARD_TYPE.POWER,
+                        power: 0,
+                        effectType: CARD_EFFECT_TYPE.BUFF,
+                    }),
+                ];
+        }
+    }
+
+    private createEnemyAttack(name: string, power: number): Card {
+        return createCard({
+            name,
+            type: CARD_TYPE.ATTACK,
+            power,
+            effectType: CARD_EFFECT_TYPE.DAMAGE,
+        });
     }
 }

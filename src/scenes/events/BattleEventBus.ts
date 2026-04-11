@@ -2,6 +2,17 @@ export const BATTLE_EVENT_NAME = {
     TURN_STARTED: 'BATTLE_TURN_STARTED',
     CARD_PLAYED: 'BATTLE_CARD_PLAYED',
     ACTION_RESOLVED: 'BATTLE_ACTION_RESOLVED',
+    DAMAGE_DEALT: 'BATTLE_DAMAGE_DEALT',
+    DAMAGE_TAKEN: 'BATTLE_DAMAGE_TAKEN',
+    SELF_DAMAGED: 'BATTLE_SELF_DAMAGED',
+    HP_CHANGED: 'BATTLE_HP_CHANGED',
+    STATUS_APPLIED: 'BATTLE_STATUS_APPLIED',
+    EXHAUSTED: 'BATTLE_EXHAUSTED',
+    RETAINED: 'BATTLE_RETAINED',
+    TARGET_KILLED: 'BATTLE_TARGET_KILLED',
+    THRESHOLD_CROSSED: 'BATTLE_THRESHOLD_CROSSED',
+    ESCAPE_ATTEMPT: 'BATTLE_ESCAPE_ATTEMPT',
+    DREAD_RULE_TRIGGERED: 'BATTLE_DREAD_RULE_TRIGGERED',
     TURN_ENDED: 'BATTLE_TURN_ENDED',
 } as const;
 
@@ -16,6 +27,12 @@ export type BattleActionStatusDelta = {
     readonly targetId: string;
     readonly statusType: string;
     readonly value: number;
+};
+
+export type BattleActionHealthChange = {
+    readonly targetId: string;
+    readonly previousHealth: number;
+    readonly currentHealth: number;
 };
 
 export interface BattleTurnStartedPayload {
@@ -63,6 +80,8 @@ export interface BattleActionResolvedPayload {
     readonly statusDelta: readonly BattleActionStatusDelta[];
     readonly queueIndex: number;
     readonly selfDamage?: number;
+    readonly healthChanges?: readonly BattleActionHealthChange[];
+    readonly lineageId?: string;
 }
 
 export interface BattleTurnEndedPayload {
@@ -72,6 +91,83 @@ export interface BattleTurnEndedPayload {
     readonly handCount: number;
     readonly retainedCount: number;
     readonly exhaustedCount: number;
+}
+
+export interface BattleDamagePayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly sourceId: string;
+    readonly targetId: string;
+    readonly amount: number;
+    readonly actionType: string;
+    readonly queueIndex: number;
+    readonly lineageId?: string;
+}
+
+export interface BattleHpChangedPayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly actorId: string;
+    readonly previousHealth: number;
+    readonly currentHealth: number;
+    readonly reason: string;
+    readonly queueIndex?: number;
+}
+
+export interface BattleStatusAppliedPayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly targetId: string;
+    readonly statusType: string;
+    readonly value: number;
+    readonly sourceId: string;
+    readonly queueIndex: number;
+    readonly lineageId?: string;
+}
+
+export interface BattleCardZonePayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly cardId: string;
+    readonly cardName: string;
+    readonly reason: string;
+}
+
+export interface BattleTargetKilledPayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly targetId: string;
+    readonly sourceId: string;
+    readonly actionType: string;
+    readonly queueIndex: number;
+}
+
+export interface BattleThresholdCrossedPayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly actorId: string;
+    readonly threshold: 'bloodied' | 'desperation';
+    readonly health: number;
+    readonly maxHealth: number;
+}
+
+export interface BattleEscapeAttemptPayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly sourceId: string;
+    readonly cardId: string;
+    readonly perfectVanish: boolean;
+}
+
+export interface BattleDreadRuleTriggeredPayload {
+    readonly battleId: string;
+    readonly turnNumber: number;
+    readonly ruleId: string;
+    readonly ruleName: string;
+    readonly trigger: string;
+    readonly value?: number;
+    readonly sourceId?: string;
+    readonly targetId?: string;
 }
 
 export interface LegacyTurnEndedPayload {
@@ -91,6 +187,17 @@ export type BattleEventPayloadByName = {
     readonly [BATTLE_EVENT_NAME.TURN_STARTED]: BattleTurnStartedPayload;
     readonly [BATTLE_EVENT_NAME.CARD_PLAYED]: BattleCardPlayedPayload;
     readonly [BATTLE_EVENT_NAME.ACTION_RESOLVED]: BattleActionResolvedPayload;
+    readonly [BATTLE_EVENT_NAME.DAMAGE_DEALT]: BattleDamagePayload;
+    readonly [BATTLE_EVENT_NAME.DAMAGE_TAKEN]: BattleDamagePayload;
+    readonly [BATTLE_EVENT_NAME.SELF_DAMAGED]: BattleDamagePayload;
+    readonly [BATTLE_EVENT_NAME.HP_CHANGED]: BattleHpChangedPayload;
+    readonly [BATTLE_EVENT_NAME.STATUS_APPLIED]: BattleStatusAppliedPayload;
+    readonly [BATTLE_EVENT_NAME.EXHAUSTED]: BattleCardZonePayload;
+    readonly [BATTLE_EVENT_NAME.RETAINED]: BattleCardZonePayload;
+    readonly [BATTLE_EVENT_NAME.TARGET_KILLED]: BattleTargetKilledPayload;
+    readonly [BATTLE_EVENT_NAME.THRESHOLD_CROSSED]: BattleThresholdCrossedPayload;
+    readonly [BATTLE_EVENT_NAME.ESCAPE_ATTEMPT]: BattleEscapeAttemptPayload;
+    readonly [BATTLE_EVENT_NAME.DREAD_RULE_TRIGGERED]: BattleDreadRuleTriggeredPayload;
     readonly [BATTLE_EVENT_NAME.TURN_ENDED]: BattleTurnEndedPayload;
     readonly [LEGACY_BATTLE_EVENT_NAME.TURN_STARTED]: LegacyTurnStartedPayload;
     readonly [LEGACY_BATTLE_EVENT_NAME.CARD_PLAYED]: LegacyCardPlayedPayload;

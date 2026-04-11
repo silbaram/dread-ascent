@@ -38,6 +38,44 @@ export type BattlePresentationAction =
         readonly actor: BattlePresentationActor;
         readonly color: number;
         readonly delayMs?: number;
+    }
+    | {
+        readonly kind: 'freeze-frame';
+        readonly durationMs: number;
+        readonly delayMs?: number;
+    }
+    | {
+        readonly kind: 'vfx-cue';
+        readonly cue: string;
+        readonly delayMs?: number;
+    }
+    | {
+        readonly kind: 'sfx-cue';
+        readonly cue: string;
+        readonly delayMs?: number;
+    }
+    | {
+        readonly kind: 'flash';
+        readonly actor: BattlePresentationActor;
+        readonly color: number;
+        readonly delayMs?: number;
+    }
+    | {
+        readonly kind: 'twist';
+        readonly actor: BattlePresentationActor;
+        readonly color: number;
+        readonly delayMs?: number;
+    }
+    | {
+        readonly kind: 'stagger';
+        readonly actor: BattlePresentationActor;
+        readonly color: number;
+        readonly delayMs?: number;
+    }
+    | {
+        readonly kind: 'slash-overlay';
+        readonly color: number;
+        readonly delayMs?: number;
     };
 
 interface BattlePresentationScheduler {
@@ -52,6 +90,13 @@ interface BattlePresentationPort {
     clearEffectText(): void;
     playPanelImpactMotion(actor: BattlePresentationActor, color: number): void;
     playPanelPulseMotion(actor: BattlePresentationActor, color: number): void;
+    freezeFrame(durationMs: number): void;
+    playVfxCue(cue: string): void;
+    playSfxCue(cue: string): void;
+    playPanelFlashMotion(actor: BattlePresentationActor, color: number): void;
+    playPanelTwistMotion(actor: BattlePresentationActor, color: number): void;
+    playPanelStaggerMotion(actor: BattlePresentationActor, color: number): void;
+    playSlashOverlay(color: number): void;
 }
 
 export class BattlePresentationFacade {
@@ -62,7 +107,10 @@ export class BattlePresentationFacade {
 
         actions.forEach((action) => {
             const delayMs = Math.max(0, action.delayMs ?? 0);
-            maxDelayMs = Math.max(maxDelayMs, delayMs);
+            const completionDelayMs = action.kind === 'freeze-frame'
+                ? delayMs + Math.max(0, action.durationMs)
+                : delayMs;
+            maxDelayMs = Math.max(maxDelayMs, completionDelayMs);
             this.schedule(delayMs, () => {
                 this.consume(action);
             });
@@ -99,6 +147,27 @@ export class BattlePresentationFacade {
                 return;
             case 'pulse':
                 this.port.playPanelPulseMotion(action.actor, action.color);
+                return;
+            case 'freeze-frame':
+                this.port.freezeFrame(action.durationMs);
+                return;
+            case 'vfx-cue':
+                this.port.playVfxCue(action.cue);
+                return;
+            case 'sfx-cue':
+                this.port.playSfxCue(action.cue);
+                return;
+            case 'flash':
+                this.port.playPanelFlashMotion(action.actor, action.color);
+                return;
+            case 'twist':
+                this.port.playPanelTwistMotion(action.actor, action.color);
+                return;
+            case 'stagger':
+                this.port.playPanelStaggerMotion(action.actor, action.color);
+                return;
+            case 'slash-overlay':
+                this.port.playSlashOverlay(action.color);
         }
     }
 }

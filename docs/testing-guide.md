@@ -2,9 +2,9 @@
 
 ## 현재 테스트 구조
 
-현재 `tests/`에는 총 41개 테스트 파일이 있습니다.
+현재 `tests/`에는 총 47개 테스트 파일이 있습니다.
 
-- `tests/unit`: 36개
+- `tests/unit`: 42개
 - `tests/integration`: 5개
 - `tests/e2e`: 디렉터리만 있고 활성 파일 없음
 
@@ -52,6 +52,8 @@
 npm test
 ```
 
+`npm test`는 Vitest 실행 후 계약 검증을 이어서 실행합니다. Vitest만 실행해야 할 때는 `npm run test:vitest`를 사용합니다.
+
 대표 슬라이스:
 
 ```bash
@@ -92,4 +94,4 @@ npm run build
 1. 관련 unit test 실행
 2. 관련 integration test 실행
 3. `npm run build`
-4. 계약 파일을 건드렸다면 `node ai-dev-team/artifacts/contracts/validate-contracts.mjs`
+4. 계약 파일을 건드렸다면 `npm run validate:contracts`

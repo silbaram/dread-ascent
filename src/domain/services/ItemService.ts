@@ -320,6 +320,10 @@ export class ItemService {
         };
     }
 
+    grantPactReward(itemId: ItemId = ITEM_ID.PACT_ARMOR): SpecialRewardGrantResult {
+        return this.claimSpecialReward(itemId, { ignoreInventoryCapacity: true });
+    }
+
     getSpecialRewardChoiceDefinitions(itemIds: readonly ItemId[]): ItemDefinition[] {
         return itemIds.flatMap((itemId) => {
             const definition = ITEM_CATALOG.find((entry) =>

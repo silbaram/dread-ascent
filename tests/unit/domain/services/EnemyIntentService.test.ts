@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { CombatStats } from '../../../../src/domain/entities/CombatStats';
-import { Enemy } from '../../../../src/domain/entities/Enemy';
+import { Enemy, type EnemyArchetypeId } from '../../../../src/domain/entities/Enemy';
 import {
     CARD_EFFECT_TYPE,
     CARD_TYPE,
@@ -9,10 +9,12 @@ import {
     type Card,
 } from '../../../../src/domain/entities/Card';
 import {
+    ENEMY_INTENT_AMBUSH_REVEAL_RULE,
+    ENEMY_INTENT_CHARGE_PHASE,
     ENEMY_INTENT_PATTERN,
-    ENEMY_INTENT_BUFF_STAT,
     ENEMY_INTENT_TYPE,
     EnemyIntentService,
+    type EnemyIntent,
 } from '../../../../src/domain/services/EnemyIntentService';
 
 const DEFAULT_STATS: CombatStats = {
@@ -22,24 +24,21 @@ const DEFAULT_STATS: CombatStats = {
     defense: 5,
 };
 
-class FixedRandom {
-    constructor(private readonly value: number) {}
-
-    next(): number {
-        return this.value;
-    }
-}
-
 function createEnemy(options?: {
-    health?: number;
-    maxHealth?: number;
+    id?: string;
+    archetypeId?: EnemyArchetypeId;
     kind?: 'normal' | 'boss';
     elite?: boolean;
+    health?: number;
+    maxHealth?: number;
 }) {
     const maxHealth = options?.maxHealth ?? DEFAULT_STATS.maxHealth;
     const health = options?.health ?? maxHealth;
+    const kind = options?.kind ?? 'normal';
+    const archetypeId = options?.archetypeId ?? (kind === 'boss' ? 'final-boss' : 'ash-crawler');
+
     return new Enemy(
-        options?.kind === 'boss' ? 'boss-1' : 'enemy-1',
+        options?.id ?? (kind === 'boss' ? 'boss-1' : 'enemy-1'),
         'Enemy',
         { x: 1, y: 1 },
         {
@@ -49,51 +48,159 @@ function createEnemy(options?: {
             defense: DEFAULT_STATS.defense,
         },
         25,
-        options?.kind ?? 'normal',
-        options?.kind === 'boss' ? 'final-boss' : 'ash-crawler',
+        kind,
+        archetypeId,
         options?.elite ?? false,
     );
 }
 
-function createEnemyCardPool(): Card[] {
-    return [
-        createCard({
-            id: 'enemy-strike-6',
-            name: 'Enemy Strike 6',
-            type: CARD_TYPE.ATTACK,
-            power: 6,
-            effectType: CARD_EFFECT_TYPE.DAMAGE,
-        }),
-        createCard({
-            id: 'enemy-strike-8',
-            name: 'Enemy Strike 8',
-            type: CARD_TYPE.ATTACK,
-            power: 8,
-            effectType: CARD_EFFECT_TYPE.DAMAGE,
-        }),
-        createCard({
-            id: 'enemy-guard-5',
-            name: 'Enemy Guard 5',
-            type: CARD_TYPE.GUARD,
-            power: 5,
-            effectType: CARD_EFFECT_TYPE.BLOCK,
-        }),
-    ];
+function createFamilyCardPool(archetypeId: EnemyArchetypeId): Card[] {
+    switch (archetypeId) {
+        case 'ash-crawler':
+            return [
+                createCard({
+                    id: 'ash-strike',
+                    name: 'Ash Cult Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 6,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    id: 'ash-ritual',
+                    name: 'Ash Ritual',
+                    type: CARD_TYPE.POWER,
+                    power: 0,
+                    effectType: CARD_EFFECT_TYPE.BUFF,
+                }),
+                createCard({
+                    id: 'ash-curse',
+                    name: 'Ash Curse Dread',
+                    type: CARD_TYPE.POWER,
+                    power: 0,
+                    effectType: CARD_EFFECT_TYPE.BUFF,
+                }),
+            ];
+        case 'mire-broodling':
+            return [
+                createCard({
+                    id: 'mire-venom',
+                    name: 'Mire Venom',
+                    type: CARD_TYPE.ATTACK,
+                    power: 4,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    id: 'mire-frailty',
+                    name: 'Mire Frailty',
+                    type: CARD_TYPE.ATTACK,
+                    power: 3,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    id: 'mire-cleanse',
+                    name: 'Mire Cleanse Poison',
+                    type: CARD_TYPE.GUARD,
+                    power: 5,
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                }),
+            ];
+        case 'blade-raider':
+            return [
+                createCard({
+                    id: 'blade-flurry',
+                    name: 'Blade Flurry 3',
+                    type: CARD_TYPE.ATTACK,
+                    power: 3,
+                    effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                    hitCount: 3,
+                    effectPayload: { hitCount: 3 },
+                }),
+                createCard({
+                    id: 'blade-charge',
+                    name: 'Blade Charge 12',
+                    type: CARD_TYPE.ATTACK,
+                    power: 12,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    id: 'blade-ambush',
+                    name: 'Blade Ambush 7',
+                    type: CARD_TYPE.ATTACK,
+                    power: 7,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+            ];
+        case 'dread-sentinel':
+            return [
+                createCard({
+                    id: 'sentinel-strike',
+                    name: 'Sentinel Strike',
+                    type: CARD_TYPE.ATTACK,
+                    power: 7,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    id: 'sentinel-guard',
+                    name: 'Sentinel Guard',
+                    type: CARD_TYPE.GUARD,
+                    power: 8,
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                }),
+                createCard({
+                    id: 'sentinel-thorn-guard',
+                    name: 'Sentinel Thorn Guard',
+                    type: CARD_TYPE.GUARD,
+                    power: 5,
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                    effectPayload: {
+                        buff: { type: 'THORNS', value: 2, duration: 2, target: 'SELF' },
+                    },
+                }),
+            ];
+        case 'final-boss':
+            return [
+                createCard({
+                    id: 'boss-charge',
+                    name: 'Boss Charge 18',
+                    type: CARD_TYPE.ATTACK,
+                    power: 18,
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                }),
+                createCard({
+                    id: 'boss-flurry',
+                    name: 'Boss Flurry 4',
+                    type: CARD_TYPE.ATTACK,
+                    power: 4,
+                    effectType: CARD_EFFECT_TYPE.MULTI_HIT,
+                    hitCount: 4,
+                    effectPayload: { hitCount: 4 },
+                }),
+                createCard({
+                    id: 'boss-purge',
+                    name: 'Boss Purge Poison',
+                    type: CARD_TYPE.GUARD,
+                    power: 7,
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                }),
+                createCard({
+                    id: 'boss-dread-curse',
+                    name: 'Boss Dread Curse',
+                    type: CARD_TYPE.POWER,
+                    power: 0,
+                    effectType: CARD_EFFECT_TYPE.BUFF,
+                }),
+            ];
+    }
 }
 
-function createEnemyPatternCardPool(): Card[] {
-    return [
-        ...createEnemyCardPool(),
-        createCard({
-            id: 'enemy-flurry-3x3',
-            name: 'Enemy Flurry 3',
-            type: CARD_TYPE.ATTACK,
-            power: 3,
-            effectType: CARD_EFFECT_TYPE.MULTI_HIT,
-            hitCount: 3,
-            effectPayload: { hitCount: 3 },
-        }),
-    ];
+function decideMany(
+    service: EnemyIntentService,
+    enemy: Enemy,
+    enemyCardPool: readonly Card[],
+    count: number,
+): EnemyIntent[] {
+    return Array.from({ length: count }, () =>
+        service.decideNextIntent({ enemy, enemyCardPool }));
 }
 
 describe('EnemyIntentService', () => {
@@ -101,93 +208,184 @@ describe('EnemyIntentService', () => {
         resetCardSequence();
     });
 
-    it('stores and exposes an attack intent with expected damage', () => {
-        const enemy = createEnemy();
-        const service = new EnemyIntentService(new FixedRandom(0));
+    it('runs normal enemy families through deterministic 3-turn pattern tables', () => {
+        const cases = [
+            {
+                archetypeId: 'ash-crawler' as const,
+                patterns: [
+                    ENEMY_INTENT_PATTERN.STRIKE,
+                    ENEMY_INTENT_PATTERN.RITUAL,
+                    ENEMY_INTENT_PATTERN.STRIKE,
+                    ENEMY_INTENT_PATTERN.STRIKE,
+                ],
+            },
+            {
+                archetypeId: 'mire-broodling' as const,
+                patterns: [
+                    ENEMY_INTENT_PATTERN.CURSE,
+                    ENEMY_INTENT_PATTERN.STRIKE,
+                    ENEMY_INTENT_PATTERN.CLEANSE,
+                    ENEMY_INTENT_PATTERN.CURSE,
+                ],
+            },
+            {
+                archetypeId: 'blade-raider' as const,
+                patterns: [
+                    ENEMY_INTENT_PATTERN.AMBUSH,
+                    ENEMY_INTENT_PATTERN.CHARGE,
+                    ENEMY_INTENT_PATTERN.CHARGE,
+                    ENEMY_INTENT_PATTERN.AMBUSH,
+                ],
+            },
+            {
+                archetypeId: 'dread-sentinel' as const,
+                patterns: [
+                    ENEMY_INTENT_PATTERN.GUARD,
+                    ENEMY_INTENT_PATTERN.STRIKE,
+                    ENEMY_INTENT_PATTERN.GUARD,
+                    ENEMY_INTENT_PATTERN.GUARD,
+                ],
+            },
+        ];
 
-        const intent = service.decideNextIntent({
+        cases.forEach(({ archetypeId, patterns }) => {
+            const enemy = createEnemy({ id: `enemy-${archetypeId}`, archetypeId });
+            const service = new EnemyIntentService();
+            const intents = decideMany(service, enemy, createFamilyCardPool(archetypeId), 4);
+
+            expect(intents.map((intent) => intent.pattern)).toEqual(patterns);
+        });
+    });
+
+    it('uses a 4-turn elite timeline with hidden ambush and a delayed charge burst', () => {
+        const enemy = createEnemy({
+            archetypeId: 'blade-raider',
+            elite: true,
+        });
+        const service = new EnemyIntentService();
+
+        const intents = decideMany(service, enemy, createFamilyCardPool('blade-raider'), 5);
+
+        expect(intents.map((intent) => intent.pattern)).toEqual([
+            ENEMY_INTENT_PATTERN.AMBUSH,
+            ENEMY_INTENT_PATTERN.CHARGE,
+            ENEMY_INTENT_PATTERN.CHARGE,
+            ENEMY_INTENT_PATTERN.FLURRY,
+            ENEMY_INTENT_PATTERN.AMBUSH,
+        ]);
+        expect(intents[0]).toMatchObject({
+            revealRule: ENEMY_INTENT_AMBUSH_REVEAL_RULE.HIDDEN,
+            damage: 7,
+            sourceCardId: 'blade-ambush',
+        });
+        expect(intents[1]).toMatchObject({
+            chargePhase: ENEMY_INTENT_CHARGE_PHASE.WARNING,
+            damage: 0,
+            burstDamage: 12,
+            sourceCardId: undefined,
+        });
+        expect(intents[2]).toMatchObject({
+            chargePhase: ENEMY_INTENT_CHARGE_PHASE.BURST,
+            damage: 12,
+            sourceCardId: 'blade-charge',
+        });
+    });
+
+    it('uses fixed boss and showdown phase tables instead of weighted rolls', () => {
+        const boss = createEnemy({
+            id: 'final-boss',
+            kind: 'boss',
+            archetypeId: 'final-boss',
+        });
+        const showdownBoss = createEnemy({
+            id: 'showdown-final-boss',
+            kind: 'boss',
+            archetypeId: 'final-boss',
+        });
+        const bossService = new EnemyIntentService();
+        const showdownService = new EnemyIntentService();
+
+        const bossIntents = decideMany(bossService, boss, createFamilyCardPool('final-boss'), 5);
+        const showdownIntents = decideMany(showdownService, showdownBoss, createFamilyCardPool('final-boss'), 5);
+
+        expect(bossIntents.map((intent) => intent.pattern)).toEqual([
+            ENEMY_INTENT_PATTERN.CHARGE,
+            ENEMY_INTENT_PATTERN.CHARGE,
+            ENEMY_INTENT_PATTERN.FLURRY,
+            ENEMY_INTENT_PATTERN.CLEANSE,
+            ENEMY_INTENT_PATTERN.CURSE,
+        ]);
+        expect(bossIntents[0]).toMatchObject({
+            chargePhase: ENEMY_INTENT_CHARGE_PHASE.WARNING,
+            damage: 0,
+            burstDamage: 18,
+        });
+        expect(showdownIntents.map((intent) => intent.pattern)).toEqual([
+            ENEMY_INTENT_PATTERN.CURSE,
+            ENEMY_INTENT_PATTERN.CHARGE,
+            ENEMY_INTENT_PATTERN.CHARGE,
+            ENEMY_INTENT_PATTERN.FLURRY,
+            ENEMY_INTENT_PATTERN.GUARD,
+        ]);
+    });
+
+    it('picks cards by timeline pattern instead of strongest-card threat score', () => {
+        const enemy = createEnemy({ archetypeId: 'blade-raider' });
+        const service = new EnemyIntentService();
+
+        const ambush = service.decideNextIntent({
             enemy,
-            enemyCardPool: createEnemyCardPool(),
+            enemyCardPool: createFamilyCardPool('blade-raider'),
         });
 
-        expect(intent).toEqual({
+        expect(ambush).toMatchObject({
             type: ENEMY_INTENT_TYPE.ATTACK,
-            pattern: ENEMY_INTENT_PATTERN.STRIKE,
-            damage: 8,
-            label: 'Enemy Strike 8',
-            sourceCardId: 'enemy-strike-8',
+            pattern: ENEMY_INTENT_PATTERN.AMBUSH,
+            damage: 7,
+            previewDamage: 4,
+            revealRule: ENEMY_INTENT_AMBUSH_REVEAL_RULE.PARTIAL,
+            label: 'Blade Ambush 7',
+            sourceCardId: 'blade-ambush',
         });
-        expect(service.getIntent(enemy.id)).toEqual(intent);
     });
 
-    it('leans toward a defend intent when the enemy is low on health', () => {
-        const enemy = createEnemy({ health: 20, maxHealth: 100 });
-        const service = new EnemyIntentService(new FixedRandom(0.5));
+    it('prefers Iron Warden thorn guard as the family guard mechanic', () => {
+        const enemy = createEnemy({ archetypeId: 'dread-sentinel' });
+        const service = new EnemyIntentService();
 
-        const intent = service.decideNextIntent({
+        const guard = service.decideNextIntent({
             enemy,
-            enemyCardPool: createEnemyCardPool(),
+            enemyCardPool: createFamilyCardPool('dread-sentinel'),
         });
 
-        expect(intent).toEqual({
+        expect(guard).toMatchObject({
             type: ENEMY_INTENT_TYPE.DEFEND,
             pattern: ENEMY_INTENT_PATTERN.GUARD,
             block: 5,
-            label: 'Enemy Guard 5',
-            sourceCardId: 'enemy-guard-5',
+            label: 'Sentinel Thorn Guard',
+            sourceCardId: 'sentinel-thorn-guard',
         });
     });
 
-    it('can choose a buff intent for bosses and exposes its data structure', () => {
-        const boss = createEnemy({ kind: 'boss' });
-        const service = new EnemyIntentService(new FixedRandom(0.8));
+    it('stores the most recent intent and resets the timeline cursor when cleared', () => {
+        const enemy = createEnemy({ archetypeId: 'mire-broodling' });
+        const service = new EnemyIntentService();
+        const enemyCardPool = createFamilyCardPool('mire-broodling');
 
-        const intent = service.decideNextIntent({ enemy: boss });
+        const firstIntent = service.decideNextIntent({ enemy, enemyCardPool });
+        service.decideNextIntent({ enemy, enemyCardPool });
 
-        expect(intent).toEqual({
-            type: ENEMY_INTENT_TYPE.BUFF,
-            pattern: ENEMY_INTENT_PATTERN.RITUAL,
-            stat: ENEMY_INTENT_BUFF_STAT.ATTACK,
-            amount: 4,
-            label: 'Battle Cry',
-        });
+        expect(service.getIntent(enemy.id)?.pattern).toBe(ENEMY_INTENT_PATTERN.STRIKE);
+
+        service.clearIntent(enemy.id);
+
+        expect(service.getIntent(enemy.id)).toBeUndefined();
+        expect(service.decideNextIntent({ enemy, enemyCardPool })).toEqual(firstIntent);
     });
 
-    it('applies floor-band weight scaling to elite intents on later floors', () => {
-        const enemy = createEnemy({ health: 60, maxHealth: 100, elite: true });
-        const earlyService = new EnemyIntentService(new FixedRandom(0.75));
-        const lateService = new EnemyIntentService(new FixedRandom(0.75));
-
-        const earlyIntent = earlyService.decideNextIntent({
-            enemy,
-            enemyCardPool: createEnemyCardPool(),
-            floorNumber: 1,
-        });
-        const lateIntent = lateService.decideNextIntent({
-            enemy,
-            enemyCardPool: createEnemyCardPool(),
-            floorNumber: 21,
-        });
-
-        expect(earlyIntent).toEqual({
-            type: ENEMY_INTENT_TYPE.DEFEND,
-            pattern: ENEMY_INTENT_PATTERN.GUARD,
-            block: 5,
-            label: 'Enemy Guard 5',
-            sourceCardId: 'enemy-guard-5',
-        });
-        expect(lateIntent).toEqual({
-            type: ENEMY_INTENT_TYPE.BUFF,
-            pattern: ENEMY_INTENT_PATTERN.RITUAL,
-            stat: ENEMY_INTENT_BUFF_STAT.ATTACK,
-            amount: 3,
-            label: 'Battle Cry',
-        });
-    });
-
-    it('falls back to enemy stats when no enemy card pool is provided', () => {
-        const enemy = createEnemy();
-        const service = new EnemyIntentService(new FixedRandom(0));
+    it('falls back to enemy stats when a timeline step has no matching card', () => {
+        const enemy = createEnemy({ archetypeId: 'ash-crawler' });
+        const service = new EnemyIntentService();
 
         const intent = service.decideNextIntent({ enemy });
 
@@ -197,143 +395,5 @@ describe('EnemyIntentService', () => {
             damage: 10,
             label: 'Attack',
         });
-    });
-
-    it('promotes multi-hit cards into flurry intent previews', () => {
-        const enemy = createEnemy();
-        const service = new EnemyIntentService(new FixedRandom(0));
-
-        const intent = service.decideNextIntent({
-            enemy,
-            enemyCardPool: createEnemyPatternCardPool(),
-        });
-
-        expect(intent).toEqual({
-            type: ENEMY_INTENT_TYPE.ATTACK,
-            pattern: ENEMY_INTENT_PATTERN.FLURRY,
-            damage: 9,
-            hitCount: 3,
-            damagePerHit: 3,
-            label: 'Enemy Flurry 3',
-            sourceCardId: 'enemy-flurry-3x3',
-        });
-    });
-
-    it('recognizes charge cards as charge intent previews', () => {
-        const enemy = createEnemy();
-        const service = new EnemyIntentService(new FixedRandom(0));
-
-        const intent = service.decideNextIntent({
-            enemy,
-            enemyCardPool: [
-                createCard({
-                    id: 'enemy-charge-12',
-                    name: 'Enemy Charge 12',
-                    type: CARD_TYPE.ATTACK,
-                    power: 12,
-                    effectType: CARD_EFFECT_TYPE.DAMAGE,
-                }),
-            ],
-        });
-
-        expect(intent).toEqual({
-            type: ENEMY_INTENT_TYPE.ATTACK,
-            pattern: ENEMY_INTENT_PATTERN.CHARGE,
-            damage: 12,
-            label: 'Enemy Charge 12',
-            warning: 'Next turn burst',
-            sourceCardId: 'enemy-charge-12',
-        });
-    });
-
-    it('recognizes ambush cards as ambush intent previews', () => {
-        const enemy = createEnemy();
-        const service = new EnemyIntentService(new FixedRandom(0));
-
-        const intent = service.decideNextIntent({
-            enemy,
-            enemyCardPool: [
-                createCard({
-                    id: 'enemy-ambush-7',
-                    name: 'Enemy Ambush 7',
-                    type: CARD_TYPE.ATTACK,
-                    power: 7,
-                    effectType: CARD_EFFECT_TYPE.DAMAGE,
-                }),
-            ],
-        });
-
-        expect(intent).toEqual({
-            type: ENEMY_INTENT_TYPE.ATTACK,
-            pattern: ENEMY_INTENT_PATTERN.AMBUSH,
-            damage: 7,
-            label: 'Enemy Ambush 7',
-            warning: 'Hidden prep',
-            sourceCardId: 'enemy-ambush-7',
-        });
-    });
-
-    it('recognizes cleanse cards as cleanse intent previews', () => {
-        const enemy = createEnemy({ health: 20, maxHealth: 100 });
-        const service = new EnemyIntentService(new FixedRandom(0.5));
-
-        const intent = service.decideNextIntent({
-            enemy,
-            enemyCardPool: [
-                createCard({
-                    id: 'enemy-cleanse-shell',
-                    name: 'Enemy Cleanse Poison',
-                    type: CARD_TYPE.GUARD,
-                    power: 7,
-                    effectType: CARD_EFFECT_TYPE.BLOCK,
-                }),
-            ],
-        });
-
-        expect(intent).toEqual({
-            type: ENEMY_INTENT_TYPE.DEFEND,
-            pattern: ENEMY_INTENT_PATTERN.CLEANSE,
-            block: 7,
-            label: 'Enemy Cleanse Poison',
-            cleansedStatuses: ['Poison'],
-            sourceCardId: 'enemy-cleanse-shell',
-        });
-    });
-
-    it('recognizes curse cards as curse intent previews', () => {
-        const boss = createEnemy({ kind: 'boss' });
-        const service = new EnemyIntentService(new FixedRandom(0.8));
-
-        const intent = service.decideNextIntent({
-            enemy: boss,
-            enemyCardPool: [
-                createCard({
-                    id: 'enemy-dread-hex',
-                    name: 'Enemy Dread Hex',
-                    type: CARD_TYPE.SKILL,
-                    power: 0,
-                    effectType: CARD_EFFECT_TYPE.STATUS_EFFECT,
-                }),
-            ],
-        });
-
-        expect(intent).toEqual({
-            type: ENEMY_INTENT_TYPE.BUFF,
-            pattern: ENEMY_INTENT_PATTERN.CURSE,
-            label: 'Enemy Dread Hex',
-            curseCardName: 'Hex',
-            curseCount: 1,
-            sourceCardId: 'enemy-dread-hex',
-        });
-    });
-
-    it('clears stored intents when requested', () => {
-        const enemy = createEnemy();
-        const service = new EnemyIntentService(new FixedRandom(0));
-
-        service.decideNextIntent({ enemy, enemyCardPool: createEnemyCardPool() });
-        service.clearIntent(enemy.id);
-
-        expect(service.getIntent(enemy.id)).toBeUndefined();
     });
 });

@@ -101,6 +101,15 @@ interface LocaleBundle {
         bossRewardTitle: string;
         bossRewardCopy: string;
         bossRewardSkipLabel: string;
+        postBossDecisionEyebrow: string;
+        postBossDecisionTitle: string;
+        postBossDecisionCopy: string;
+        pactRewardLabel: string;
+        pactRewardUpside: string;
+        pactRewardDownside: string;
+        showdownLabel: string;
+        showdownCopy: string;
+        postBossLeaveLabel: string;
         floorSuffix: string;
         slotCapacity: (usedSlots: number, slotCapacity: number) => string;
     };
@@ -220,6 +229,15 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             bossRewardTitle: 'Choose a Boss Reward',
             bossRewardCopy: 'Claim one prize from the fallen boss, or leave the power untouched.',
             bossRewardSkipLabel: 'Leave It Behind',
+            postBossDecisionEyebrow: 'Post-Boss Choice',
+            postBossDecisionTitle: 'Seal the Pact or Force a Showdown',
+            postBossDecisionCopy: 'Take the pact reward and end the run, or risk everything in one more fight.',
+            pactRewardLabel: 'Seal Pact',
+            pactRewardUpside: 'Gain Pact Armor immediately.',
+            pactRewardDownside: 'Attacks weaken while guard cards harden when equipped.',
+            showdownLabel: 'Enter Showdown',
+            showdownCopy: 'Fight a final echo. Losing or escaping ends the run.',
+            postBossLeaveLabel: 'End the Run',
             floorSuffix: 'F',
             slotCapacity: (usedSlots, slotCapacity) => `${usedSlots} / ${slotCapacity} slots`,
         },
@@ -415,6 +433,15 @@ const LOCALES: Record<SupportedLocale, LocaleBundle> = {
             bossRewardTitle: '보스 보상 선택',
             bossRewardCopy: '쓰러진 보스의 전리품 중 하나를 고르거나 아무것도 받지 않고 떠납니다.',
             bossRewardSkipLabel: '전리품 포기',
+            postBossDecisionEyebrow: '보스 이후 선택',
+            postBossDecisionTitle: '계약을 맺거나 쇼다운에 진입',
+            postBossDecisionCopy: '계약 보상을 받고 런을 끝내거나 마지막 전투에 모든 것을 겁니다.',
+            pactRewardLabel: '계약 체결',
+            pactRewardUpside: 'Pact Armor를 즉시 획득합니다.',
+            pactRewardDownside: '장착 중 공격 카드는 약해지고 방어 카드는 단단해집니다.',
+            showdownLabel: '쇼다운 진입',
+            showdownCopy: '마지막 메아리와 싸웁니다. 패배하거나 도주하면 런이 끝납니다.',
+            postBossLeaveLabel: '런 종료',
             floorSuffix: '층',
             slotCapacity: (usedSlots, slotCapacity) => `${usedSlots} / ${slotCapacity}칸`,
         },
@@ -863,6 +890,49 @@ export class GameLocalization {
             : 'That boss reward is no longer available.';
     }
 
+    formatPostBossDecisionOpened(bossName: string) {
+        return this.locale === 'ko'
+            ? `${bossName} 이후 계약과 쇼다운 선택이 열렸습니다.`
+            : `${bossName} leaves a pact and a showdown behind.`;
+    }
+
+    formatPactRewardClaimed(itemName: string, rarity: ItemRarity) {
+        const rarityLabel = this.getRarityLabel(rarity);
+        return this.locale === 'ko'
+            ? `계약 보상으로 ${itemName} [${rarityLabel}]을 받았습니다.`
+            : `You seal the pact and gain ${itemName} [${rarityLabel}].`;
+    }
+
+    formatPactRewardUnavailable() {
+        return this.locale === 'ko'
+            ? '계약 보상이 더 이상 유효하지 않습니다.'
+            : 'The pact reward is no longer available.';
+    }
+
+    formatShowdownStarted(bossName: string) {
+        return this.locale === 'ko'
+            ? `${bossName}의 마지막 메아리와 쇼다운을 시작합니다.`
+            : `You enter a showdown with ${bossName}'s final echo.`;
+    }
+
+    formatShowdownVictory(bossName: string) {
+        return this.locale === 'ko'
+            ? `쇼다운 승리. ${bossName}의 메아리까지 무너졌습니다.`
+            : `Showdown won. ${bossName}'s echo breaks.`;
+    }
+
+    formatShowdownFailed() {
+        return this.locale === 'ko'
+            ? '쇼다운 실패. 마지막 선택이 런을 끝냈습니다.'
+            : 'Showdown failed. The final risk ends the run.';
+    }
+
+    formatShowdownResumePrompt() {
+        return this.locale === 'ko'
+            ? '저장된 쇼다운 진입 상태를 복원했습니다. 다시 선택하세요.'
+            : 'A saved showdown entry was restored. Choose again.';
+    }
+
     formatDrop(icon: string, itemName: string) {
         return this.locale === 'ko'
             ? `${icon} ${itemName} 버리기.`
@@ -917,6 +987,24 @@ export class GameLocalization {
         return this.locale === 'ko'
             ? '도주했지만 잃어버릴 아이템이 없어 가방은 그대로였습니다.'
             : 'You escape, and your pack stays intact because there is nothing to lose.';
+    }
+
+    formatCleanEscape() {
+        return this.locale === 'ko'
+            ? 'Clean Escape: 체력은 보존했지만 보상은 포기합니다.'
+            : 'Clean Escape: your health is preserved, but the reward is gone.';
+    }
+
+    formatBloodyEscape(healthLoss: number) {
+        return this.locale === 'ko'
+            ? `Bloody Escape: 후유증으로 HP ${healthLoss}을 잃고 보상은 포기합니다.`
+            : `Bloody Escape: lose ${healthLoss} HP as fallout and abandon the reward.`;
+    }
+
+    formatPerfectVanish(energyBonus: number) {
+        return this.locale === 'ko'
+            ? `Perfect Vanish: 흔적 없이 빠져나와 다음 전투 시작 에너지 +${energyBonus}.`
+            : `Perfect Vanish: leave no trace and start the next battle with +${energyBonus} energy.`;
     }
 
     formatUnequipBeforeDrop() {

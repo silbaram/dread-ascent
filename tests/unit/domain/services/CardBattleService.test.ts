@@ -259,5 +259,39 @@ describe('CardBattleService', () => {
             const ids = pool.map((c) => c.id);
             expect(new Set(ids).size).toBe(ids.length);
         });
+
+        it('generates family-aware card pools for Dopamine 2.0 enemy roles', () => {
+            const service = new CardBattleService();
+
+            const ashPool = service.generateEnemyCardPool('normal', false, 'ash-crawler');
+            const mirePool = service.generateEnemyCardPool('normal', false, 'mire-broodling');
+            const stalkerPool = service.generateEnemyCardPool('normal', false, 'blade-raider');
+            const wardenPool = service.generateEnemyCardPool('normal', false, 'dread-sentinel');
+
+            expect(ashPool.map((card) => card.name)).toEqual(expect.arrayContaining([
+                'Ash Ritual',
+                'Ash Curse Dread',
+            ]));
+            expect(mirePool).toEqual(expect.arrayContaining([
+                expect.objectContaining({
+                    statusEffect: { type: 'POISON', duration: 3 },
+                    statusEffects: expect.arrayContaining([
+                        { type: 'POISON', duration: 3 },
+                        { type: 'FRAIL', duration: 1 },
+                    ]),
+                }),
+                expect.objectContaining({ name: 'Mire Cleanse Poison' }),
+            ]));
+            expect(stalkerPool.map((card) => card.name)).toEqual(expect.arrayContaining([
+                'Blade Charge 12',
+                'Blade Ambush 7',
+            ]));
+            expect(wardenPool).toEqual(expect.arrayContaining([
+                expect.objectContaining({
+                    name: 'Sentinel Thorn Guard',
+                    buff: { type: 'THORNS', value: 2, duration: 2, target: 'SELF' },
+                }),
+            ]));
+        });
     });
 });

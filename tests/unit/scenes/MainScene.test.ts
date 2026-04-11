@@ -96,6 +96,57 @@ describe('MainScene battle result handling', () => {
         };
     }
 
+    function createEncounterMoveScene(deckCards: readonly unknown[]) {
+        const player = new Player({ x: 1, y: 1 }, cloneCombatStats(BASE_PLAYER_STATS));
+        const enemy = new Enemy(
+            'enemy-1',
+            'Ash Crawler',
+            { x: 2, y: 1 },
+            {
+                health: 12,
+                maxHealth: 12,
+                attack: 4,
+                defense: 1,
+                movementSpeed: 100,
+            },
+            10,
+            'normal',
+            'ash-crawler',
+            false,
+        );
+        const scene = {
+            playerEntity: player,
+            floorDirector: {
+                getMapData: vi.fn(() => ({
+                    width: 3,
+                    height: 3,
+                    tiles: [
+                        [WORLD_TILE.FLOOR, WORLD_TILE.FLOOR, WORLD_TILE.FLOOR],
+                        [WORLD_TILE.FLOOR, WORLD_TILE.FLOOR, WORLD_TILE.FLOOR],
+                        [WORLD_TILE.FLOOR, WORLD_TILE.FLOOR, WORLD_TILE.FLOOR],
+                    ],
+                })),
+                getEnemyAt: vi.fn(() => enemy),
+            },
+            deckService: {
+                getCards: vi.fn(() => deckCards),
+            },
+            launchBattleScene: vi.fn(),
+        };
+
+        return { scene, player, enemy };
+    }
+
+    function callOnMove(scene: object, dx: number, dy: number): void {
+        const onMove = (
+            MainScene.prototype as unknown as {
+                onMove: (this: object, dx: number, dy: number) => void;
+            }
+        ).onMove;
+
+        onMove.call(scene, dx, dy);
+    }
+
     it('uses remaining enemy health to resolve victory rewards after status-based kills', () => {
         const { scene, enemy } = createSceneStub();
         const handleBattleSceneResult = (
@@ -166,6 +217,23 @@ describe('MainScene battle result handling', () => {
         expect(scene.handleBossDefeat).toHaveBeenCalledWith(boss);
         expect(scene.handleVictory).not.toHaveBeenCalled();
         expect(scene.handleEnemyDeath).not.toHaveBeenCalled();
+    });
+
+    it('routes enemy contact with a normal deck into BattleScene', () => {
+        const { scene, player, enemy } = createEncounterMoveScene([{ id: 'card-1' }]);
+
+        callOnMove(scene, 1, 0);
+
+        expect(scene.launchBattleScene).toHaveBeenCalledWith(player, enemy);
+    });
+
+    it('routes enemy contact with an empty saved deck into BattleScene', () => {
+        const { scene, player, enemy } = createEncounterMoveScene([]);
+
+        callOnMove(scene, 1, 0);
+
+        expect(scene.launchBattleScene).toHaveBeenCalledWith(player, enemy);
+        expect(scene.deckService.getCards).not.toHaveBeenCalled();
     });
 
     it('grants a boss reward, opens cursed choices, and persists the pending boss offer', () => {
@@ -357,6 +425,7 @@ describe('MainScene battle result handling', () => {
 
         launchBattleScene.call(scene, player, enemy);
 
+        const launchedData = scene.scene.launch.mock.calls[0]?.[1] as { isShowdown?: boolean };
         expect(scene.hud.setViewportMode).toHaveBeenCalledWith('battle-scene');
         expect(scene.scene.sleep).toHaveBeenCalledWith('MainScene');
         expect(scene.scene.launch).toHaveBeenCalledWith('BattleScene', expect.objectContaining({
@@ -366,6 +435,67 @@ describe('MainScene battle result handling', () => {
             enemyName: 'Ash Crawler',
             floorNumber: 4,
             startEnergyBonus: 2,
+        }));
+        expect(launchedData.isShowdown).toBeUndefined();
+        expect(setOnBattleEnd).toHaveBeenCalledOnce();
+    });
+
+    it('marks Showdown BattleScene launches with the Showdown Dread Rule context', () => {
+        const player = new Player({ x: 1, y: 1 }, cloneCombatStats(BASE_PLAYER_STATS));
+        const enemy = new Enemy(
+            'showdown-final-boss',
+            'Showdown Echo',
+            { x: 2, y: 1 },
+            {
+                health: 42,
+                maxHealth: 42,
+                attack: 8,
+                defense: 3,
+                movementSpeed: 100,
+            },
+            0,
+            'boss',
+            'final-boss',
+            false,
+        );
+        const setOnBattleEnd = vi.fn();
+        const scene = {
+            deckService: {},
+            cardBattleService: {},
+            itemService: {},
+            hud: {
+                setViewportMode: vi.fn(),
+            },
+            pendingBattleStartEnergy: 1,
+            floorDirector: {
+                getFloorSnapshot: vi.fn(() => ({ number: 100 })),
+            },
+            getEnemyName: vi.fn(() => 'Showdown Echo'),
+            handleBattleSceneResult: vi.fn(),
+            scene: {
+                get: vi.fn(() => ({ setOnBattleEnd })),
+                sleep: vi.fn(),
+                launch: vi.fn(),
+            },
+        };
+        const launchShowdownBattle = (
+            MainScene.prototype as unknown as {
+                launchShowdownBattle: (this: typeof scene, playerArg: Player, enemyArg: Enemy) => void;
+            }
+        ).launchShowdownBattle;
+
+        launchShowdownBattle.call(scene, player, enemy);
+
+        expect(scene.hud.setViewportMode).toHaveBeenCalledWith('battle-scene');
+        expect(scene.scene.sleep).toHaveBeenCalledWith('MainScene');
+        expect(scene.scene.launch).toHaveBeenCalledWith('BattleScene', expect.objectContaining({
+            player,
+            enemy,
+            encounterEnemies: [enemy],
+            enemyName: 'Showdown Echo',
+            floorNumber: 100,
+            isShowdown: true,
+            startEnergyBonus: 1,
         }));
         expect(setOnBattleEnd).toHaveBeenCalledOnce();
     });
@@ -659,6 +789,7 @@ describe('MainScene battle result handling', () => {
                 experience: 12,
             },
             getBossName: vi.fn(() => 'Final Boss'),
+            beginPostBossDecisionFlow: vi.fn(),
             resetSpecialRewardFlowState() {
                 this.pendingSpecialRewardChoices = [];
                 this.pendingSpecialRewardOffer = undefined;
@@ -690,8 +821,8 @@ describe('MainScene battle result handling', () => {
             ignoreInventoryCapacity: true,
         });
         expect(scene.pushTurnLog).toHaveBeenCalledWith('Cursed Edge:CURSED', 'item');
-        expect(scene.persistRun).toHaveBeenLastCalledWith('victory');
-        expect(scene.overlayController.setVictory).toHaveBeenCalledWith(true);
+        expect(scene.beginPostBossDecisionFlow).toHaveBeenCalledWith('final-boss');
+        expect(scene.overlayController.setVictory).not.toHaveBeenCalled();
         expect(scene.pendingSpecialRewardOffer).toBeUndefined();
         expect(scene.isSpecialRewardFlowOpen).toBe(false);
     });
@@ -752,6 +883,7 @@ describe('MainScene battle result handling', () => {
             defeatedEnemyCount: 9,
             getBossName: vi.fn(() => 'Final Boss'),
             persistRun: vi.fn(),
+            beginPostBossDecisionFlow: vi.fn(),
             resetSpecialRewardFlowState() {
                 this.pendingSpecialRewardChoices = [];
                 this.pendingSpecialRewardOffer = undefined;
@@ -774,11 +906,201 @@ describe('MainScene battle result handling', () => {
 
         scene.completeSpecialRewardFlow();
 
-        expect(scene.localization.getEnemyName).toHaveBeenCalledWith('final-boss');
-        expect(scene.persistRun).toHaveBeenCalledWith('victory');
-        expect(scene.overlayController.setVictory).toHaveBeenCalledWith(true);
+        expect(scene.beginPostBossDecisionFlow).toHaveBeenCalledWith('final-boss');
+        expect(scene.persistRun).not.toHaveBeenCalledWith('victory');
+        expect(scene.overlayController.setVictory).not.toHaveBeenCalled();
         expect(scene.pendingSpecialRewardOffer).toBeUndefined();
         expect(scene.isSpecialRewardFlowOpen).toBe(false);
+    });
+
+    it('claims Pact Reward and finishes from the post-boss decision', () => {
+        const scene = new MainScene(
+            {
+                hidePostBossDecisionOverlay: vi.fn(),
+            } as never,
+            {
+                subscribe: vi.fn(),
+                getEnemyName: vi.fn(() => 'Final Boss'),
+                getItemName: vi.fn((_id: string, name: string) => name),
+                formatPactRewardClaimed: vi.fn((name: string, rarity: string) => `pact:${name}:${rarity}`),
+                formatPactRewardUnavailable: vi.fn(),
+            } as never,
+        ) as unknown as {
+            pendingPostBossDecision?: object;
+            isPostBossDecisionFlowOpen: boolean;
+            itemService: object;
+            pushTurnLog: ReturnType<typeof vi.fn>;
+            syncInventoryOverlay: ReturnType<typeof vi.fn>;
+            completeVictory: ReturnType<typeof vi.fn>;
+        };
+        scene.pendingPostBossDecision = {
+            state: 'offered',
+            bossArchetypeId: 'final-boss',
+            pactItemId: 'pact-armor',
+            showdownEnemyId: 'showdown-final-boss',
+        };
+        scene.isPostBossDecisionFlowOpen = true;
+        scene.itemService = {
+            grantPactReward: vi.fn(() => ({
+                status: 'granted',
+                rewardItem: {
+                    id: 'pact-armor',
+                    name: 'Pact Armor',
+                    rarity: 'CURSED',
+                },
+            })),
+        };
+        scene.pushTurnLog = vi.fn();
+        scene.syncInventoryOverlay = vi.fn();
+        scene.completeVictory = vi.fn();
+        const handlePostBossDecisionSelection = (
+            MainScene.prototype as unknown as {
+                handlePostBossDecisionSelection: (this: typeof scene, action: 'pact') => void;
+            }
+        ).handlePostBossDecisionSelection;
+
+        handlePostBossDecisionSelection.call(scene, 'pact');
+
+        expect((scene.itemService as { grantPactReward: ReturnType<typeof vi.fn> }).grantPactReward)
+            .toHaveBeenCalledWith('pact-armor');
+        expect(scene.pushTurnLog).toHaveBeenCalledWith('pact:Pact Armor:CURSED', 'item');
+        expect(scene.syncInventoryOverlay).toHaveBeenCalledOnce();
+        expect(scene.completeVictory).toHaveBeenCalledWith('Final Boss');
+        expect(scene.pendingPostBossDecision).toBeUndefined();
+        expect(scene.isPostBossDecisionFlowOpen).toBe(false);
+    });
+
+    it('starts a Showdown battle from the post-boss decision and persists the risk state', () => {
+        const player = new Player({ x: 3, y: 4 }, cloneCombatStats(BASE_PLAYER_STATS));
+        const scene = new MainScene(
+            {
+                hidePostBossDecisionOverlay: vi.fn(),
+                setViewportMode: vi.fn(),
+            } as never,
+            {
+                subscribe: vi.fn(),
+                getEnemyName: vi.fn(() => 'Final Boss'),
+                formatShowdownStarted: vi.fn(() => 'showdown-start'),
+            } as never,
+        ) as unknown as {
+            pendingPostBossDecision?: { state: string };
+            isPostBossDecisionFlowOpen: boolean;
+            playerEntity: Player;
+            floorDirector: object;
+            deckService: object;
+            cardBattleService: object;
+            itemService: object;
+            pushTurnLog: ReturnType<typeof vi.fn>;
+            persistRun: ReturnType<typeof vi.fn>;
+            launchShowdownBattle: ReturnType<typeof vi.fn>;
+        };
+        scene.pendingPostBossDecision = {
+            state: 'offered',
+            bossArchetypeId: 'final-boss',
+            pactItemId: 'pact-armor',
+            showdownEnemyId: 'showdown-final-boss',
+        } as never;
+        scene.isPostBossDecisionFlowOpen = true;
+        scene.playerEntity = player;
+        scene.floorDirector = {
+            getFloorSnapshot: vi.fn(() => ({ number: 100 })),
+        };
+        scene.deckService = {};
+        scene.cardBattleService = {};
+        scene.itemService = {};
+        scene.pushTurnLog = vi.fn();
+        scene.persistRun = vi.fn();
+        scene.launchShowdownBattle = vi.fn();
+        const handlePostBossDecisionSelection = (
+            MainScene.prototype as unknown as {
+                handlePostBossDecisionSelection: (this: typeof scene, action: 'showdown') => void;
+            }
+        ).handlePostBossDecisionSelection;
+
+        handlePostBossDecisionSelection.call(scene, 'showdown');
+
+        expect(scene.pendingPostBossDecision?.state).toBe('showdown');
+        expect(scene.isPostBossDecisionFlowOpen).toBe(false);
+        expect(scene.pushTurnLog).toHaveBeenCalledWith('showdown-start', 'danger');
+        expect(scene.persistRun).toHaveBeenCalledWith('active');
+        expect(scene.launchShowdownBattle).toHaveBeenCalledWith(player, expect.objectContaining({
+            id: 'showdown-final-boss',
+            kind: 'boss',
+        }));
+    });
+
+    it('completes victory on Showdown win and fails the run on Showdown escape', () => {
+        const { enemy } = createSceneStub();
+        const scene = new MainScene(
+            {
+                hidePostBossDecisionOverlay: vi.fn(),
+                setViewportMode: vi.fn(),
+            } as never,
+            {
+                subscribe: vi.fn(),
+                getEnemyName: vi.fn(() => 'Final Boss'),
+                formatShowdownVictory: vi.fn(() => 'showdown-win'),
+                formatShowdownFailed: vi.fn(() => 'showdown-failed'),
+            } as never,
+        ) as unknown as {
+            pendingPostBossDecision?: object;
+            isPostBossDecisionFlowOpen: boolean;
+            pushTurnLog: ReturnType<typeof vi.fn>;
+            completeVictory: ReturnType<typeof vi.fn>;
+            handlePlayerDeath: ReturnType<typeof vi.fn>;
+        };
+        scene.pendingPostBossDecision = {
+            state: 'showdown',
+            bossArchetypeId: 'final-boss',
+            pactItemId: 'pact-armor',
+            showdownEnemyId: 'showdown-final-boss',
+        };
+        scene.pushTurnLog = vi.fn();
+        scene.completeVictory = vi.fn();
+        scene.handlePlayerDeath = vi.fn();
+        const handleShowdownBattleResult = (
+            MainScene.prototype as unknown as {
+                handleShowdownBattleResult: (this: typeof scene, result: object) => void;
+            }
+        ).handleShowdownBattleResult;
+
+        handleShowdownBattleResult.call(scene, {
+            outcome: 'player-win',
+            resolution: 'victory',
+            totalRounds: 2,
+            totalPlayerDamage: 0,
+            totalEnemyDamage: 20,
+            playerRemainingHealth: 90,
+            enemyRemainingHealth: 0,
+            nextBattleStartEnergyBonus: 0,
+            enemy,
+        });
+
+        expect(scene.pushTurnLog).toHaveBeenCalledWith('showdown-win', 'combat');
+        expect(scene.completeVictory).toHaveBeenCalledWith('Final Boss');
+        expect(scene.pendingPostBossDecision).toBeUndefined();
+
+        scene.pendingPostBossDecision = {
+            state: 'showdown',
+            bossArchetypeId: 'final-boss',
+            pactItemId: 'pact-armor',
+            showdownEnemyId: 'showdown-final-boss',
+        };
+        handleShowdownBattleResult.call(scene, {
+            outcome: 'player-win',
+            resolution: 'escape',
+            totalRounds: 1,
+            totalPlayerDamage: 0,
+            totalEnemyDamage: 0,
+            playerRemainingHealth: 90,
+            enemyRemainingHealth: 10,
+            nextBattleStartEnergyBonus: 0,
+            enemy,
+        });
+
+        expect(scene.pushTurnLog).toHaveBeenCalledWith('showdown-failed', 'danger');
+        expect(scene.handlePlayerDeath).toHaveBeenCalledOnce();
+        expect(scene.pendingPostBossDecision).toBeUndefined();
     });
 
     it('allows skipping a special reward after opening the cache', () => {
@@ -880,6 +1202,7 @@ describe('MainScene battle result handling', () => {
                 this.isSpecialRewardFlowOpen = false;
                 this.hud.hideSpecialRewardOverlay();
             },
+            resetPostBossDecisionFlowState: vi.fn(),
             renderSynchronizer: {
                 clearPlayerTint: vi.fn(),
             },
@@ -945,6 +1268,7 @@ describe('MainScene battle result handling', () => {
             restorePendingSpecialRewardFlow: undefined as unknown as (
                 pendingSpecialRewardOffer: typeof savedRun.pendingSpecialRewardOffer,
             ) => void,
+            restorePendingPostBossDecisionFlow: vi.fn(),
         };
         scene.beginSpecialRewardFlow = (
             MainScene.prototype as unknown as {
@@ -1023,6 +1347,7 @@ describe('MainScene battle result handling', () => {
                 this.isSpecialRewardFlowOpen = false;
                 this.hud.hideSpecialRewardOverlay();
             },
+            resetPostBossDecisionFlowState: vi.fn(),
             renderSynchronizer: {
                 clearPlayerTint: vi.fn(),
                 removeEnemySprite: vi.fn(),
@@ -1097,6 +1422,7 @@ describe('MainScene battle result handling', () => {
             restorePendingSpecialRewardFlow: undefined as unknown as (
                 pendingSpecialRewardOffer: typeof savedRun.pendingSpecialRewardOffer,
             ) => void,
+            restorePendingPostBossDecisionFlow: vi.fn(),
         };
         scene.beginSpecialRewardFlow = (
             MainScene.prototype as unknown as {
@@ -1150,7 +1476,9 @@ describe('MainScene battle result handling', () => {
         const escapeScene = {
             ...scene,
             syncInventoryOverlay: vi.fn(),
+            refreshTurnStatus: vi.fn(),
             persistRun: vi.fn(),
+            lastEscapeResult: undefined,
             itemService: {
                 getInventory: vi.fn(() => []),
                 loseRandomInventoryItem: vi.fn(() => ({
@@ -1163,6 +1491,7 @@ describe('MainScene battle result handling', () => {
             },
             localization: {
                 getItemName: vi.fn((_id: string, name: string) => name),
+                formatCleanEscape: vi.fn(() => 'clean'),
                 formatEscapeItemLost: vi.fn((name: string) => `lost:${name}`),
                 formatEscapeItemLossPrevented: vi.fn(() => 'prevented'),
             },
@@ -1181,9 +1510,21 @@ describe('MainScene battle result handling', () => {
         });
 
         expect(escapeScene.itemService.loseRandomInventoryItem).toHaveBeenCalledOnce();
+        expect(escapeScene.pushTurnLog).toHaveBeenCalledWith('clean', 'travel');
         expect(escapeScene.pushTurnLog).toHaveBeenCalledWith('lost:Small Potion', 'danger');
         expect(escapeScene.persistRun).toHaveBeenCalledWith('active');
         expect(escapeScene.completePlayerTurn).toHaveBeenCalledWith('');
+        expect(escapeScene.lastEscapeResult).toMatchObject({
+            tier: 'clean_escape',
+            battleHealthLoss: 0,
+            healthLoss: 0,
+            itemLossPolicy: 'lose-random-item',
+            itemLostId: 'small-potion',
+            rewardPolicy: 'none',
+            modifierSources: [],
+            goldPolicy: 'not-implemented',
+            goldPolicyNote: '[TBD: gold economy not implemented]',
+        });
     });
 
     it('keeps inventory intact on escape when Escape Artist\'s Boots are equipped', () => {
@@ -1200,12 +1541,15 @@ describe('MainScene battle result handling', () => {
         const escapeScene = {
             ...scene,
             syncInventoryOverlay: vi.fn(),
+            refreshTurnStatus: vi.fn(),
             persistRun: vi.fn(),
+            lastEscapeResult: undefined,
             itemService: {
                 getInventory: vi.fn(() => [{ id: 'escape-artists-boots', isEquipped: true }]),
                 loseRandomInventoryItem: vi.fn(),
             },
             localization: {
+                formatPerfectVanish: vi.fn((energyBonus: number) => `perfect:${energyBonus}`),
                 formatEscapeItemLossPrevented: vi.fn(() => 'prevented'),
             },
         };
@@ -1223,7 +1567,138 @@ describe('MainScene battle result handling', () => {
         });
 
         expect(escapeScene.itemService.loseRandomInventoryItem).not.toHaveBeenCalled();
+        expect(escapeScene.pendingBattleStartEnergy).toBe(1);
+        expect(escapeScene.pushTurnLog).toHaveBeenCalledWith('perfect:1', 'travel');
         expect(escapeScene.pushTurnLog).toHaveBeenCalledWith('prevented', 'item');
+        expect(escapeScene.lastEscapeResult).toMatchObject({
+            tier: 'perfect_vanish',
+            battleHealthLoss: 0,
+            itemLossPolicy: 'protected-by-gear',
+            itemLossPrevented: true,
+            nextBattleStartEnergyBonus: 1,
+            perfectVanishEnergyBonus: 1,
+            rewardPolicy: 'next-battle-energy',
+            modifierSources: ['escape-artists-boots'],
+            goldPolicy: 'not-implemented',
+            goldPolicyNote: '[TBD: gold economy not implemented]',
+        });
+    });
+
+    it('consumes card-driven Perfect Vanish escape economy without boots', () => {
+        const { scene, enemy } = createSceneStub();
+        const handleBattleSceneResult = (
+            MainScene.prototype as unknown as {
+                handleBattleSceneResult: (this: typeof scene & {
+                    itemService: object;
+                    localization: object;
+                    persistRun: ReturnType<typeof vi.fn>;
+                    syncInventoryOverlay: ReturnType<typeof vi.fn>;
+                    refreshTurnStatus: ReturnType<typeof vi.fn>;
+                    lastEscapeResult?: object;
+                }, result: object) => void;
+            }
+        ).handleBattleSceneResult;
+        const escapeScene = {
+            ...scene,
+            syncInventoryOverlay: vi.fn(),
+            refreshTurnStatus: vi.fn(),
+            persistRun: vi.fn(),
+            lastEscapeResult: undefined,
+            itemService: {
+                getInventory: vi.fn(() => []),
+                loseRandomInventoryItem: vi.fn(),
+            },
+            localization: {
+                formatPerfectVanish: vi.fn((energyBonus: number) => `perfect:${energyBonus}`),
+            },
+        };
+
+        handleBattleSceneResult.call(escapeScene, {
+            outcome: 'player-win',
+            resolution: 'escape',
+            totalRounds: 2,
+            totalPlayerDamage: 0,
+            totalEnemyDamage: 0,
+            playerRemainingHealth: 100,
+            enemyRemainingHealth: 12,
+            nextBattleStartEnergyBonus: 0,
+            perfectVanish: true,
+            enemy,
+        });
+
+        expect(escapeScene.itemService.loseRandomInventoryItem).not.toHaveBeenCalled();
+        expect(escapeScene.pendingBattleStartEnergy).toBe(1);
+        expect(escapeScene.pushTurnLog).toHaveBeenCalledWith('perfect:1', 'travel');
+        expect(escapeScene.lastEscapeResult).toMatchObject({
+            tier: 'perfect_vanish',
+            battleHealthLoss: 0,
+            itemLossPolicy: 'none',
+            itemLossPrevented: false,
+            nextBattleStartEnergyBonus: 1,
+            perfectVanishEnergyBonus: 1,
+            rewardPolicy: 'next-battle-energy',
+            modifierSources: ['card-perfect-vanish'],
+            goldPolicy: 'not-implemented',
+            goldPolicyNote: '[TBD: gold economy not implemented]',
+        });
+        expect(escapeScene.persistRun).toHaveBeenCalledWith('active');
+        expect(escapeScene.completePlayerTurn).toHaveBeenCalledWith('');
+    });
+
+    it('applies a Bloody Escape wound without dropping an item after battle damage', () => {
+        const { scene, enemy } = createSceneStub();
+        const handleBattleSceneResult = (
+            MainScene.prototype as unknown as {
+                handleBattleSceneResult: (this: typeof scene & {
+                    itemService: object;
+                    localization: object;
+                    persistRun: ReturnType<typeof vi.fn>;
+                    syncInventoryOverlay: ReturnType<typeof vi.fn>;
+                    refreshTurnStatus: ReturnType<typeof vi.fn>;
+                }, result: object) => void;
+            }
+        ).handleBattleSceneResult;
+        const escapeScene = {
+            ...scene,
+            syncInventoryOverlay: vi.fn(),
+            refreshTurnStatus: vi.fn(),
+            persistRun: vi.fn(),
+            lastEscapeResult: undefined,
+            itemService: {
+                getInventory: vi.fn(() => []),
+                loseRandomInventoryItem: vi.fn(),
+            },
+            localization: {
+                formatBloodyEscape: vi.fn((healthLoss: number) => `bloody:${healthLoss}`),
+            },
+        };
+
+        handleBattleSceneResult.call(escapeScene, {
+            outcome: 'player-win',
+            resolution: 'escape',
+            totalRounds: 3,
+            totalPlayerDamage: 20,
+            totalEnemyDamage: 0,
+            playerRemainingHealth: 80,
+            enemyRemainingHealth: 12,
+            nextBattleStartEnergyBonus: 0,
+            enemy,
+        });
+
+        expect(escapeScene.playerEntity.stats.health).toBe(70);
+        expect(escapeScene.itemService.loseRandomInventoryItem).not.toHaveBeenCalled();
+        expect(escapeScene.pushTurnLog).toHaveBeenCalledWith('bloody:10', 'danger');
+        expect(escapeScene.lastEscapeResult).toMatchObject({
+            tier: 'bloody_escape',
+            battleHealthLoss: 20,
+            healthLoss: 10,
+            itemLossPolicy: 'none',
+            itemLossPrevented: false,
+            rewardPolicy: 'none',
+            modifierSources: [],
+            goldPolicy: 'not-implemented',
+            goldPolicyNote: '[TBD: gold economy not implemented]',
+        });
     });
 
     it('releases the movement lock immediately when the player climbs stairs', () => {

@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Enemy } from '../../../../src/domain/entities/Enemy';
 import { Player } from '../../../../src/domain/entities/Player';
-import { CardBattleService } from '../../../../src/domain/services/CardBattleService';
 import { CombatService } from '../../../../src/domain/services/CombatService';
-import { DeckService } from '../../../../src/domain/services/DeckService';
-import { ItemService } from '../../../../src/domain/services/ItemService';
 import type { TurnActor } from '../../../../src/domain/services/TurnQueueService';
 import type { MapData } from '../../../../src/infra/rot/MapGenerator';
 import { BattleDirector } from '../../../../src/scenes/directors/BattleDirector';
@@ -40,17 +37,20 @@ function createEnemy(position = { x: 0, y: 0 }) {
     );
 }
 
-function createBattleDirector(enemy: Enemy, renderSynchronizer: RenderSynchronizer) {
+function createBattleDirector(
+    enemy: Enemy,
+    renderSynchronizer: RenderSynchronizer,
+    options: {
+        readonly combatService?: CombatService;
+    } = {},
+) {
     const floorDirector = {
         getEnemyById: (enemyId: string) => (enemyId === enemy.id ? enemy : undefined),
         getEnemyEntities: () => [enemy],
     } as unknown as FloorDirector;
 
     return new BattleDirector(
-        new CombatService(),
-        new CardBattleService(),
-        new DeckService(),
-        new ItemService(),
+        options.combatService ?? new CombatService(),
         new GameLocalization(),
         renderSynchronizer,
         floorDirector,

@@ -17,6 +17,7 @@ export const CARD_ARCHETYPE = {
     BLOOD_OATH: 'BLOOD_OATH',
     SHADOW_ARTS: 'SHADOW_ARTS',
     IRON_WILL: 'IRON_WILL',
+    SMUGGLER: 'SMUGGLER',
     CURSE: 'CURSE',
 } as const;
 
@@ -83,6 +84,14 @@ export interface CardBuffEffect {
     readonly target?: 'SELF' | 'TARGET';
 }
 
+export const CARD_DISCARD_STRATEGY = {
+    FIRST: 'FIRST',
+    HIGHEST_COST: 'HIGHEST_COST',
+    SELECTED: 'SELECTED',
+} as const;
+
+export type CardDiscardStrategy = (typeof CARD_DISCARD_STRATEGY)[keyof typeof CARD_DISCARD_STRATEGY];
+
 export interface CardScalingEffect {
     readonly source: string;
     readonly multiplier: number;
@@ -94,16 +103,75 @@ export interface CardCondition {
     readonly value: number;
 }
 
+export const CARD_INSCRIPTION_ID = {
+    SHADOW_EXPOSE: 'SHADOW_EXPOSE',
+    IRON_ENTRENCH: 'IRON_ENTRENCH',
+} as const;
+
+export type CardInscriptionId = (typeof CARD_INSCRIPTION_ID)[keyof typeof CARD_INSCRIPTION_ID];
+
+export const CARD_INSCRIPTION_TRIGGER = {
+    TARGET_DEBUFF_THRESHOLD: 'TARGET_DEBUFF_THRESHOLD',
+    CARD_RETAINED: 'CARD_RETAINED',
+} as const;
+
+export type CardInscriptionTrigger =
+    (typeof CARD_INSCRIPTION_TRIGGER)[keyof typeof CARD_INSCRIPTION_TRIGGER];
+
+export const CARD_INSCRIPTION_PAYOFF_TYPE = {
+    DAMAGE_BONUS: 'DAMAGE_BONUS',
+    BLOCK_BONUS: 'BLOCK_BONUS',
+} as const;
+
+export type CardInscriptionPayoffType =
+    (typeof CARD_INSCRIPTION_PAYOFF_TYPE)[keyof typeof CARD_INSCRIPTION_PAYOFF_TYPE];
+
+export const CARD_INSCRIPTION_PAYOFF_WINDOW = {
+    CURRENT_TURN: 'CURRENT_TURN',
+    NEXT_TURN: 'NEXT_TURN',
+} as const;
+
+export type CardInscriptionPayoffWindow =
+    (typeof CARD_INSCRIPTION_PAYOFF_WINDOW)[keyof typeof CARD_INSCRIPTION_PAYOFF_WINDOW];
+
+export interface CardInscriptionPayoffDefinition {
+    readonly type: CardInscriptionPayoffType;
+    readonly label: string;
+    readonly amount: number;
+    readonly window: CardInscriptionPayoffWindow;
+}
+
+export interface CardInscription {
+    readonly id: CardInscriptionId;
+    readonly label: string;
+    readonly trigger: CardInscriptionTrigger;
+    readonly payoff: CardInscriptionPayoffDefinition;
+    readonly targetDebuffThreshold?: number;
+    readonly triggerStatusTypes?: readonly string[];
+    readonly exposedDamageBonus?: number;
+}
+
+export const CARD_TARGET_SCOPE = {
+    CURRENT_ENEMY: 'CURRENT_ENEMY',
+    ALL_ENEMIES: 'ALL_ENEMIES',
+    SELF: 'SELF',
+} as const;
+
+export type CardTargetScope = (typeof CARD_TARGET_SCOPE)[keyof typeof CARD_TARGET_SCOPE];
+
 export interface CardEffectPayload {
     readonly drawCount?: number;
     readonly healAmount?: number;
     readonly blockAmount?: number;
     readonly hitCount?: number;
     readonly discardCount?: number;
+    readonly discardStrategy?: CardDiscardStrategy;
     readonly selfDamage?: number;
     readonly energyChange?: number;
     readonly costWhenConditionMet?: number;
     readonly healOnKillPercent?: number;
+    readonly perfectVanish?: boolean;
+    readonly perfectVanishAfterDiscard?: boolean;
     readonly buff?: CardBuffEffect;
     readonly scaling?: CardScalingEffect;
     readonly statusEffects?: readonly CardStatusEffect[];
@@ -133,6 +201,8 @@ export interface Card {
     readonly discardCount?: number;
     readonly selfDamage?: number;
     readonly buff?: CardBuffEffect;
+    readonly inscription?: CardInscription;
+    readonly targetScope?: CardTargetScope;
     readonly effectPayload?: CardEffectPayload;
 }
 
@@ -162,6 +232,8 @@ export interface CreateCardParams {
     readonly discardCount?: number;
     readonly selfDamage?: number;
     readonly buff?: CardBuffEffect;
+    readonly inscription?: CardInscription;
+    readonly targetScope?: CardTargetScope;
     readonly effectPayload?: CardEffectPayload;
 }
 
@@ -203,13 +275,36 @@ function cloneBuff(buff?: CardBuffEffect): CardBuffEffect | undefined {
         : undefined;
 }
 
+function cloneInscription(inscription?: CardInscription): CardInscription | undefined {
+    return inscription
+        ? {
+            ...inscription,
+            payoff: { ...inscription.payoff },
+            triggerStatusTypes: inscription.triggerStatusTypes
+                ? [...inscription.triggerStatusTypes]
+                : undefined,
+        }
+        : undefined;
+}
+
 function cloneEffectPayload(effectPayload?: CardEffectPayload): CardEffectPayload | undefined {
     if (!effectPayload) {
         return undefined;
     }
 
     return {
-        ...effectPayload,
+        drawCount: effectPayload.drawCount,
+        healAmount: effectPayload.healAmount,
+        blockAmount: effectPayload.blockAmount,
+        hitCount: effectPayload.hitCount,
+        discardCount: effectPayload.discardCount,
+        discardStrategy: effectPayload.discardStrategy,
+        selfDamage: effectPayload.selfDamage,
+        energyChange: effectPayload.energyChange,
+        costWhenConditionMet: effectPayload.costWhenConditionMet,
+        healOnKillPercent: effectPayload.healOnKillPercent,
+        perfectVanish: effectPayload.perfectVanish,
+        perfectVanishAfterDiscard: effectPayload.perfectVanishAfterDiscard,
         buff: cloneBuff(effectPayload.buff),
         scaling: effectPayload.scaling
             ? { ...effectPayload.scaling }
@@ -230,20 +325,28 @@ export function createCard(params: CreateCardParams): Card {
     const healAmount = params.healAmount ?? params.effectPayload?.healAmount;
     const hitCount = params.hitCount ?? params.effectPayload?.hitCount;
     const discardCount = params.discardCount ?? params.effectPayload?.discardCount;
+    const discardStrategy = params.effectPayload?.discardStrategy;
     const selfDamage = params.selfDamage ?? params.effectPayload?.selfDamage;
     const energyChange = params.effectPayload?.energyChange;
     const costWhenConditionMet = params.effectPayload?.costWhenConditionMet;
     const healOnKillPercent = params.effectPayload?.healOnKillPercent;
+    const perfectVanish = params.effectPayload?.perfectVanish;
+    const perfectVanishAfterDiscard = params.effectPayload?.perfectVanishAfterDiscard;
     const secondaryPower = params.secondaryPower ?? params.effectPayload?.blockAmount;
+    const inscription = cloneInscription(params.inscription);
+    const targetScope = params.targetScope;
     const normalizedEffectPayload = cloneEffectPayload(params.effectPayload) ?? {
         drawCount,
         healAmount,
         hitCount,
         discardCount,
+        discardStrategy,
         selfDamage,
         energyChange,
         costWhenConditionMet,
         healOnKillPercent,
+        perfectVanish,
+        perfectVanishAfterDiscard,
         buff: normalizedBuff,
         statusEffects: normalizedStatusEffects,
     };
@@ -268,6 +371,8 @@ export function createCard(params: CreateCardParams): Card {
         discardCount,
         selfDamage,
         buff: normalizedBuff,
+        inscription,
+        targetScope,
         effectPayload: normalizedEffectPayload,
     };
 }

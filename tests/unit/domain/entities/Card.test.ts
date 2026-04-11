@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
     CARD_ARCHETYPE,
+    CARD_INSCRIPTION_ID,
+    CARD_INSCRIPTION_PAYOFF_TYPE,
+    CARD_INSCRIPTION_PAYOFF_WINDOW,
+    CARD_INSCRIPTION_TRIGGER,
+    CARD_TARGET_SCOPE,
     CARD_TYPE,
     DECK_MAX_SIZE,
     addCardToDeck,
@@ -73,6 +78,47 @@ describe('Card', () => {
             { type: 'WEAK', duration: 1 },
             { type: 'FRAIL', duration: 1 },
         ]);
+    });
+
+    it('preserves inscription metadata without sharing the input object', () => {
+        const inscription = {
+            id: CARD_INSCRIPTION_ID.SHADOW_EXPOSE,
+            label: 'Shadow Mark',
+            trigger: CARD_INSCRIPTION_TRIGGER.TARGET_DEBUFF_THRESHOLD,
+            targetDebuffThreshold: 2,
+            payoff: {
+                type: CARD_INSCRIPTION_PAYOFF_TYPE.DAMAGE_BONUS,
+                label: 'Exposed',
+                amount: 8,
+                window: CARD_INSCRIPTION_PAYOFF_WINDOW.CURRENT_TURN,
+            },
+            exposedDamageBonus: 8,
+        };
+
+        const card = createCard({
+            name: 'Exploit Weakness',
+            type: CARD_TYPE.ATTACK,
+            power: 0,
+            inscription,
+        });
+
+        expect(card.inscription).toEqual(inscription);
+        expect(card.inscription).not.toBe(inscription);
+    });
+
+    it('uses top-level targetScope over legacy effect payload metadata', () => {
+        const card = createCard({
+            name: 'Shockwave',
+            type: CARD_TYPE.ATTACK,
+            power: 8,
+            targetScope: CARD_TARGET_SCOPE.CURRENT_ENEMY,
+            effectPayload: {
+                targetScope: CARD_TARGET_SCOPE.ALL_ENEMIES,
+            },
+        });
+
+        expect(card.targetScope).toBe(CARD_TARGET_SCOPE.CURRENT_ENEMY);
+        expect(card.effectPayload).not.toHaveProperty('targetScope');
     });
 
     it('generates unique sequential ids', () => {

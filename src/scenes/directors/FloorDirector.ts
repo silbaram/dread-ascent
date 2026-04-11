@@ -6,6 +6,8 @@ import { FloorProgressionService, type FloorSnapshot } from '../../domain/servic
 import { ItemService } from '../../domain/services/ItemService';
 import {
     RunPersistenceService,
+    type PersistedEscapeResult,
+    type PersistedPostBossDecision,
     type PersistedRunStatus,
     type PersistedSpecialRewardOffer,
 } from '../../domain/services/RunPersistenceService';
@@ -123,6 +125,8 @@ export class FloorDirector {
         deckCards: readonly Card[] = [],
         pendingBattleStartEnergy = 0,
         pendingSpecialRewardOffer?: PersistedSpecialRewardOffer,
+        lastEscapeResult?: PersistedEscapeResult,
+        pendingPostBossDecision?: PersistedPostBossDecision,
     ) {
         this.runPersistence.save({
             status,
@@ -136,6 +140,8 @@ export class FloorDirector {
             defeatedEnemyCount,
             pendingBattleStartEnergy,
             pendingSpecialRewardOffer,
+            pendingPostBossDecision,
+            lastEscapeResult,
         });
     }
 

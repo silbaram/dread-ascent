@@ -2,7 +2,12 @@
 // Draw Cycle Service — 덱/손패/버림패/제거 순환 도메인 로직 (TASK-030, TASK-034)
 // ---------------------------------------------------------------------------
 
-import { CARD_KEYWORD, type Card } from '../entities/Card';
+import {
+    CARD_DISCARD_STRATEGY,
+    CARD_KEYWORD,
+    type Card,
+    type CardDiscardStrategy,
+} from '../entities/Card';
 import { COMBAT_RESOURCE_BALANCE } from './CombatBalance';
 import { shuffleArray, type RandomSource } from '../../shared/utils/shuffle';
 
@@ -170,24 +175,101 @@ export class DrawCycleService {
 
     /**
      * 손패에서 지정 수만큼 카드를 버린다.
-     * 현재 UI에는 선택 플로우가 없으므로 손패 앞쪽부터 순서대로 처리한다.
+     * 기본값은 기존 호환성을 위해 손패 앞쪽부터 처리한다.
+     * 카드가 명시 전략을 제공하면 UI 선택 전까지 결정론적 대체 선택을 사용한다.
      */
-    discardCards(state: DrawCycleState, count: number): DrawCycleState {
+    discardCards(
+        state: DrawCycleState,
+        count: number,
+        strategy: CardDiscardStrategy = CARD_DISCARD_STRATEGY.FIRST,
+        selectedCardIds: readonly string[] = [],
+    ): DrawCycleState {
         const discardCount = Math.max(0, Math.floor(count));
         if (discardCount === 0 || state.hand.length === 0) {
             return state;
         }
 
-        const discardedCards = state.hand.slice(0, discardCount);
+        const discardedCards = this.selectDiscardedCards(
+            state.hand,
+            discardCount,
+            strategy,
+            selectedCardIds,
+        );
         if (discardedCards.length === 0) {
             return state;
         }
 
+        const discardedIds = new Set(discardedCards.map((card) => card.id));
+
         return {
             ...state,
-            hand: state.hand.slice(discardedCards.length),
+            hand: state.hand.filter((card) => !discardedIds.has(card.id)),
             discardPile: [...state.discardPile, ...discardedCards],
         };
+    }
+
+    private selectDiscardedCards(
+        hand: readonly Card[],
+        discardCount: number,
+        strategy: CardDiscardStrategy,
+        selectedCardIds: readonly string[],
+    ): readonly Card[] {
+        if (strategy === CARD_DISCARD_STRATEGY.SELECTED) {
+            const selectedCards = this.selectCardsByIds(hand, selectedCardIds, discardCount);
+            const fallbackCount = discardCount - selectedCards.length;
+            if (fallbackCount <= 0) {
+                return selectedCards;
+            }
+
+            const selectedIds = new Set(selectedCards.map((card) => card.id));
+            const fallbackCards = this.selectHighestCostCards(
+                hand.filter((card) => !selectedIds.has(card.id)),
+                fallbackCount,
+            );
+            return [...selectedCards, ...fallbackCards];
+        }
+
+        if (strategy === CARD_DISCARD_STRATEGY.HIGHEST_COST) {
+            return this.selectHighestCostCards(hand, discardCount);
+        }
+
+        return hand.slice(0, discardCount);
+    }
+
+    private selectCardsByIds(
+        hand: readonly Card[],
+        selectedCardIds: readonly string[],
+        discardCount: number,
+    ): readonly Card[] {
+        const selectedCards: Card[] = [];
+        const selectedIds = new Set<string>();
+
+        selectedCardIds.forEach((selectedCardId) => {
+            if (selectedCards.length >= discardCount || selectedIds.has(selectedCardId)) {
+                return;
+            }
+
+            const card = hand.find((handCard) => handCard.id === selectedCardId);
+            if (!card) {
+                return;
+            }
+
+            selectedIds.add(selectedCardId);
+            selectedCards.push(card);
+        });
+
+        return selectedCards;
+    }
+
+    private selectHighestCostCards(hand: readonly Card[], discardCount: number): readonly Card[] {
+        return hand
+            .map((card, index) => ({ card, index }))
+            .sort((left, right) => (
+                right.card.cost - left.card.cost
+                || left.index - right.index
+            ))
+            .slice(0, discardCount)
+            .map(({ card }) => card);
     }
 
     /**

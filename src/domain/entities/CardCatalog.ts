@@ -83,6 +83,9 @@ function getCardSignature(card: Card): string {
         buff: card.buff
             ? { ...card.buff }
             : undefined,
+        inscription: card.inscription
+            ? { ...card.inscription }
+            : undefined,
         effectPayload: card.effectPayload
             ? {
                 ...card.effectPayload,
@@ -129,9 +132,7 @@ export const ARCHETYPE_CARD_IDS = {
         CARD_CATALOG_ID.QUICK_DRAW,
         CARD_CATALOG_ID.HEAVY_STRIKE,
         CARD_CATALOG_ID.SHOCKWAVE,
-        CARD_CATALOG_ID.SHADOW_STEP,
         CARD_CATALOG_ID.ADRENALINE,
-        CARD_CATALOG_ID.RECYCLE,
         CARD_CATALOG_ID.SECOND_WIND,
     ],
     [CARD_ARCHETYPE.BLOOD_OATH]: [
@@ -153,8 +154,10 @@ export const ARCHETYPE_CARD_IDS = {
         CARD_CATALOG_ID.SHADOW_CLOAK,
         CARD_CATALOG_ID.EXPLOIT_WEAKNESS,
         CARD_CATALOG_ID.CRIPPLING_BLOW,
+        CARD_CATALOG_ID.MARK_THE_VEIN,
         CARD_CATALOG_ID.TOXIC_BURST,
         CARD_CATALOG_ID.NOXIOUS_AURA,
+        CARD_CATALOG_ID.PLAGUE_FINALE,
     ],
     [CARD_ARCHETYPE.IRON_WILL]: [
         CARD_CATALOG_ID.IRON_GUARD,
@@ -164,6 +167,14 @@ export const ARCHETYPE_CARD_IDS = {
         CARD_CATALOG_ID.COUNTER_STRIKE,
         CARD_CATALOG_ID.TAUNT,
         CARD_CATALOG_ID.BARRICADE,
+        CARD_CATALOG_ID.CITADEL_CRUSH,
+    ],
+    [CARD_ARCHETYPE.SMUGGLER]: [
+        CARD_CATALOG_ID.SHADOW_STEP,
+        CARD_CATALOG_ID.RECYCLE,
+        CARD_CATALOG_ID.CHEAP_SHOT,
+        CARD_CATALOG_ID.BACKDOOR_EXIT,
+        CARD_CATALOG_ID.LOADED_DICE,
     ],
     [CARD_ARCHETYPE.CURSE]: [
         CARD_CATALOG_ID.HEMORRHAGE,
@@ -189,7 +200,12 @@ export const DROPPABLE_CARD_IDS: readonly CardCatalogId[] = CARD_TEMPLATES
 
 export interface CardConditionContext {
     readonly playerMaxHealth?: number;
+    readonly playerBlock?: number;
     readonly turnDamageTaken?: number;
+    readonly cardsDiscardedThisTurn?: number;
+    readonly enemyIntentType?: string;
+    readonly enemyIntentDamage?: number;
+    readonly targetDebuffCount?: number;
 }
 
 function isCardConditionMet(
@@ -216,6 +232,19 @@ function isCardConditionMet(
 
     if (card.condition.type === 'TURN_DAMAGE_TAKEN_AT_LEAST') {
         return (context.turnDamageTaken ?? 0) >= card.condition.value;
+    }
+
+    if (card.condition.type === 'COUNTER_WINDOW_READY') {
+        return (context.turnDamageTaken ?? 0) >= card.condition.value
+            || (
+                context.enemyIntentType === 'attack'
+                && (context.enemyIntentDamage ?? 0) > 0
+                && (context.playerBlock ?? 0) >= card.condition.value
+            );
+    }
+
+    if (card.condition.type === 'TARGET_DEBUFF_COUNT_AT_LEAST') {
+        return (context.targetDebuffCount ?? 0) >= card.condition.value;
     }
 
     if (card.condition.type === 'MISSING_HEALTH_DAMAGE') {

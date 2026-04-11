@@ -115,6 +115,14 @@ export interface SpecialRewardOverlaySnapshot {
     sourceType: 'cache' | 'boss';
 }
 
+export type PostBossDecisionAction = 'pact' | 'showdown' | 'leave';
+
+export interface PostBossDecisionOverlaySnapshot {
+    isOpen: boolean;
+    bossName: string;
+    pactItem: ItemDefinition;
+}
+
 export class GameHud {
     private readonly logs: HudLogEntry[] = [];
     private readonly maxLogs = 50;
@@ -223,6 +231,11 @@ export class GameHud {
         sourceType: 'cache',
     };
     private specialRewardCallback?: (selectedItemId: string | null) => void;
+    private postBossDecisionOverlay!: HTMLElement;
+    private postBossDecisionBoss!: HTMLElement;
+    private postBossDecisionPactName!: HTMLElement;
+    private postBossDecisionSnapshot?: PostBossDecisionOverlaySnapshot;
+    private postBossDecisionCallback?: (action: PostBossDecisionAction) => void;
     private viewportMode: HudViewportMode = 'field';
 
     constructor(
@@ -478,6 +491,29 @@ export class GameHud {
                         </button>
                     </div>
                 </section>
+                <section class="game-hud__card-swap-overlay" data-role="post-boss-decision-overlay" data-open="false">
+                    <div class="game-hud__card-swap-panel">
+                        <span class="game-hud__eyebrow">${ui.postBossDecisionEyebrow}</span>
+                        <strong class="game-hud__title">${ui.postBossDecisionTitle}</strong>
+                        <p class="game-hud__title-copy">${ui.postBossDecisionCopy}</p>
+                        <div class="game-hud__card-swap-list game-hud__card-swap-list--decision">
+                            <button class="game-hud__card-swap-slot" type="button" data-role="post-boss-pact">
+                                <span>${ui.pactRewardLabel}</span>
+                                <span data-role="post-boss-pact-name"></span>
+                                <span>${ui.pactRewardUpside}</span>
+                                <span>${ui.pactRewardDownside}</span>
+                            </button>
+                            <button class="game-hud__card-swap-slot" type="button" data-role="post-boss-showdown">
+                                <span>${ui.showdownLabel}</span>
+                                <span data-role="post-boss-boss"></span>
+                                <span>${ui.showdownCopy}</span>
+                            </button>
+                        </div>
+                        <button class="game-hud__title-action game-hud__title-action--secondary" type="button" data-role="post-boss-leave">
+                            ${ui.postBossLeaveLabel}
+                        </button>
+                    </div>
+                </section>
             </div>
         `;
         this.bindElements();
@@ -527,6 +563,9 @@ export class GameHud {
         this.rewardOfferList = this.requireRole('reward-offer-list');
         this.specialRewardOverlay = this.requireRole('special-reward-overlay');
         this.specialRewardList = this.requireRole('special-reward-list');
+        this.postBossDecisionOverlay = this.requireRole('post-boss-decision-overlay');
+        this.postBossDecisionBoss = this.requireRole('post-boss-boss');
+        this.postBossDecisionPactName = this.requireRole('post-boss-pact-name');
     }
 
     private renderAll() {
@@ -540,6 +579,7 @@ export class GameHud {
         this.renderEventBanner();
         this.renderRewardOfferOverlay();
         this.renderSpecialRewardOverlay();
+        this.renderPostBossDecisionOverlay();
     }
 
     private renderStatus() {
@@ -1049,6 +1089,21 @@ export class GameHud {
         const rewardItem = target.closest<HTMLElement>('[data-special-reward-item-id]');
         if (rewardItem?.dataset.specialRewardItemId) {
             this.handleSpecialRewardSelection(rewardItem.dataset.specialRewardItemId);
+            return;
+        }
+
+        if (target.closest('[data-role="post-boss-pact"]')) {
+            this.handlePostBossDecision('pact');
+            return;
+        }
+
+        if (target.closest('[data-role="post-boss-showdown"]')) {
+            this.handlePostBossDecision('showdown');
+            return;
+        }
+
+        if (target.closest('[data-role="post-boss-leave"]')) {
+            this.handlePostBossDecision('leave');
         }
     }
 
@@ -1185,6 +1240,46 @@ export class GameHud {
         this.renderSpecialRewardOverlay();
     }
 
+    showPostBossDecisionOverlay(
+        snapshot: Omit<PostBossDecisionOverlaySnapshot, 'isOpen'>,
+        callback: (action: PostBossDecisionAction) => void,
+    ): void {
+        this.postBossDecisionCallback = callback;
+        this.updatePostBossDecision({
+            ...snapshot,
+            isOpen: true,
+        });
+    }
+
+    hidePostBossDecisionOverlay(): void {
+        this.postBossDecisionSnapshot = this.postBossDecisionSnapshot
+            ? {
+                ...this.postBossDecisionSnapshot,
+                isOpen: false,
+            }
+            : undefined;
+        this.renderPostBossDecisionOverlay();
+    }
+
+    updatePostBossDecision(snapshot: PostBossDecisionOverlaySnapshot): void {
+        this.postBossDecisionSnapshot = {
+            ...snapshot,
+            pactItem: {
+                ...snapshot.pactItem,
+                spawnSources: snapshot.pactItem.spawnSources ? [...snapshot.pactItem.spawnSources] : undefined,
+                consumableEffect: snapshot.pactItem.consumableEffect ? { ...snapshot.pactItem.consumableEffect } : undefined,
+                equipment: snapshot.pactItem.equipment
+                    ? {
+                        slot: snapshot.pactItem.equipment.slot,
+                        statModifier: { ...snapshot.pactItem.equipment.statModifier },
+                        passives: snapshot.pactItem.equipment.passives?.map((entry) => ({ ...entry })),
+                    }
+                    : undefined,
+            },
+        };
+        this.renderPostBossDecisionOverlay();
+    }
+
     private renderRewardOfferOverlay(): void {
         const { ui } = this.localization.getBundle();
         this.rewardOfferOverlay.dataset.open = this.rewardOfferSnapshot.isOpen ? 'true' : 'false';
@@ -1256,6 +1351,15 @@ export class GameHud {
         `).join('');
     }
 
+    private renderPostBossDecisionOverlay(): void {
+        const snapshot = this.postBossDecisionSnapshot;
+        this.postBossDecisionOverlay.dataset.open = snapshot?.isOpen ? 'true' : 'false';
+        this.postBossDecisionBoss.textContent = snapshot?.bossName ?? '';
+        this.postBossDecisionPactName.textContent = snapshot?.pactItem
+            ? this.localization.getItemName(snapshot.pactItem.id, snapshot.pactItem.name)
+            : '';
+    }
+
     private handleCardSwapSelection(cardId: string | null): void {
         this.cardSwapOverlay.dataset.open = 'false';
         const callback = this.cardSwapCallback;
@@ -1268,6 +1372,13 @@ export class GameHud {
         const callback = this.specialRewardCallback;
         this.specialRewardCallback = undefined;
         callback?.(itemId);
+    }
+
+    private handlePostBossDecision(action: PostBossDecisionAction): void {
+        this.hidePostBossDecisionOverlay();
+        const callback = this.postBossDecisionCallback;
+        this.postBossDecisionCallback = undefined;
+        callback?.(action);
     }
 
     private canUseSelectedItem(item?: InventoryItem) {
@@ -1552,6 +1663,8 @@ export class GameHud {
                 return 'Shadow Arts';
             case 'IRON_WILL':
                 return 'Iron Will';
+            case 'SMUGGLER':
+                return 'Smuggler';
             case 'CURSE':
                 return 'Curse';
             default:

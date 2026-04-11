@@ -11,6 +11,7 @@
 
 - `ai-dev-team/artifacts/contracts/events.schema.json`
 - `ai-dev-team/artifacts/contracts/balance.json`
+- `ai-dev-team/artifacts/contracts/combat.json`
 - `ai-dev-team/artifacts/contracts/ui-states.json`
 - `ai-dev-team/artifacts/contracts/validate-contracts.mjs`
 
@@ -20,6 +21,8 @@
   이벤트 이름과 payload
 - `balance.json`
   밸런스 키와 허용 범위
+- `combat.json`
+  카드 효과 타입, 상태이상 타입, 카드 밸런스 ID, Dread Rule ID/effect
 - `ui-states.json`
   화면 상태, 전이, HUD 바인딩
 - `validate-contracts.mjs`
@@ -28,8 +31,10 @@
 실행:
 
 ```bash
-node ai-dev-team/artifacts/contracts/validate-contracts.mjs
+npm run validate:contracts
 ```
+
+`npm test`는 Vitest 실행 후 같은 계약 검증을 함께 실행합니다.
 
 ## 관련 내부 문서
 
@@ -63,7 +68,7 @@ node ai-dev-team/artifacts/contracts/validate-contracts.mjs
 1. 변경이 코드만의 일인지, 계약까지 건드리는 일인지 먼저 분류
 2. 계약 영향이 있으면 `ai-dev-team/artifacts/*` 문서를 먼저 확인
 3. 필요한 경우 계약 파일 수정
-4. `node ai-dev-team/artifacts/contracts/validate-contracts.mjs` 실행
+4. `npm run validate:contracts` 실행
 5. 테스트와 빌드 검증
 6. `docs/`를 현재 상태에 맞게 업데이트
 

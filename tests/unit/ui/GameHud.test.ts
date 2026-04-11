@@ -49,6 +49,9 @@ const HUD_ROLES = [
     'special-reward-title',
     'special-reward-copy',
     'special-reward-list',
+    'post-boss-decision-overlay',
+    'post-boss-pact-name',
+    'post-boss-boss',
 ] as const;
 
 class FakeElement {
@@ -903,5 +906,60 @@ describe('GameHud', () => {
             target: createClosestTarget('[data-role="special-reward-skip"]'),
         } as Event);
         expect(callback).toHaveBeenCalledWith(null);
+    });
+
+    it('renders and routes post-boss Pact and Showdown decisions', () => {
+        const { root, hud, localization } = createHud();
+        const callback = vi.fn();
+
+        hud.showPostBossDecisionOverlay({
+            bossName: 'Final Boss',
+            pactItem: {
+                id: 'pact-armor',
+                name: 'Pact Armor',
+                type: 'EQUIPMENT',
+                rarity: 'CURSED',
+                icon: ']',
+                stackable: false,
+                maxStack: 1,
+                description: 'Guard cards gain Block, attack cards weaken.',
+                equipment: {
+                    slot: 'BODY_ARMOR',
+                    statModifier: { defense: 4 },
+                },
+            },
+        }, callback);
+
+        expect(root.datasetFor('post-boss-decision-overlay').open).toBe('true');
+        expect(root.textFor('post-boss-pact-name')).toBe('Pact Armor');
+        expect(root.textFor('post-boss-boss')).toBe('Final Boss');
+
+        localization.setLocale('ko');
+
+        expect(root.textFor('post-boss-pact-name')).toBe('Pact Armor');
+
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
+            target: createClosestTarget('[data-role="post-boss-showdown"]'),
+        } as Event);
+        expect(callback).toHaveBeenCalledWith('showdown');
+        expect(root.datasetFor('post-boss-decision-overlay').open).toBe('false');
+
+        hud.showPostBossDecisionOverlay({
+            bossName: 'Final Boss',
+            pactItem: {
+                id: 'pact-armor',
+                name: 'Pact Armor',
+                type: 'EQUIPMENT',
+                rarity: 'CURSED',
+                icon: ']',
+                stackable: false,
+                maxStack: 1,
+                description: 'Guard cards gain Block, attack cards weaken.',
+            },
+        }, callback);
+        (hud as unknown as { handleClick: (event: Event) => void }).handleClick({
+            target: createClosestTarget('[data-role="post-boss-pact"]'),
+        } as Event);
+        expect(callback).toHaveBeenCalledWith('pact');
     });
 });

@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
     CARD_ARCHETYPE,
+    CARD_DISCARD_STRATEGY,
     CARD_EFFECT_TYPE,
+    CARD_INSCRIPTION_ID,
+    CARD_INSCRIPTION_PAYOFF_TYPE,
+    CARD_INSCRIPTION_PAYOFF_WINDOW,
+    CARD_INSCRIPTION_TRIGGER,
     CARD_KEYWORD,
     CARD_RARITY,
+    CARD_TARGET_SCOPE,
     CARD_TYPE,
 } from '../../../../src/domain/entities/Card';
 import { ITEM_RARITY } from '../../../../src/domain/entities/Item';
@@ -158,6 +164,22 @@ describe('RunPersistenceService', () => {
         expect(service.hasActiveRun()).toBe(true);
     });
 
+    it('preserves an explicitly empty saved deck', () => {
+        const storage = new MemoryStorage();
+        const saveService = new RunPersistenceService(storage);
+
+        saveService.save({
+            ...createSnapshot(),
+            deck: [],
+        });
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.deck).toEqual([]);
+        expect(service.hasActiveRun()).toBe(true);
+    });
+
     it('preserves a pending special reward offer across save and load', () => {
         const storage = new MemoryStorage();
         const saveService = new RunPersistenceService(storage);
@@ -202,6 +224,147 @@ describe('RunPersistenceService', () => {
             bossArchetypeId: 'final-boss',
             offeredItemIds: ['cursed-edge', 'soulfire-brand'],
         });
+    });
+
+    it('preserves the last tiered escape result across save and load', () => {
+        const storage = new MemoryStorage();
+        const saveService = new RunPersistenceService(storage);
+
+        saveService.save({
+            ...createSnapshot(),
+            lastEscapeResult: {
+                tier: 'perfect_vanish',
+                floorNumber: 12,
+                battleRounds: 1,
+                battleHealthLoss: 0,
+                healthLoss: 0,
+                itemLossPolicy: 'protected-by-gear',
+                itemLossPrevented: true,
+                nextBattleStartEnergyBonus: 1,
+                perfectVanishEnergyBonus: 1,
+                rewardPolicy: 'next-battle-energy',
+                modifierSources: ['escape-artists-boots'],
+                goldPolicy: 'not-implemented',
+                goldPolicyNote: '[TBD: gold economy not implemented]',
+            },
+        });
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.lastEscapeResult).toEqual({
+            tier: 'perfect_vanish',
+            floorNumber: 12,
+            battleRounds: 1,
+            battleHealthLoss: 0,
+            healthLoss: 0,
+            itemLossPolicy: 'protected-by-gear',
+            itemLossPrevented: true,
+            nextBattleStartEnergyBonus: 1,
+            perfectVanishEnergyBonus: 1,
+            rewardPolicy: 'next-battle-energy',
+            modifierSources: ['escape-artists-boots'],
+            goldPolicy: 'not-implemented',
+            goldPolicyNote: '[TBD: gold economy not implemented]',
+        });
+    });
+
+    it('normalizes missing and invalid escape detail fields for saved run compatibility', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            lastEscapeResult: {
+                tier: 'clean_escape',
+                floorNumber: 12,
+                battleRounds: 1,
+                healthLoss: 0,
+                itemLossPrevented: false,
+                itemLostId: 'small-potion',
+                nextBattleStartEnergyBonus: 0,
+                rewardPolicy: 'none',
+                itemLossPolicy: 'not-real',
+                modifierSources: ['card-perfect-vanish', 'not-real'],
+                goldPolicy: 'paid-gold',
+            },
+        }));
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.lastEscapeResult).toMatchObject({
+            tier: 'clean_escape',
+            battleHealthLoss: 0,
+            itemLossPolicy: 'lose-random-item',
+            itemLostId: 'small-potion',
+            perfectVanishEnergyBonus: 0,
+            modifierSources: ['card-perfect-vanish'],
+            goldPolicy: 'not-implemented',
+            goldPolicyNote: '[TBD: gold economy not implemented]',
+        });
+    });
+
+    it('drops invalid tiered escape results during load normalization', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            lastEscapeResult: {
+                tier: 'free_escape',
+                floorNumber: 12,
+                battleRounds: 1,
+                healthLoss: 0,
+                itemLossPrevented: true,
+                nextBattleStartEnergyBonus: 1,
+                rewardPolicy: 'none',
+            },
+        }));
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.lastEscapeResult).toBeUndefined();
+    });
+
+    it('preserves pending post-boss decisions across save and load', () => {
+        const storage = new MemoryStorage();
+        const saveService = new RunPersistenceService(storage);
+
+        saveService.save({
+            ...createSnapshot(),
+            pendingPostBossDecision: {
+                state: 'showdown',
+                bossArchetypeId: 'final-boss',
+                pactItemId: 'pact-armor',
+                showdownEnemyId: 'showdown-final-boss',
+            },
+        });
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.pendingPostBossDecision).toEqual({
+            state: 'showdown',
+            bossArchetypeId: 'final-boss',
+            pactItemId: 'pact-armor',
+            showdownEnemyId: 'showdown-final-boss',
+        });
+    });
+
+    it('drops invalid pending post-boss decisions during load normalization', () => {
+        const storage = new MemoryStorage();
+        storage.setItem(RUN_PERSISTENCE_STORAGE_KEY, JSON.stringify({
+            ...createSnapshot(),
+            pendingPostBossDecision: {
+                state: 'showdown',
+                bossArchetypeId: 'final-boss',
+                pactItemId: 'missing-pact',
+                showdownEnemyId: 'showdown-final-boss',
+            },
+        }));
+
+        const service = new RunPersistenceService(storage);
+        const snapshot = service.load();
+
+        expect(snapshot?.pendingPostBossDecision).toBeUndefined();
     });
 
     it('preserves legacy boss reward offers without a boss archetype id', () => {
@@ -619,6 +782,189 @@ describe('RunPersistenceService', () => {
             CARD_EFFECT_TYPE.DRAW,
             CARD_EFFECT_TYPE.BUFF,
             CARD_EFFECT_TYPE.CONDITIONAL,
+        ]);
+    });
+
+    it('preserves sprint 9 card metadata across save and load normalization', () => {
+        const storage = new MemoryStorage();
+        const saveService = new RunPersistenceService(storage);
+        saveService.save({
+            ...createSnapshot(),
+            deck: [
+                {
+                    id: 'exploit-weakness-saved',
+                    name: 'Exploit Weakness',
+                    type: CARD_TYPE.ATTACK,
+                    power: 0,
+                    cost: 1,
+                    keywords: [],
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    rarity: CARD_RARITY.UNCOMMON,
+                    archetype: CARD_ARCHETYPE.SHADOW_ARTS,
+                    targetScope: CARD_TARGET_SCOPE.ALL_ENEMIES,
+                    effectPayload: {
+                        scaling: {
+                            source: 'TARGET_DEBUFF_COUNT',
+                            multiplier: 4,
+                            baseValue: 8,
+                        },
+                    },
+                    inscription: {
+                        id: CARD_INSCRIPTION_ID.SHADOW_EXPOSE,
+                        label: 'Shadow Mark',
+                        trigger: CARD_INSCRIPTION_TRIGGER.TARGET_DEBUFF_THRESHOLD,
+                        targetDebuffThreshold: 2,
+                        payoff: {
+                            type: CARD_INSCRIPTION_PAYOFF_TYPE.DAMAGE_BONUS,
+                            label: 'Exposed',
+                            amount: 8,
+                            window: CARD_INSCRIPTION_PAYOFF_WINDOW.CURRENT_TURN,
+                        },
+                        exposedDamageBonus: 8,
+                    },
+                },
+                {
+                    id: 'brace-saved',
+                    name: 'Brace',
+                    type: CARD_TYPE.GUARD,
+                    power: 4,
+                    cost: 1,
+                    keywords: [CARD_KEYWORD.RETAIN],
+                    effectType: CARD_EFFECT_TYPE.BLOCK,
+                    rarity: CARD_RARITY.UNCOMMON,
+                    archetype: CARD_ARCHETYPE.IRON_WILL,
+                    inscription: {
+                        id: CARD_INSCRIPTION_ID.IRON_ENTRENCH,
+                        label: 'Iron Entrench',
+                        trigger: CARD_INSCRIPTION_TRIGGER.CARD_RETAINED,
+                        payoff: {
+                            type: CARD_INSCRIPTION_PAYOFF_TYPE.BLOCK_BONUS,
+                            label: 'Entrenched',
+                            amount: 3,
+                            window: CARD_INSCRIPTION_PAYOFF_WINDOW.NEXT_TURN,
+                        },
+                    },
+                },
+            ],
+        });
+
+        const loaded = new RunPersistenceService(storage).load();
+
+        expect(loaded?.deck[0]).toMatchObject({
+            targetScope: CARD_TARGET_SCOPE.ALL_ENEMIES,
+            inscription: {
+                id: CARD_INSCRIPTION_ID.SHADOW_EXPOSE,
+                label: 'Shadow Mark',
+                targetDebuffThreshold: 2,
+                payoff: {
+                    type: CARD_INSCRIPTION_PAYOFF_TYPE.DAMAGE_BONUS,
+                    amount: 8,
+                },
+            },
+            effectPayload: {
+                scaling: {
+                    source: 'TARGET_DEBUFF_COUNT',
+                    multiplier: 4,
+                    baseValue: 8,
+                },
+            },
+        });
+        expect(loaded?.deck[1]).toMatchObject({
+            keywords: [CARD_KEYWORD.RETAIN],
+            inscription: {
+                id: CARD_INSCRIPTION_ID.IRON_ENTRENCH,
+                label: 'Iron Entrench',
+                trigger: CARD_INSCRIPTION_TRIGGER.CARD_RETAINED,
+                payoff: {
+                    type: CARD_INSCRIPTION_PAYOFF_TYPE.BLOCK_BONUS,
+                    label: 'Entrenched',
+                    amount: 3,
+                    window: CARD_INSCRIPTION_PAYOFF_WINDOW.NEXT_TURN,
+                },
+            },
+        });
+    });
+
+    it('preserves Smuggler discard and Perfect Vanish metadata across save and load normalization', () => {
+        const storage = new MemoryStorage();
+        const saveService = new RunPersistenceService(storage);
+        saveService.save({
+            ...createSnapshot(),
+            deck: [
+                {
+                    id: 'recycle-saved',
+                    name: 'Recycle',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                    cost: 0,
+                    keywords: [],
+                    effectType: CARD_EFFECT_TYPE.DISCARD_EFFECT,
+                    rarity: CARD_RARITY.UNCOMMON,
+                    archetype: CARD_ARCHETYPE.SMUGGLER,
+                    effectPayload: {
+                        discardCount: 1,
+                        discardStrategy: CARD_DISCARD_STRATEGY.SELECTED,
+                        drawCount: 2,
+                    },
+                },
+                {
+                    id: 'cheap-shot-saved',
+                    name: 'Cheap Shot',
+                    type: CARD_TYPE.ATTACK,
+                    power: 7,
+                    cost: 1,
+                    keywords: [],
+                    effectType: CARD_EFFECT_TYPE.DAMAGE,
+                    rarity: CARD_RARITY.UNCOMMON,
+                    archetype: CARD_ARCHETYPE.SMUGGLER,
+                    condition: { type: 'TARGET_DEBUFF_COUNT_AT_LEAST', value: 1 },
+                    effectPayload: {
+                        costWhenConditionMet: 0,
+                        scaling: { source: 'CARDS_DISCARDED_THIS_TURN', multiplier: 3, baseValue: 7 },
+                    },
+                },
+                {
+                    id: 'shadow-step-saved',
+                    name: 'Shadow Step',
+                    type: CARD_TYPE.SKILL,
+                    power: 0,
+                    cost: 0,
+                    keywords: [CARD_KEYWORD.EXHAUST],
+                    effectType: CARD_EFFECT_TYPE.FLEE,
+                    rarity: CARD_RARITY.RARE,
+                    archetype: CARD_ARCHETYPE.SMUGGLER,
+                    effectPayload: {
+                        perfectVanishAfterDiscard: true,
+                    },
+                },
+            ],
+        });
+
+        const loaded = new RunPersistenceService(storage).load();
+
+        expect(loaded?.deck).toEqual([
+            expect.objectContaining({
+                id: 'recycle-saved',
+                effectPayload: expect.objectContaining({
+                    discardCount: 1,
+                    discardStrategy: CARD_DISCARD_STRATEGY.SELECTED,
+                    drawCount: 2,
+                }),
+            }),
+            expect.objectContaining({
+                id: 'cheap-shot-saved',
+                condition: { type: 'TARGET_DEBUFF_COUNT_AT_LEAST', value: 1 },
+                effectPayload: expect.objectContaining({
+                    costWhenConditionMet: 0,
+                    scaling: { source: 'CARDS_DISCARDED_THIS_TURN', multiplier: 3, baseValue: 7 },
+                }),
+            }),
+            expect.objectContaining({
+                id: 'shadow-step-saved',
+                effectPayload: expect.objectContaining({
+                    perfectVanishAfterDiscard: true,
+                }),
+            }),
         ]);
     });
 

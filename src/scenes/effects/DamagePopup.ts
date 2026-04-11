@@ -1,7 +1,12 @@
 import 'phaser';
 
-export type DamagePopupType = 'damage' | 'blocked' | 'heal' | 'poison' | 'block_gain' | 'buff';
-export type DamagePopupAnchorId = 'enemy-hp' | 'player-hp' | 'enemy-panel' | 'player-panel';
+export type DamagePopupType = 'damage' | 'self_damage' | 'blocked' | 'heal' | 'poison' | 'block_gain' | 'buff';
+export type DamagePopupAnchorId =
+    | 'enemy-hp'
+    | 'player-hp'
+    | 'enemy-panel'
+    | 'player-panel'
+    | `enemy-hp:${string}`;
 
 export interface DamagePopupAnchor {
     readonly id: DamagePopupAnchorId;
@@ -12,6 +17,7 @@ export interface DamagePopupAnchor {
 export interface DamagePopupRequest {
     readonly type: DamagePopupType;
     readonly value: number;
+    readonly label?: string;
 }
 
 interface DamagePopupStyle {
@@ -24,6 +30,7 @@ const POPUP_STACK_SPACING_PX = 20;
 
 const POPUP_STYLES = {
     damage: { color: '#ff6767' },
+    self_damage: { color: '#ffb3a7' },
     blocked: { color: '#c5cfdb' },
     heal: { color: '#73f5a2' },
     poison: { color: '#c483ff' },
@@ -32,19 +39,23 @@ const POPUP_STYLES = {
 } satisfies Record<DamagePopupType, DamagePopupStyle>;
 
 export function formatDamagePopupText(request: DamagePopupRequest): string {
+    const prefix = request.label ? `${request.label} ` : '';
+
     switch (request.type) {
         case 'damage':
-            return `-${request.value}`;
+            return `${prefix}-${request.value}`;
+        case 'self_damage':
+            return `${prefix}Self -${request.value}`;
         case 'blocked':
-            return `(${request.value} blocked)`;
+            return `${prefix}(${request.value} blocked)`;
         case 'heal':
-            return `+${request.value}`;
+            return `${prefix}+${request.value}`;
         case 'poison':
-            return `Poison ${request.value}`;
+            return `${prefix}Poison ${request.value}`;
         case 'block_gain':
-            return `+${request.value} Block`;
+            return `${prefix}+${request.value} Block`;
         case 'buff':
-            return `+${request.value} ATK`;
+            return `${prefix}+${request.value} ATK`;
     }
 }
 

@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "test": "vitest run"
+    "test": "node scripts/test-with-contracts.mjs",
+    "test:vitest": "vitest run",
+    "validate:contracts": "node ai-dev-team/artifacts/contracts/validate-contracts.mjs"
   },
   "dependencies": {
     "phaser": "^3.80.1",

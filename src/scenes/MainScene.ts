@@ -6,9 +6,15 @@ import { ItemService } from '../domain/services/ItemService';
 import { MetaProgressionService, PermanentUpgradeKey } from '../domain/services/MetaProgressionService';
 import {
     RunPersistenceService,
+    type PersistedEscapeResult,
+    type PersistedPostBossDecision,
     PersistedRunStatus,
     type PersistedSpecialRewardOffer,
 } from '../domain/services/RunPersistenceService';
+import {
+    ESCAPE_RESULT_TIER,
+    EscapeEconomyService,
+} from '../domain/services/EscapeEconomyService';
 import { SoulShardService } from '../domain/services/SoulShardService';
 import { CardBattleService } from '../domain/services/CardBattleService';
 import { CardCollectionService } from '../domain/services/CardCollectionService';
@@ -18,24 +24,25 @@ import { CombatService } from '../domain/services/CombatService';
 import { DeckService } from '../domain/services/DeckService';
 import { WORLD_TILE, isWalkableTile } from '../shared/types/WorldTiles';
 import { GameLocalization, MovementDirection } from '../ui/GameLocalization';
-import { type HudLogTone, GameHud } from '../ui/GameHud';
+import { type HudLogTone, GameHud, type PostBossDecisionAction } from '../ui/GameHud';
 import { RenderSynchronizer } from './synchronizers/RenderSynchronizer';
 import { MovementAnimator, PhaserTweenFactory } from './synchronizers/MovementAnimator';
 import { getComposedEnemyMovementDurationMs, SpriteMovementDurationPolicy } from './synchronizers/MovementDurationPolicy';
 import { FloorDirector } from './directors/FloorDirector';
-import { BattleDirector, type BattleOutcome } from './directors/BattleDirector';
+import { BattleDirector } from './directors/BattleDirector';
 import { BattleScene, type BattleSceneData, type BattleSceneResult } from './BattleScene';
 import { OverlayController } from './controllers/OverlayController';
 import { InputController, InputDelegate } from './controllers/InputController';
 import { formatSignedNumber } from '../shared/utils/formatSignedNumber';
 import {
+    ITEM_CATALOG,
     ITEM_ID,
     type InventoryItem,
     type ItemDefinition,
 } from '../domain/entities/Item';
-import type { CombatStatModifier } from '../domain/entities/CombatStats';
+import { DEFAULT_MOVEMENT_SPEED, type CombatStatModifier } from '../domain/entities/CombatStats';
 import { Position } from '../domain/entities/Player';
-import { Enemy } from '../domain/entities/Enemy';
+import { Enemy, type EnemyArchetypeId } from '../domain/entities/Enemy';
 import type { TurnActor } from '../domain/services/TurnQueueService';
 import type { MapData } from '../infra/rot/MapGenerator';
 
@@ -49,7 +56,10 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     private isAnimatingMovement = false;
     private isCardRewardFlowOpen = false;
     private isSpecialRewardFlowOpen = false;
+    private isPostBossDecisionFlowOpen = false;
     private pendingSpecialRewardOffer?: PersistedSpecialRewardOffer;
+    private pendingPostBossDecision?: PersistedPostBossDecision;
+    private lastEscapeResult?: PersistedEscapeResult;
 
     private readonly combatService = new CombatService();
     private readonly cardBattleService = new CardBattleService();
@@ -57,6 +67,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     private readonly cardDropService = new CardDropService();
     private readonly deckService = new DeckService();
     private readonly enemySpawner = new EnemySpawnerService();
+    private readonly escapeEconomy = new EscapeEconomyService();
     private readonly floorProgression = new FloorProgressionService();
     private readonly itemService = new ItemService();
     private readonly soulShardService = new SoulShardService();
@@ -109,9 +120,6 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         );
         this.battleDirector = new BattleDirector(
             this.combatService,
-            this.cardBattleService,
-            this.deckService,
-            this.itemService,
             this.localization,
             this.renderSynchronizer,
             this.floorDirector,
@@ -209,13 +217,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
         const targetEnemy = this.floorDirector.getEnemyAt(newX, newY);
         if (targetEnemy) {
-            // 덱이 비어있으면 기존 자동 전투, 아니면 BattleScene으로 전환
-            const deckCards = this.deckService.getCards();
-            if (deckCards.length === 0) {
-                this.handleBattleOutcome(this.battleDirector.performPlayerAttack(this.playerEntity, targetEnemy), targetEnemy);
-            } else {
-                this.launchBattleScene(this.playerEntity, targetEnemy);
-            }
+            this.launchBattleScene(this.playerEntity, targetEnemy);
             return;
         }
 
@@ -256,6 +258,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             || state.isGameOver
             || this.isCardRewardFlowOpen
             || this.isSpecialRewardFlowOpen
+            || this.isPostBossDecisionFlowOpen
             || !this.playerEntity
             || !this.isPlayerTurn()
         ) {
@@ -282,6 +285,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         const state = this.overlayController.getState();
         return !this.isCardRewardFlowOpen
             && !this.isSpecialRewardFlowOpen
+            && !this.isPostBossDecisionFlowOpen
             && !state.isGameOver
             && !state.isVictory
             && this.battleDirector.isPlayerTurn();
@@ -331,6 +335,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             : [result.enemy];
         const leadEnemy = encounterEnemies.find((enemy) => enemy.id === result.enemy.id) ?? encounterEnemies[0] ?? result.enemy;
         this.pendingBattleStartEnergy = Math.max(0, result.nextBattleStartEnergyBonus);
+        const playerHealthBeforeBattle = this.playerEntity.stats.health;
 
         this.playerEntity.stats.health = this.clampHealth(
             result.playerRemainingHealth,
@@ -359,16 +364,56 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
                     : 'danger',
         );
 
+        if (this.pendingPostBossDecision?.state === 'showdown') {
+            this.handleShowdownBattleResult(result);
+            return;
+        }
+
         // 승패 처리
         if (result.resolution === 'escape') {
             const escapeArtistEquipped = this.itemService.getInventory().some((item) =>
                 item.isEquipped && item.id === ITEM_ID.ESCAPE_ARTISTS_BOOTS,
             );
-            if (escapeArtistEquipped) {
-                this.pushTurnLog(this.localization.formatEscapeItemLossPrevented(), 'item');
-            } else {
+            const escapeEconomy = this.escapeEconomy ?? new EscapeEconomyService();
+            const escapeResult = escapeEconomy.resolve({
+                currentHealth: this.playerEntity.stats.health,
+                maxHealth: this.playerEntity.stats.maxHealth,
+                battleHealthLoss: Math.max(0, playerHealthBeforeBattle - result.playerRemainingHealth),
+                battleRounds: result.totalRounds,
+                hasEscapeArtistsBoots: escapeArtistEquipped,
+                perfectVanishRequested: result.perfectVanish,
+                currentNextBattleStartEnergyBonus: this.pendingBattleStartEnergy,
+            });
+
+            this.pendingBattleStartEnergy = escapeResult.nextBattleStartEnergyBonus;
+            if (escapeResult.healthLoss > 0) {
+                this.playerEntity.applyDamage(escapeResult.healthLoss);
+            }
+
+            switch (escapeResult.tier) {
+                case ESCAPE_RESULT_TIER.PERFECT:
+                    this.pushTurnLog(
+                        this.localization.formatPerfectVanish(escapeResult.perfectVanishEnergyBonus),
+                        'travel',
+                    );
+                    break;
+                case ESCAPE_RESULT_TIER.BLOODY:
+                    this.pushTurnLog(
+                        this.localization.formatBloodyEscape(escapeResult.healthLoss),
+                        'danger',
+                    );
+                    break;
+                case ESCAPE_RESULT_TIER.CLEAN:
+                default:
+                    this.pushTurnLog(this.localization.formatCleanEscape(), 'travel');
+                    break;
+            }
+            let itemLostId: PersistedEscapeResult['itemLostId'];
+            const itemLossPrevented = escapeResult.itemLossPolicy === 'protected-by-gear';
+            if (escapeResult.itemLossPolicy === 'lose-random-item') {
                 const loss = this.itemService.loseRandomInventoryItem();
                 if (loss.status === 'lost' && loss.item) {
+                    itemLostId = loss.item.id;
                     this.pushTurnLog(
                         this.localization.formatEscapeItemLost(
                             this.localization.getItemName(loss.item.id, loss.item.name),
@@ -379,7 +424,27 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
                 } else {
                     this.pushTurnLog(this.localization.formatEscapeInventoryIntact(), 'system');
                 }
+            } else if (escapeResult.itemLossPolicy === 'protected-by-gear') {
+                this.pushTurnLog(this.localization.formatEscapeItemLossPrevented(), 'item');
             }
+
+            this.lastEscapeResult = {
+                tier: escapeResult.tier,
+                floorNumber: this.floorDirector.getFloorSnapshot?.().number ?? 1,
+                battleRounds: escapeResult.battleRounds,
+                battleHealthLoss: escapeResult.battleHealthLoss,
+                healthLoss: escapeResult.healthLoss,
+                itemLossPolicy: escapeResult.itemLossPolicy,
+                itemLossPrevented,
+                itemLostId,
+                nextBattleStartEnergyBonus: escapeResult.nextBattleStartEnergyBonus,
+                perfectVanishEnergyBonus: escapeResult.perfectVanishEnergyBonus,
+                rewardPolicy: escapeResult.rewardPolicy,
+                modifierSources: escapeResult.modifierSources,
+                goldPolicy: escapeResult.goldPolicy,
+                goldPolicyNote: escapeResult.goldPolicyNote,
+            };
+            this.refreshTurnStatus();
             this.persistRun('active');
             this.completePlayerTurn('');
         } else if (result.outcome === 'player-win') {
@@ -407,27 +472,6 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         }
 
         return Math.max(0, Math.min(Math.floor(value), maxHealth));
-    }
-
-    private handleBattleOutcome(outcome: BattleOutcome, enemy: Enemy) {
-        if (!this.playerEntity) return;
-
-        for (const log of outcome.logs) {
-            this.pushTurnLog(log.line, log.tone);
-        }
-        this.syncBossHud();
-
-        if (outcome.type === 'game-over') {
-            this.handlePlayerDeath();
-        } else if (outcome.type === 'none') {
-            if (enemy.stats.health <= 0) {
-                this.handleEnemyDeath(enemy);
-            } else {
-                this.completePlayerTurn('');
-            }
-        } else if (outcome.type === 'victory' && outcome.boss) {
-            this.handleBossDefeat(outcome.boss);
-        }
     }
 
     private handleEnemyDeath(enemy: Enemy) {
@@ -481,7 +525,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             'boss',
         );
         if (rewardChoices.length === 0) {
-            this.completeVictory(this.getEnemyName(boss));
+            this.beginPostBossDecisionFlow(boss.archetypeId);
             return;
         }
 
@@ -694,10 +738,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.resetSpecialRewardFlowState();
         this.syncInventoryOverlay();
         if (rewardSource === 'boss') {
-            const bossName = pendingOffer?.bossArchetypeId
-                ? this.localization.getEnemyName(pendingOffer.bossArchetypeId)
-                : this.localization.getEnemyName('final-boss');
-            this.completeVictory(bossName);
+            this.beginPostBossDecisionFlow(pendingOffer?.bossArchetypeId ?? 'final-boss');
             return;
         }
 
@@ -710,6 +751,204 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.pendingSpecialRewardOffer = undefined;
         this.isSpecialRewardFlowOpen = false;
         this.hud.hideSpecialRewardOverlay();
+    }
+
+    private beginPostBossDecisionFlow(bossArchetypeId: EnemyArchetypeId = 'final-boss'): void {
+        const pactItem = this.getPactItemDefinition();
+        const bossName = this.localization.getEnemyName(bossArchetypeId);
+        this.pendingPostBossDecision = {
+            state: 'offered',
+            bossArchetypeId,
+            pactItemId: pactItem.id,
+            showdownEnemyId: this.createShowdownEnemyId(bossArchetypeId),
+        };
+        this.isPostBossDecisionFlowOpen = true;
+        this.hud.showPostBossDecisionOverlay(
+            {
+                bossName,
+                pactItem,
+            },
+            (action) => this.handlePostBossDecisionSelection(action),
+        );
+        this.pushTurnLog(this.localization.formatPostBossDecisionOpened(bossName), 'item');
+        this.refreshTurnStatus();
+        this.persistRun('active');
+    }
+
+    private handlePostBossDecisionSelection(action: PostBossDecisionAction): void {
+        const pendingDecision = this.pendingPostBossDecision;
+        if (!this.isPostBossDecisionFlowOpen || !pendingDecision) {
+            this.resetPostBossDecisionFlowState();
+            return;
+        }
+
+        if (action === 'showdown') {
+            this.startShowdownBattle(pendingDecision);
+            return;
+        }
+
+        if (action === 'pact') {
+            this.claimPactRewardAndFinish(pendingDecision);
+            return;
+        }
+
+        const bossName = this.localization.getEnemyName(pendingDecision.bossArchetypeId);
+        this.resetPostBossDecisionFlowState();
+        this.completeVictory(bossName);
+    }
+
+    private claimPactRewardAndFinish(decision: PersistedPostBossDecision): void {
+        const claimResult = this.itemService.grantPactReward(decision.pactItemId);
+        if (claimResult.status === 'granted' && claimResult.rewardItem) {
+            this.pushTurnLog(
+                this.localization.formatPactRewardClaimed(
+                    this.localization.getItemName(claimResult.rewardItem.id, claimResult.rewardItem.name),
+                    claimResult.rewardItem.rarity,
+                ),
+                'item',
+            );
+        } else {
+            this.pushTurnLog(this.localization.formatPactRewardUnavailable(), 'danger');
+        }
+
+        this.syncInventoryOverlay();
+        const bossName = this.localization.getEnemyName(decision.bossArchetypeId);
+        this.resetPostBossDecisionFlowState();
+        this.completeVictory(bossName);
+    }
+
+    private startShowdownBattle(decision: PersistedPostBossDecision): void {
+        if (!this.playerEntity) {
+            this.resetPostBossDecisionFlowState();
+            return;
+        }
+
+        const bossName = this.localization.getEnemyName(decision.bossArchetypeId);
+        this.pendingPostBossDecision = {
+            ...decision,
+            state: 'showdown',
+        };
+        this.isPostBossDecisionFlowOpen = false;
+        this.hud.hidePostBossDecisionOverlay();
+        this.pushTurnLog(this.localization.formatShowdownStarted(bossName), 'danger');
+        this.persistRun('active');
+
+        const showdownEnemy = this.createShowdownEnemy(decision);
+        this.launchShowdownBattle(this.playerEntity, showdownEnemy);
+    }
+
+    private handleShowdownBattleResult(result: BattleSceneResult): void {
+        const decision = this.pendingPostBossDecision;
+        const bossName = decision?.bossArchetypeId
+            ? this.localization.getEnemyName(decision.bossArchetypeId)
+            : this.localization.getEnemyName('final-boss');
+
+        if (result.outcome === 'player-win' && result.resolution !== 'escape') {
+            this.pushTurnLog(this.localization.formatShowdownVictory(bossName), 'combat');
+            this.resetPostBossDecisionFlowState();
+            this.completeVictory(bossName);
+            return;
+        }
+
+        this.pushTurnLog(this.localization.formatShowdownFailed(), 'danger');
+        this.resetPostBossDecisionFlowState();
+        this.handlePlayerDeath();
+    }
+
+    private resetPostBossDecisionFlowState(): void {
+        this.pendingPostBossDecision = undefined;
+        this.isPostBossDecisionFlowOpen = false;
+        this.hud.hidePostBossDecisionOverlay();
+    }
+
+    private restorePendingPostBossDecisionFlow(
+        pendingDecision?: PersistedPostBossDecision,
+    ): void {
+        if (!pendingDecision) {
+            return;
+        }
+
+        if (pendingDecision.state === 'showdown') {
+            this.pushTurnLog(this.localization.formatShowdownResumePrompt(), 'danger');
+        }
+
+        this.pendingPostBossDecision = {
+            ...pendingDecision,
+            state: 'offered',
+        };
+        this.beginPostBossDecisionFlow(this.pendingPostBossDecision.bossArchetypeId);
+    }
+
+    private launchShowdownBattle(player: Player, enemy: Enemy): void {
+        const battleData: BattleSceneData = {
+            player,
+            enemy,
+            encounterEnemies: [enemy],
+            deckService: this.deckService,
+            cardBattleService: this.cardBattleService,
+            itemService: this.itemService,
+            enemyName: this.getEnemyName(enemy),
+            floorNumber: this.floorDirector.getFloorSnapshot().number,
+            isShowdown: true,
+            startEnergyBonus: this.pendingBattleStartEnergy,
+        };
+
+        const battleScene = this.scene.get('BattleScene') as BattleScene;
+        battleScene.setOnBattleEnd((battleResult: BattleSceneResult) => {
+            this.handleBattleSceneResult(battleResult);
+        });
+        this.hud.setViewportMode('battle-scene');
+        this.scene.sleep('MainScene');
+        this.scene.launch('BattleScene', battleData);
+    }
+
+    private createShowdownEnemy(decision: PersistedPostBossDecision): Enemy {
+        const floorNumber = this.floorDirector.getFloorSnapshot().number;
+        const playerMaxHealth = this.playerEntity?.stats.maxHealth ?? 100;
+        const maxHealth = Math.max(35, Math.floor(playerMaxHealth * 0.75));
+        const attack = Math.max(10, Math.floor(floorNumber / 8));
+        const defense = Math.max(4, Math.floor(floorNumber / 30));
+
+        return new Enemy(
+            decision.showdownEnemyId,
+            'Showdown Echo',
+            { ...(this.playerEntity?.position ?? { x: 0, y: 0 }) },
+            {
+                health: maxHealth,
+                maxHealth,
+                attack,
+                defense,
+                movementSpeed: DEFAULT_MOVEMENT_SPEED,
+            },
+            0,
+            'boss',
+            decision.bossArchetypeId,
+            true,
+        );
+    }
+
+    private createShowdownEnemyId(bossArchetypeId: EnemyArchetypeId): string {
+        return `showdown-${bossArchetypeId}`;
+    }
+
+    private getPactItemDefinition(): ItemDefinition {
+        const pactItem = ITEM_CATALOG.find((item) => item.id === ITEM_ID.PACT_ARMOR);
+        if (!pactItem) {
+            throw new Error('Pact Armor definition is missing.');
+        }
+
+        return {
+            ...pactItem,
+            spawnSources: pactItem.spawnSources ? [...pactItem.spawnSources] : undefined,
+            consumableEffect: pactItem.consumableEffect ? { ...pactItem.consumableEffect } : undefined,
+            equipment: pactItem.equipment
+                ? {
+                    slot: pactItem.equipment.slot,
+                    statModifier: { ...pactItem.equipment.statModifier },
+                    passives: pactItem.equipment.passives?.map((entry) => ({ ...entry })),
+                }
+                : undefined,
+        };
     }
 
     private async completePlayerTurn(logLine: string, extraLogs: Array<{ line: string; tone: HudLogTone }> = []): Promise<void> {
@@ -786,6 +1025,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     private handlePlayerDeath() {
         this.resetSpecialRewardFlowState();
+        this.resetPostBossDecisionFlowState();
         this.overlayController.setGameOver(true);
         this.renderSynchronizer.setPlayerDeathStyle();
         const floor = this.floorDirector.getFloorSnapshot();
@@ -802,6 +1042,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
 
     private completeVictory(bossName: string) {
         this.resetSpecialRewardFlowState();
+        this.resetPostBossDecisionFlowState();
         this.overlayController.setInventory(false);
         this.overlayController.setVictory(true);
         const floor = this.floorDirector.getFloorSnapshot();
@@ -815,6 +1056,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.hud.setViewportMode('field');
         this.resetCardRewardFlowState();
         this.resetSpecialRewardFlowState();
+        this.resetPostBossDecisionFlowState();
         this.overlayController.setTitleScreen(true);
         this.overlayController.setSanctuary(false);
         this.overlayController.setCardCollection(false);
@@ -833,9 +1075,11 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
     private startNewRun() {
         this.defeatedEnemyCount = 0;
         this.pendingBattleStartEnergy = 0;
+        this.lastEscapeResult = undefined;
         this.selectedInventoryItemId = undefined;
         this.resetCardRewardFlowState();
         this.resetSpecialRewardFlowState();
+        this.resetPostBossDecisionFlowState();
         this.overlayController.setTitleScreen(false);
         this.overlayController.setSanctuary(false);
         this.overlayController.setCardCollection(false);
@@ -860,8 +1104,11 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.selectedInventoryItemId = undefined;
         this.defeatedEnemyCount = savedRun.defeatedEnemyCount;
         this.pendingBattleStartEnergy = savedRun.pendingBattleStartEnergy ?? 0;
+        this.pendingPostBossDecision = savedRun.pendingPostBossDecision;
+        this.lastEscapeResult = savedRun.lastEscapeResult;
         this.resetCardRewardFlowState();
         this.resetSpecialRewardFlowState();
+        this.resetPostBossDecisionFlowState();
         this.renderSynchronizer.clearPlayerTint();
         const floor = this.floorDirector.restoreFloor(savedRun.floor);
         this.itemService.resetRun();
@@ -870,6 +1117,9 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         this.playerEntity?.restore(savedRun.player.stats, savedRun.player.experience);
         this.itemService.restoreInventory(savedRun.inventory);
         this.restorePendingSpecialRewardFlow(savedRun.pendingSpecialRewardOffer);
+        if (!this.isSpecialRewardFlowOpen) {
+            this.restorePendingPostBossDecisionFlow(savedRun.pendingPostBossDecision);
+        }
         this.syncInventoryOverlay();
         this.refreshTurnStatus();
         this.persistRun('active');
@@ -1123,6 +1373,9 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         if (!isOpen && this.isSpecialRewardFlowOpen) {
             return;
         }
+        if (this.isPostBossDecisionFlowOpen) {
+            return;
+        }
         this.overlayController.setInventory(isOpen);
         this.syncInventoryOverlay();
         this.refreshTurnStatus();
@@ -1162,6 +1415,8 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
             deckCards,
             this.pendingBattleStartEnergy,
             this.pendingSpecialRewardOffer,
+            this.lastEscapeResult,
+            this.pendingPostBossDecision,
         );
     }
 
@@ -1183,10 +1438,7 @@ export class MainScene extends Phaser.Scene implements InputDelegate {
         if (rewardChoices.length === 0) {
             this.pendingSpecialRewardOffer = undefined;
             if (pendingSpecialRewardOffer.sourceType === 'boss') {
-                const bossName = pendingSpecialRewardOffer.bossArchetypeId
-                    ? this.localization.getEnemyName(pendingSpecialRewardOffer.bossArchetypeId)
-                    : this.localization.getEnemyName('final-boss');
-                this.completeVictory(bossName);
+                this.beginPostBossDecisionFlow(pendingSpecialRewardOffer.bossArchetypeId ?? 'final-boss');
             }
             return;
         }
